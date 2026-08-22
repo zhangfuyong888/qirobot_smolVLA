@@ -13,7 +13,7 @@ IsaacLab 闭环 rollout 和动作诊断的完整链路。
 
 ## 项目状态
 
-当前链路已在固定 seed、关闭随机化的场景中完成端到端验证：
+历史 `v0`（20 段语言）链路曾在固定 seed、关闭随机化的场景中完成端到端验证：
 
 | 项目 | 已验证配置 |
 |---|---|
@@ -27,7 +27,9 @@ IsaacLab 闭环 rollout 和动作诊断的完整链路。
 | 已验证 checkpoint | `360000/pretrained_model` |
 | rollout 基线 | `complete=True`、`success=True`、drawer `0.001 m`、can z `1.023 m` |
 
-单次固定场景成功只证明链路有效，不代表随机化场景中的统计成功率。
+当前活动配置已升级为 `drawer_10phase_v1`，对应新数据集
+`s4_drawer_insert_close_v1_10phase`，需要重新转换、fresh training 和 Rollout 验证。
+上述历史 checkpoint 不兼容新语言契约；单次固定场景成功也不代表随机场景统计成功率。
 
 ## 主要能力
 
@@ -152,7 +154,7 @@ bash run.sh dataset-check
 
 ```bash
 bash run.sh dataset-check \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model
 ```
 
 检查内容包括 state/action shape、NaN/Inf、FPS、时间戳、三路视频解码以及
@@ -179,7 +181,7 @@ bash run.sh train --resume
 
 ```bash
 bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
@@ -194,7 +196,7 @@ bash run.sh preview \
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -204,7 +206,7 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 

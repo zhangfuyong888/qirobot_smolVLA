@@ -11,13 +11,83 @@ import json
 import math
 from pathlib import Path
 import shutil
+from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
 
 from . import hdf5_schema as schema
 
+if TYPE_CHECKING:
+    from s4_pipeline.language_phases import LanguagePhaseContract
+
 RIGHT_ONLY_ACTION_SLICE = slice(13, 26)
+
+
+def _read_utf8_sequence(demo: h5py.Group, path: str, frame_count: int) -> list[str] | None:
+    if path not in demo:
+        return None
+    raw_values = np.asarray(demo[path])
+    if len(raw_values) != frame_count:
+        raise ValueError(f"{path} length={len(raw_values)}, expected={frame_count}")
+    return [value.decode("utf-8") if isinstance(value, bytes) else str(value) for value in raw_values]
+
+
+def resolve_demo_language_tasks(
+    demo: h5py.Group,
+    *,
+    frame_count: int,
+    default_task: str,
+    language_contract: "LanguagePhaseContract | None",
+    source: str,
+) -> tuple[list[str], list[str | None]]:
+    """Resolve legacy or current HDF5 language fields to canonical macro prompts."""
+    try:
+        recorded_tasks = _read_utf8_sequence(demo, schema.TASK_DESCRIPTION, frame_count)
+        phase_ids = _read_utf8_sequence(demo, schema.LANGUAGE_PHASE_ID, frame_count)
+        expert_names = _read_utf8_sequence(demo, schema.EXPERT_PHASE_NAME, frame_count)
+    except ValueError as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+    if language_contract is None:
+        return recorded_tasks or [str(default_task)] * frame_count, [None] * frame_count
+    if recorded_tasks is None and phase_ids is None and expert_names is None:
+        raise ValueError(
+            f"{source}: no per-frame language metadata; cannot build the active "
+            f"{language_contract.version} contract"
+        )
+
+    canonical_tasks: list[str] = []
+    canonical_ids: list[str | None] = []
+    for frame_index in range(frame_count):
+        try:
+            if phase_ids is not None:
+                phase = language_contract.for_id(phase_ids[frame_index])
+            elif expert_names is not None:
+                phase = language_contract.for_expert_phase(expert_names[frame_index])
+            elif recorded_tasks is not None:
+                phase = language_contract.resolve_recorded_task(recorded_tasks[frame_index])
+            else:  # Guarded above, retained for type narrowing.
+                raise ValueError("missing language metadata")
+            if expert_names is not None:
+                expert_phase = language_contract.for_expert_phase(expert_names[frame_index])
+                if expert_phase.id != phase.id:
+                    raise ValueError(
+                        f"language_phase_id={phase.id!r} conflicts with "
+                        f"expert_phase_name={expert_names[frame_index]!r}"
+                    )
+            if recorded_tasks is not None:
+                recorded_phase = language_contract.resolve_recorded_task(recorded_tasks[frame_index])
+                if recorded_phase.id != phase.id:
+                    raise ValueError(
+                        f"language_phase_id={phase.id!r} conflicts with "
+                        f"task_description={recorded_tasks[frame_index]!r}"
+                    )
+        except ValueError as exc:
+            raise ValueError(f"{source}:frame={frame_index}: {exc}") from exc
+        canonical_tasks.append(phase.task)
+        canonical_ids.append(phase.id)
+    return canonical_tasks, canonical_ids
 
 
 def video_info(fps: int) -> dict:
@@ -166,6 +236,7 @@ def convert_hdf5_to_lerobot(
     fps: int = 30,
     overwrite: bool = False,
     control_mode: str = "right_only",
+    language_contract: "LanguagePhaseContract | None" = None,
 ) -> Path:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -224,18 +295,18 @@ def convert_hdf5_to_lerobot(
                 if len(set(lengths.values())) != 1:
                     raise ValueError(f"{hdf5_path}:{demo_name} frame lengths mismatch: {lengths}")
                 frame_count = len(actions)
-                task_values = None
-                if schema.TASK_DESCRIPTION in demo:
-                    task_values = np.asarray(demo[schema.TASK_DESCRIPTION])
+                frame_tasks, _frame_phase_ids = resolve_demo_language_tasks(
+                    demo,
+                    frame_count=frame_count,
+                    default_task=task_description,
+                    language_contract=language_contract,
+                    source=f"{hdf5_path}:{demo_name}",
+                )
                 for i in range(frame_count):
-                    frame_task = task_description
-                    if task_values is not None and i < len(task_values):
-                        raw_task = task_values[i]
-                        frame_task = raw_task.decode("utf-8") if isinstance(raw_task, bytes) else str(raw_task)
                     frame = {
                         "observation.state": states[i].astype(np.float32),
                         "action": actions[i].astype(np.float32),
-                        "task": frame_task,
+                        "task": frame_tasks[i],
                     }
                     for camera_path, values in cameras.items():
                         camera_name = camera_path.split("/")[-1]
@@ -254,6 +325,9 @@ def convert_hdf5_to_lerobot(
         "grasp_can_nominal_position": list(recording_contract.get("grasp_can_nominal_position", [])),
         "grasp_can_scale": list(recording_contract.get("grasp_can_scale", [])),
     }
+    if language_contract is not None:
+        portable_contract["language_contract_version"] = language_contract.version
+        portable_contract["language_phases"] = language_contract.as_portable_records()
     contract_path = dataset_root / "meta" / "s4_contract.json"
     contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")
     return dataset_root

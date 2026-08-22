@@ -2,7 +2,9 @@
 
 ```bash
 bash run.sh dataset-check
-bash run.sh dataset-check --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model
+# 当前 10 阶段数据集与由它训练的 checkpoint 必须具有相同 sidecar 契约
+bash run.sh dataset-check --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model
+# 也可单独检查尚未转换的旧原始 HDF5；检查器会验证其文本能否映射到当前 10 阶段
 bash run.sh dataset-check datasets/staging/s4_drawer_insert_close_v0 --hdf5
 ```
 

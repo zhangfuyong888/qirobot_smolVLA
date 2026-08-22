@@ -78,6 +78,11 @@ stateDiagram-v2
 
 状态图将若干细分接近阶段合并为逻辑块，表格保留了真实阶段名。
 
+这些 20 个阶段是**专家控制阶段**，不再逐个作为模型语言。当前
+`drawer_10phase_v1` 将相邻控制阶段归并为 10 个语言宏阶段；采集仍执行上述全部
+控制动作，只降低模型任务文本和 Rollout schedule 的切换次数。稳定映射见
+`docs/LANGUAGE_PHASES.md`，不能用 prompt 字符串代替阶段 ID 充当程序契约。
+
 ### 2.1.3 Anchor 与相对目标
 
 Anchor 是从当前仿真状态测得的参考点，例如初始抽屉把手、打开后的把手和当前罐子。目标通常由 Anchor 加 base frame 偏移得到：
@@ -278,6 +283,8 @@ f_{data}=\frac{f_{control}}{N}=\frac{120}{6}=20\ \mathrm{Hz}
 | `obs/left_wrist_rgb` | 左腕相机 | 训练视觉 |
 | `obs/right_wrist_rgb` | 右腕相机 | 训练视觉 |
 | `obs/task_description` | 当前阶段任务文本 | 语言条件 |
+| `obs/language_phase_id` | 10 阶段稳定 ID | 转换与 Rollout 契约 |
+| `obs/expert_phase_name` | 20 阶段真实控制名 | 失败诊断 |
 | EEF pose | 左/右 TCP | 工程诊断 |
 | drawer object pose | 主罐位姿 | 任务诊断 |
 
@@ -288,6 +295,8 @@ demo_N
     ├── s4_active_joint_pos        [T, 26]
     ├── full_joint_pos             [T, full_dof]
     ├── task_description           [T]
+    ├── language_phase_id          [T]
+    ├── expert_phase_name          [T]
     ├── chest_front_rgb            [T, 480, 680, 3]
     ├── left_wrist_rgb             [T, 480, 680, 3]
     ├── right_wrist_rgb            [T, 480, 680, 3]
@@ -438,7 +447,7 @@ bash run.sh collect-convert \
 
 ### 2.3.1 为什么不直接用 HDF5 训练
 
-HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeRobotDataset 则提供统一的多模态 feature、Parquet 帧索引、任务表、视频、统计量和 episode-aware 采样接口。转换的目的不是改变数据内容，而是把采集格式映射到训练框架的标准接口。
+HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeRobotDataset 则提供统一的多模态 feature、Parquet 帧索引、任务表、视频、统计量和 episode-aware 采样接口。转换不会改变图像、状态或动作；语言属于显式迁移：旧 HDF5 的 20 段文本按配置映射为 10 个宏阶段，新 HDF5 则用稳定 ID 并交叉校验文本和专家阶段。
 
 ### 2.3.2 字段映射
 
@@ -449,7 +458,7 @@ HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeR
 | `obs/chest_front_rgb` | `observation.images.chest_front_rgb` | RGB 视频 |
 | `obs/left_wrist_rgb` | `observation.images.left_wrist_rgb` | RGB 视频 |
 | `obs/right_wrist_rgb` | `observation.images.right_wrist_rgb` | RGB 视频 |
-| `obs/task_description` | `task` / `task_index` | 每帧任务文本 |
+| `obs/task_description` / `language_phase_id` | `task` / `task_index` | 规范化后的 10 阶段文本 |
 | HDF5 demo | LeRobot episode | episode 边界 |
 
 ```mermaid
@@ -603,7 +612,7 @@ bash run.sh dataset-check
 
 ```bash
 bash run.sh dataset-check \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/<step>/pretrained_model
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model
 ```
 
 #### 受保护的完整流水线
@@ -823,7 +832,7 @@ Flow Matching loss 衡量模型预测速度场与目标速度的差异。下降�
 
 ```bash
 bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
@@ -871,17 +880,18 @@ sequenceDiagram
     World-->>Obs: 新状态与新图像
 ```
 
-每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见阶段顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule。它不是在 Rollout 时直接读取当前专家 YAML 的阶段时长。
+每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 10 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`。它不是在 Rollout 时直接读取 20 个专家阶段的时长。
 
 ### 2.5.2 当前 Rollout 参数
 
 | 参数 | 当前默认值 | 作用 |
 |---|---:|---|
 | `chunk_size` | 50 | 模型预测动作长度 |
-| `chunk_replan_frames` | 20 | 每 20 个策略帧预测新 chunk |
+| `chunk_replan_frames` | 40 | 每 40 个策略帧预测新 chunk |
 | `chunk_overlap_blend_frames` | 5 | 新旧随机 chunk 交叉淡入 |
 | `phase_transition_blend_frames` | 8 | 阶段任务文本切换时融合 |
-| `phase_max_extension_frames` | 20 | 状态门控不满足时最多延长 |
+| `phase_max_extension_frames` | 20 | 普通宏阶段门控不满足时最多延长 |
+| `drawer_phase_max_extension_frames` | 80 | 接近把手和拉抽屉宏阶段最多延长 |
 | `action_clip` | dataset min/max | 限制超出训练动作范围 |
 | `max_joint_step` | 0.050 rad/策略帧 | 机械臂目标变化限制 |
 | `hand_max_joint_step` | 0.015 rad/策略帧 | 灵巧手目标变化限制 |
@@ -894,18 +904,18 @@ sequenceDiagram
 
 ### 2.5.3 Chunk 重规划与融合
 
-模型每次生成 50 帧，但默认执行到第 20 帧时重新观测并生成新 chunk。重叠区对新旧动作交叉融合，阶段切换还额外平滑任务文本改变造成的动作跳变。
+模型每次生成 50 帧，但默认执行到第 40 帧时重新观测并生成新 chunk。重叠区对新旧动作交叉融合，阶段切换还额外平滑任务文本改变造成的动作跳变。
 
 ```text
-policy frame  0     19 20   24 25              49
+policy frame  0                         39 40   44 45 49
 Chunk A       [===============================]
-Chunk B                    [===============================]
-融合区                      <---5 frames--->
+Chunk B                                      [===============================]
+融合区                                        <---5 frames--->
 
 阶段切换     old task |<------8-frame transition------>| new task
 ```
 
-重规划较快提高响应性，但增加推理次数和随机 chunk 之间的不连续；重规划较慢减少计算，却让机器人在环境变化后继续执行旧预测。当前 20 帧是工程默认，不是 SmolVLA 理论规定的唯一值。
+重规划较快提高响应性，但增加推理次数和随机 chunk 之间的不连续；重规划较慢减少计算，却让机器人在环境变化后继续执行旧预测。当前 40 帧是工程默认，不是 SmolVLA 理论规定的唯一值。
 
 ### 2.5.4 20 Hz 动作到 120 Hz 控制
 
@@ -940,7 +950,7 @@ Actual 已按“当前 command 对下一 policy boundary 的实际状态”对�
 
 ### 2.5.6 阶段状态门控
 
-Rollout 的阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。系统会检查关节跟踪、手指动作和闭合进度；条件不足时最多延长 20 帧。
+Rollout 的 10 阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。每个语言阶段通过稳定 ID 选择其末端专家门控。系统会检查关节跟踪、手指动作和闭合进度；普通阶段条件不足时最多延长 20 帧，`approach_drawer_handle` 与 `pull_drawer` 最多延长 80 帧。
 
 这是一种介于纯时间播放和完整任务状态机之间的机制：
 
@@ -971,7 +981,7 @@ Rollout 的阶段 schedule 来源于数据时长，但开启 `phase-state-gating
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -983,7 +993,7 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 

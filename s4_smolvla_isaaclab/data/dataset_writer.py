@@ -44,6 +44,8 @@ class EpisodeBuffer:
     active_joint_pos: list[np.ndarray] = field(default_factory=list)
     chest_front_rgb: list[np.ndarray] = field(default_factory=list)
     task_descriptions: list[str] = field(default_factory=list)
+    language_phase_ids: list[str] = field(default_factory=list)
+    expert_phase_names: list[str] = field(default_factory=list)
     left_wrist_rgb: list[np.ndarray] = field(default_factory=list)
     right_wrist_rgb: list[np.ndarray] = field(default_factory=list)
     left_eef_pose: list[np.ndarray] = field(default_factory=list)
@@ -65,6 +67,8 @@ class EpisodeBuffer:
         optional_sequences = {
             "active_joint_pos": self.active_joint_pos,
             "task_descriptions": self.task_descriptions,
+            "language_phase_ids": self.language_phase_ids,
+            "expert_phase_names": self.expert_phase_names,
             "left_wrist_rgb": self.left_wrist_rgb,
             "right_wrist_rgb": self.right_wrist_rgb,
             "left_eef_pose": self.left_eef_pose,
@@ -149,6 +153,7 @@ class Hdf5DemoWriter:
             "grasp_can_scale",
             "camera",
             "data_contract",
+            "language_contract",
         )
         def comparable(key: str, value: Any) -> Any:
             if key != "randomization" or not isinstance(value, dict):
@@ -206,6 +211,22 @@ class Hdf5DemoWriter:
                 group,
                 schema.TASK_DESCRIPTION,
                 np.asarray(episode.task_descriptions, dtype=object),
+                dtype=string_dtype,
+            )
+        if episode.language_phase_ids:
+            string_dtype = h5py.string_dtype(encoding="utf-8")
+            _create_nested_dataset(
+                group,
+                schema.LANGUAGE_PHASE_ID,
+                np.asarray(episode.language_phase_ids, dtype=object),
+                dtype=string_dtype,
+            )
+        if episode.expert_phase_names:
+            string_dtype = h5py.string_dtype(encoding="utf-8")
+            _create_nested_dataset(
+                group,
+                schema.EXPERT_PHASE_NAME,
+                np.asarray(episode.expert_phase_names, dtype=object),
                 dtype=string_dtype,
             )
         rgb = np.asarray(episode.chest_front_rgb, dtype=np.uint8)

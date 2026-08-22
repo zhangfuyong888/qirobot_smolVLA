@@ -12,10 +12,20 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from s4_pipeline.config import load_project_config
+from s4_pipeline.language_phases import load_language_phase_contract
+from tasks import get_task_spec
+from tasks.loading import load_yaml
 
 
 def _fail(message: str) -> None:
     raise ValueError(message)
+
+
+def _active_language_contract(cfg):
+    task_spec = get_task_spec(cfg.dataset.task_id)
+    if task_spec.scripted_config is None:
+        _fail(f"Task has no scripted language contract: {cfg.dataset.task_id}")
+    return load_language_phase_contract(load_yaml(task_spec.scripted_config))
 
 
 def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
@@ -29,6 +39,7 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
         RIGHT_WRIST_RGB,
         DRAWER_TASK_OBJECT_POSE,
     )
+    from data.lerobot_conversion import resolve_demo_language_tasks
 
     files = [path] if path.is_file() else sorted(path.rglob("*.hdf5"))
     if not files:
@@ -36,6 +47,7 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
     episodes = frames = 0
     grid_samples: list[tuple[int, int, int]] = []
     expected_grid_shape: tuple[int, int] | None = None
+    language_contract = _active_language_contract(cfg)
     for file in files:
         with h5py.File(file, "r") as stream:
             raw_env_args = stream["data"].attrs.get("env_args")
@@ -77,6 +89,13 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
                     object_pose = group[DRAWER_TASK_OBJECT_POSE]
                     if object_pose.shape != (count, 7) or not np.isfinite(object_pose[:]).all():
                         _fail(f"{file}:{name} invalid drawer task object pose shape/data={object_pose.shape}")
+                resolve_demo_language_tasks(
+                    group,
+                    frame_count=count,
+                    default_task=cfg.dataset.task,
+                    language_contract=language_contract,
+                    source=f"{file}:{name}",
+                )
                 raw_metadata = group.attrs.get("episode_metadata")
                 if raw_metadata is not None:
                     if isinstance(raw_metadata, bytes):
@@ -180,6 +199,19 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
     task_rows = pq.read_table(path / "meta/tasks.parquet")
     if task_rows.num_rows == 0:
         _fail("tasks.parquet is empty")
+    language_contract = _active_language_contract(cfg)
+    task_pairs = sorted(
+        zip(
+            task_rows.column("task_index").to_pylist(),
+            task_rows.column("task").to_pylist(),
+            strict=True,
+        ),
+        key=lambda item: int(item[0]),
+    )
+    actual_tasks = [str(task) for _, task in task_pairs]
+    expected_tasks = [phase.task for phase in language_contract.phases]
+    if actual_tasks != expected_tasks:
+        _fail(f"dataset language task order mismatch: actual={actual_tasks}, expected={expected_tasks}")
     if checkpoint:
         model = checkpoint / "pretrained_model" if (checkpoint / "pretrained_model").is_dir() else checkpoint
         ckpt = json.loads((model / "config.json").read_text(encoding="utf-8"))
@@ -207,14 +239,33 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
         if missing:
             _fail(f"checkpoint missing inference processors: {missing}")
     contract_path = path / "meta/s4_contract.json"
-    if contract_path.is_file():
-        contract = json.loads(contract_path.read_text(encoding="utf-8"))
-        if contract.get("action_semantics") != cfg.dataset.action_semantics:
-            _fail(f"dataset action semantics mismatch: {contract.get('action_semantics')}")
-        if int(contract.get("state_dim", -1)) != cfg.features.state_dim:
-            _fail(f"dataset contract state_dim={contract.get('state_dim')}")
-        if int(contract.get("action_dim", -1)) != cfg.features.action_dim:
-            _fail(f"dataset contract action_dim={contract.get('action_dim')}")
+    if not contract_path.is_file():
+        _fail(f"dataset is missing portable contract: {contract_path}")
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    if contract.get("action_semantics") != cfg.dataset.action_semantics:
+        _fail(f"dataset action semantics mismatch: {contract.get('action_semantics')}")
+    if int(contract.get("state_dim", -1)) != cfg.features.state_dim:
+        _fail(f"dataset contract state_dim={contract.get('state_dim')}")
+    if int(contract.get("action_dim", -1)) != cfg.features.action_dim:
+        _fail(f"dataset contract action_dim={contract.get('action_dim')}")
+    if contract.get("language_contract_version") != language_contract.version:
+        _fail(f"dataset language contract={contract.get('language_contract_version')!r}")
+    if contract.get("language_phases") != language_contract.as_portable_records():
+        _fail("dataset language phase definitions do not match the active scripted config")
+    if checkpoint:
+        checkpoint_contract = next(
+            (
+                parent / "s4_dataset_contract.json"
+                for parent in [checkpoint, *checkpoint.parents]
+                if (parent / "s4_dataset_contract.json").is_file()
+            ),
+            None,
+        )
+        if checkpoint_contract is None:
+            _fail(f"checkpoint has no s4_dataset_contract.json provenance: {checkpoint}")
+        trained_contract = json.loads(checkpoint_contract.read_text(encoding="utf-8"))
+        if trained_contract != contract:
+            _fail(f"checkpoint dataset contract differs from {contract_path}")
     print(f"[OK] LeRobotDataset episodes={len(previous)} frames={table.num_rows} fps={info['fps']} action/state=26D schema={cfg.dataset.schema_version}")
     print(f"[OK] cameras=3 shape=480x680x3 decoded_files={len(video_files)} tasks={task_rows.num_rows}")
     if checkpoint:

@@ -2,7 +2,7 @@
 
 ```bash
 bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --num-frames 20 --device cuda
 ```
 

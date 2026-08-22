@@ -79,6 +79,10 @@ bash run.sh validate-workspace --grid 41 61
 默认输出：`${S4_DATA_ROOT}/staging/<dataset>/<task>_scripted.hdf5`。中断时已
 flush 的完整 `demo_N` 通常可用，但必须运行：
 
+当前采集仍执行 20 个精细专家控制阶段，但逐帧语言只使用 10 个宏阶段。HDF5
+同时记录语言 ID、宏文本和专家阶段名，分别服务于训练与失败诊断。详见
+[语言阶段契约](LANGUAGE_PHASES.md)。
+
 采集中断后可在同一个 HDF5 上续采。`--episodes` 表示文件最终需要达到的成功
 条数，而不是额外追加条数；已有 episode、随机数状态、网格游标、当前格内点和
 当前格子状态都会恢复。抓取失败会在同一精确位置额外重试三次，然后在同一格换点；
@@ -86,7 +90,7 @@ flush 的完整 `demo_N` 通常可用，但必须运行：
 修复问题后可续采同一文件。示例：
 
 ```bash
-bash run.sh record --output datasets/staging/s4_drawer_insert_close_v0/run.hdf5 \
+bash run.sh record --output datasets/staging/s4_drawer_insert_close_v1_10phase/run.hdf5 \
   --episodes 20 --resume
 ```
 

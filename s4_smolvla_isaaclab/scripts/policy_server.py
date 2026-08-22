@@ -51,6 +51,35 @@ def _image_array_from_payload(payload: dict[str, Any]) -> np.ndarray:
     return image.copy()
 
 
+def _annotate_phase_schedule(
+    schedule: list[dict[str, Any]],
+    dataset_contract: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Attach stable language IDs when the converted dataset declares them."""
+    raw_phases = dataset_contract.get("language_phases")
+    if raw_phases is None:
+        return schedule
+    if not isinstance(raw_phases, list) or not raw_phases:
+        raise ValueError("Dataset s4_contract.json has an invalid language_phases list")
+    by_prompt = {str(item.get("task", "")): str(item.get("id", "")) for item in raw_phases}
+    if not all(by_prompt) or not all(by_prompt.values()) or len(by_prompt) != len(raw_phases):
+        raise ValueError("Dataset language phase prompts and IDs must be non-empty and unique")
+    annotated: list[dict[str, Any]] = []
+    for item in schedule:
+        prompt = str(item.get("task", ""))
+        if prompt not in by_prompt:
+            raise ValueError(f"Dataset task {prompt!r} is not present in language contract")
+        annotated.append({**item, "language_phase_id": by_prompt[prompt]})
+    expected_ids = [str(item["id"]) for item in raw_phases]
+    actual_ids = [str(item["language_phase_id"]) for item in annotated]
+    if actual_ids != expected_ids:
+        raise ValueError(
+            f"Dataset phase schedule does not match declared language order: "
+            f"actual={actual_ids}, expected={expected_ids}"
+        )
+    return annotated
+
+
 def _load_phase_schedule(dataset_root: Path) -> list[dict[str, Any]]:
     """Recover the common phase order and median duration from the dataset."""
     import pyarrow as pa
@@ -123,6 +152,11 @@ def _load_phase_schedule(dataset_root: Path) -> list[dict[str, Any]]:
                 "frames": frames,
             }
         )
+    contract_path = dataset_root / "meta" / "s4_contract.json"
+    dataset_contract = (
+        json.loads(contract_path.read_text(encoding="utf-8")) if contract_path.is_file() else {}
+    )
+    schedule = _annotate_phase_schedule(schedule, dataset_contract)
     print(
         f"[SERVER] phase schedule episodes={matching_episodes}/{len(runs_by_episode)} "
         f"phases={len(schedule)} frames={sum(item['frames'] for item in schedule)}",

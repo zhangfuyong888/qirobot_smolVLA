@@ -15,6 +15,7 @@
 
 - [数据采集](DATA_COLLECTION.md)
 - [数据契约](DATA_SCHEMA.md)
+- [Drawer 语言阶段契约](LANGUAGE_PHASES.md)
 - [转换](DATASET_CONVERSION.md)
 - [验证](DATASET_VALIDATION.md)
 - [训练](TRAINING.md)

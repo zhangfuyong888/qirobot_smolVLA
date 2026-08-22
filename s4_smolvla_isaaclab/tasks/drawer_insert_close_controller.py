@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from s4_pipeline.language_phases import load_language_phase_contract
 from s4_robot.control_mapping import ACTION_SLICES, bimanual_default_action
 from s4_robot.pink_bimanual_ik import quat_wxyz_from_rpy
 from s4_robot.s4_robot_cfg import (
@@ -230,6 +231,7 @@ class DrawerInsertCloseController:
         self.tcp_controller = tcp_controller
         self.config_path = Path(config_path)
         self.config = load_scripted_config(self.config_path)
+        self.language_contract = load_language_phase_contract(self.config)
         controller_cfg = self.config.get("controller", {})
         self.default_tolerance = float(controller_cfg.get("default_tolerance", 0.035))
         self.default_orientation_tolerance = float(controller_cfg.get("default_orientation_tolerance", 0.20))
@@ -463,6 +465,14 @@ class DrawerInsertCloseController:
     @property
     def current_task(self) -> str:
         return self.current_phase.task
+
+    @property
+    def current_language_phase_id(self) -> str:
+        return self.language_contract.for_expert_phase(self.current_phase.name).id
+
+    @property
+    def current_language_task(self) -> str:
+        return self.language_contract.for_expert_phase(self.current_phase.name).task
 
     def _arm_target_error(
         self,

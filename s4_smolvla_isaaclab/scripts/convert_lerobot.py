@@ -12,6 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from data.hdf5_schema import CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB
 from data.lerobot_conversion import convert_hdf5_to_lerobot
 from s4_pipeline.config import load_project_config
+from s4_pipeline.language_phases import load_language_phase_contract
+from tasks import get_task_spec
+from tasks.loading import load_yaml
 
 
 parser = argparse.ArgumentParser(description="Convert S4 bimanual HDF5 files to LeRobotDataset.")
@@ -42,6 +45,10 @@ def main() -> None:
         [CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB],
     )
     control_mode = args.control_mode or cfg.raw.get("dataset", {}).get("control_mode", "right_only")
+    task_spec = get_task_spec(cfg.dataset.task_id)
+    if task_spec.scripted_config is None:
+        raise ValueError(f"Task has no scripted language contract: {cfg.dataset.task_id}")
+    language_contract = load_language_phase_contract(load_yaml(task_spec.scripted_config))
     dataset_root = convert_hdf5_to_lerobot(
         root_path=root_path,
         output_root=output_root,
@@ -52,6 +59,7 @@ def main() -> None:
         fps=cfg.dataset.fps,
         overwrite=args.overwrite,
         control_mode=control_mode,
+        language_contract=language_contract,
     )
     print(f"LeRobotDataset written to: {dataset_root}")
 

@@ -172,6 +172,49 @@ targets:
     offset: [-0.0235, -0.3330, 0.1728]
     rpy: [0.0, -1.5, 1.5]
 
+language_contract_version: drawer_10phase_v1
+language_phases:
+  - id: prepare_hands
+    task: "Open both hands and prepare for the task."
+    source_phases: [initial_open_hands]
+    rollout_gate_phase: initial_open_hands
+  - id: approach_drawer_handle
+    task: "Move the left hand onto the drawer handle."
+    source_phases: [left_approach_handle, left_approach_handle_fine, left_grasp_handle]
+    rollout_gate_phase: left_grasp_handle
+  - id: grasp_drawer_handle
+    task: "Close the left hand around the drawer handle and hold it."
+    source_phases: [left_close_hand]
+    rollout_gate_phase: left_close_hand
+  - id: pull_drawer
+    task: "Pull the drawer open with the left hand."
+    source_phases: [pull_drawer]
+    rollout_gate_phase: pull_drawer
+  - id: approach_can
+    task: "Move the open right hand around the can and hold it steady."
+    source_phases: [right_pregrasp_can, right_grasp_can, right_settle_before_close]
+    rollout_gate_phase: right_settle_before_close
+  - id: grasp_can
+    task: "Close the right hand around the can and hold it steady."
+    source_phases: [right_close_hand, right_hold_grasp]
+    rollout_gate_phase: right_hold_grasp
+  - id: lift_can
+    task: "Lift the grasped can clear of the support surface."
+    source_phases: [right_lift_can]
+    rollout_gate_phase: right_lift_can
+  - id: place_can
+    task: "Move the grasped can into the open drawer."
+    source_phases: [right_place_in_drawer]
+    rollout_gate_phase: right_place_in_drawer
+  - id: release_and_retreat
+    task: "Release the can and move the open right hand clear of the drawer."
+    source_phases: [right_open_hand, right_lift_clear_drawer, right_retreat_clear_drawer]
+    rollout_gate_phase: right_retreat_clear_drawer
+  - id: close_drawer_and_home
+    task: "Close the drawer and return both arms home."
+    source_phases: [right_retreat_and_start_close, left_open_hand, left_joint_transition_after_release, left_home]
+    rollout_gate_phase: left_home
+
 phases:
   - name: initial_open_hands
     task: "Open both hands and wait before approaching the drawer."

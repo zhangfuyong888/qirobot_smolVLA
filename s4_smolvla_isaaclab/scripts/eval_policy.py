@@ -173,6 +173,7 @@ import torch
 
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import DATASET_CONFIG_PATH
+from s4_pipeline.language_phases import LanguagePhaseContract, load_language_phase_contract
 from s4_pipeline.rollout_metrics import (
     aggregate_rollout_summary,
     default_summary_json_path,
@@ -294,6 +295,32 @@ def resolve_checkpoint(project_cfg) -> Path:
     if checkpoints and (checkpoints[-1] / "pretrained_model" / "config.json").is_file():
         return (checkpoints[-1] / "pretrained_model").resolve()
     raise FileNotFoundError(f"No SmolVLA pretrained_model/config.json found from: {path}")
+
+
+def validate_checkpoint_dataset_contract(checkpoint: Path, dataset_root: Path) -> None:
+    dataset_contract_path = dataset_root / "meta" / "s4_contract.json"
+    if not dataset_contract_path.is_file():
+        raise ValueError(f"Dataset is missing s4_contract.json: {dataset_contract_path}")
+    checkpoint_contract_path = next(
+        (
+            parent / "s4_dataset_contract.json"
+            for parent in [checkpoint, *checkpoint.parents]
+            if (parent / "s4_dataset_contract.json").is_file()
+        ),
+        None,
+    )
+    if checkpoint_contract_path is None:
+        raise ValueError(
+            f"Checkpoint has no dataset-language provenance: {checkpoint}. "
+            "Use a checkpoint trained by the active project training entrypoint."
+        )
+    dataset_contract = json.loads(dataset_contract_path.read_text(encoding="utf-8"))
+    checkpoint_contract = json.loads(checkpoint_contract_path.read_text(encoding="utf-8"))
+    if checkpoint_contract != dataset_contract:
+        raise ValueError(
+            f"Checkpoint contract {checkpoint_contract_path} does not match dataset "
+            f"contract {dataset_contract_path}"
+        )
 
 
 def make_scene_cfg(project_cfg) -> SceneBuildCfg:
@@ -631,6 +658,7 @@ def phase_transition_gate(
     actual_action: np.ndarray,
     commanded_action: np.ndarray,
     drawer_open: float,
+    language_contract: LanguagePhaseContract | None = None,
 ) -> tuple[bool, list[str]]:
     if not args_cli.phase_state_gating:
         return True, []
@@ -640,10 +668,16 @@ def phase_transition_gate(
         if arm_error > float(args_cli.phase_q_track_tolerance):
             reasons.append(f"{side}_arm={arm_error:.3f}")
 
-    phase_cfg = next(
-        (item for item in scripted_cfg.get("phases", []) if str(item.get("task")) == str(phase["task"])),
-        {},
-    )
+    language_phase_id = phase.get("language_phase_id")
+    if language_phase_id is not None:
+        if language_contract is None:
+            raise ValueError("Rollout schedule has language_phase_id but no active language contract")
+        phase_cfg = language_contract.rollout_gate_config(str(language_phase_id), scripted_cfg)
+    else:
+        phase_cfg = next(
+            (item for item in scripted_cfg.get("phases", []) if str(item.get("task")) == str(phase["task"])),
+            {},
+        )
     hands_cfg = scripted_cfg.get("hands", {})
     for side, action_slice in (("left", ACTION_SLICES.left_hand), ("right", ACTION_SLICES.right_hand)):
         hand_command = phase_cfg.get(f"{side}_hand")
@@ -805,8 +839,10 @@ def main() -> None:
     grasp_can_nominal_position = resolve_grasp_can_nominal_position(dataset_root)
     grasp_can_scale = resolve_grasp_can_scale(dataset_root)
     checkpoint = resolve_checkpoint(project_cfg)
+    validate_checkpoint_dataset_contract(checkpoint, dataset_root)
     action_low, action_high = load_action_bounds(dataset_root)
     scripted_cfg = load_yaml(task_spec.scripted_config)
+    language_contract = load_language_phase_contract(scripted_cfg)
     random_cfg = resolve_randomization_cfg(
         scripted_cfg,
         randomize_task=bool(args_cli.randomize_task),
@@ -979,6 +1015,7 @@ def main() -> None:
                                 actual_action,
                                 commanded_action,
                                 drawer_open,
+                                language_contract,
                             )
                             extension_limit = rollout_phase_extension_frames(
                                 schedule[phase_index],

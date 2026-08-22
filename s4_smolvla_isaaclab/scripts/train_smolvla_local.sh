@@ -81,6 +81,7 @@ FREEZE_VISION=$(cfg freeze_vision_encoder)
 TRAIN_EXPERT=$(cfg train_expert_only)
 TRAIN_STATE_PROJ=$(cfg train_state_proj)
 LOAD_VLM=$(cfg load_vlm_weights)
+LANGUAGE_CONTRACT_VERSION=$(cfg language_contract_version)
 if [ -n "$STEPS_OVERRIDE" ]; then
     STEPS="$STEPS_OVERRIDE"
 fi
@@ -117,6 +118,18 @@ if [ ! -d "$DATASET_ROOT/$DATASET" ]; then
     exit 2
 fi
 
+DATASET_CONTRACT="$DATASET_ROOT/$DATASET/meta/s4_contract.json"
+if [ ! -f "$DATASET_CONTRACT" ]; then
+    echo "Dataset language contract is missing: $DATASET_CONTRACT" >&2
+    echo "Run dataset conversion and dataset-check before training." >&2
+    exit 2
+fi
+ACTUAL_LANGUAGE_CONTRACT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("language_contract_version", ""))' "$DATASET_CONTRACT")
+if [ "$ACTUAL_LANGUAGE_CONTRACT" != "$LANGUAGE_CONTRACT_VERSION" ]; then
+    echo "Dataset language contract=$ACTUAL_LANGUAGE_CONTRACT, expected=$LANGUAGE_CONTRACT_VERSION" >&2
+    exit 2
+fi
+
 if [ "$OVERWRITE_OUTPUT" = true ]; then
     if [ "$RESUME" = true ]; then
         echo "--overwrite-output cannot be used together with --resume" >&2
@@ -125,6 +138,14 @@ if [ "$OVERWRITE_OUTPUT" = true ]; then
     if [ -d "$OUTPUT_DIR" ]; then
         echo "[INFO] Removing existing training output: $OUTPUT_DIR"
         rm -rf "$OUTPUT_DIR"
+    fi
+fi
+
+if [ "$RESUME" != true ] && [ "$OVERWRITE_OUTPUT" != true ] && [ -d "$OUTPUT_DIR" ]; then
+    if [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+        echo "Fresh training output is not empty: $OUTPUT_DIR" >&2
+        echo "Use --resume for the same run or --overwrite-output for an intentional fresh run." >&2
+        exit 2
     fi
 fi
 
@@ -138,6 +159,11 @@ export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE"
 
 if [ "$RESUME" = true ]; then
+    OUTPUT_CONTRACT="$OUTPUT_DIR/s4_dataset_contract.json"
+    if [ ! -f "$OUTPUT_CONTRACT" ] || ! cmp -s "$DATASET_CONTRACT" "$OUTPUT_CONTRACT"; then
+        echo "Cannot resume: training output does not match the active dataset language contract." >&2
+        exit 2
+    fi
     RESUME_CHECKPOINT="$OUTPUT_DIR/checkpoints/last"
     RESUME_CONFIG="$RESUME_CHECKPOINT/pretrained_model/train_config.json"
     RESUME_STATE="$RESUME_CHECKPOINT/training_state/training_step.json"
@@ -166,6 +192,9 @@ if [ "$RESUME" = true ]; then
         --persistent_workers=false \
         --dataset.video_backend=pyav
 fi
+
+mkdir -p "$OUTPUT_DIR"
+cp "$DATASET_CONTRACT" "$OUTPUT_DIR/s4_dataset_contract.json"
 
 lerobot-train \
     --policy.type=smolvla \

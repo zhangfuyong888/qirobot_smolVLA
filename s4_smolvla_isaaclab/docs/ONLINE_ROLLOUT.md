@@ -2,6 +2,15 @@
 
 IsaacLab 主进程使用 `env_isaaclab`，policy server 使用 `smolvla`。
 
+当前数据集使用 10 个语言宏阶段。Policy Server 从 `meta/s4_contract.json` 为
+`tasks.parquet` 中的 prompt 恢复稳定 `language_phase_id`；Rollout 再按该 ID 找到
+宏阶段末端的专家门控。20 个专家阶段不作为 20 次语言切换。默认每 40 个策略帧
+重规划一次 50 帧 Action Chunk，并在重叠区融合；阶段切换仍使用 8 帧过渡。
+`approach_drawer_handle` 和 `pull_drawer` 的门控扩展上限为 80 帧，其他宏阶段为 20 帧。
+
+Rollout 启动前还会比较数据集 `s4_contract.json` 与训练目录
+`s4_dataset_contract.json`；旧 `v0` checkpoint 不能与当前 10 阶段数据集混用。
+
 ## 输出目录约定
 
 每次 rollout **只写一个子文件夹**（多轮随机测试也全部放在同一文件夹内）：
@@ -28,7 +37,7 @@ outputs/eval/rollout_<YYYYMMDD_HHMMSS>_<det|randN>_ckpt<step>/
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -38,7 +47,7 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda \
   --output-dir outputs/eval/det_360k
 ```
@@ -74,7 +83,7 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -89,7 +98,7 @@ bash run.sh rollout \
   --can-x-range -0.05 0.05 \
   --can-y-range -0.05 0.05 \
   --drawer-open-range 0.0 0.05 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v0/checkpoints/360000/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
   --policy-device cuda \
   --output-dir outputs/eval/rand20_360k
 ```

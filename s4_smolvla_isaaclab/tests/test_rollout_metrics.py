@@ -54,6 +54,18 @@ def test_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
     assert rollout_metrics.rollout_phase_extension_frames({"task": "pregrasp"}, scripted, 20) == 20
 
 
+def test_macro_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
+    assert rollout_metrics.rollout_phase_extension_frames(
+        {"language_phase_id": "approach_drawer_handle", "task": "macro approach"}, {}, 20
+    ) == 80
+    assert rollout_metrics.rollout_phase_extension_frames(
+        {"language_phase_id": "pull_drawer", "task": "macro pull"}, {}, 20
+    ) == 80
+    assert rollout_metrics.rollout_phase_extension_frames(
+        {"language_phase_id": "approach_can", "task": "macro can"}, {}, 20
+    ) == 20
+
+
 def test_resolve_randomization_respects_cli_and_disable():
     enabled = resolve_randomization_cfg(
         SCRIPTED,

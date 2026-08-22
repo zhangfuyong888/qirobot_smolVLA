@@ -324,6 +324,7 @@ from s4_pipeline.drawer_distractors import (
     distractor_cans_enabled_from_scripted,
 )
 from s4_pipeline.failure_reporting import CollectionFailureReporter
+from s4_pipeline.language_phases import load_language_phase_contract
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.randomization import StratifiedGrid2D, sample_separated_xy, sample_xyz_range
 from s4_pipeline.retry_policy import decide_drawer_retry
@@ -617,11 +618,15 @@ def append_bimanual_record_frame(
     camera,
     action: np.ndarray,
     task_description: str,
+    language_phase_id: str,
+    expert_phase_name: str,
 ) -> None:
     episode.actions.append(np.asarray(action, dtype=np.float32).copy())
     episode.full_joint_pos.append(robot.data.joint_pos[0].detach().cpu().numpy().astype(np.float32).copy())
     episode.active_joint_pos.append(control_action_from_sim(robot).astype(np.float32).copy())
     episode.task_descriptions.append(str(task_description))
+    episode.language_phase_ids.append(str(language_phase_id))
+    episode.expert_phase_names.append(str(expert_phase_name))
     episode.chest_front_rgb.append(camera_rgb_uint8(camera))
     wrist_cameras = scene.get("wrist_cameras", {})
     if "left_wrist" in wrist_cameras:
@@ -1577,6 +1582,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             raise ValueError(f"Task has no scripted_config: {task_spec.task_id}")
         drawer_scripted_config = Path(args_cli.drawer_scripted_config or task_spec.scripted_config).resolve()
         scripted_cfg = load_yaml(drawer_scripted_config)
+        drawer_language_contract = load_language_phase_contract(scripted_cfg)
         drawer_randomization_cfg = scripted_cfg.get("randomization", {})
         logging_cfg = scripted_cfg.get("logging", {})
         if isinstance(logging_cfg, dict):
@@ -2101,6 +2107,10 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     "action_dim": 26,
                     "state_order": "left_arm_7,left_hand_6,right_arm_7,right_hand_6",
                 },
+                "language_contract": {
+                    "version": drawer_language_contract.version,
+                    "phases": drawer_language_contract.as_portable_records(),
+                },
             }
         writer = Hdf5DemoWriter(
             args_cli.record_output,
@@ -2244,6 +2254,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             metadata={
                 "randomization": dict(episode_context),
                 "scripted_config": str(drawer_scripted_config) if drawer_scripted_config is not None else None,
+                "language_contract_version": drawer_language_contract.version,
             }
         )
 
@@ -2445,9 +2456,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 if frame_index is None or frame_index >= len(recording_episode.task_descriptions):
                     return frame_index, None, None
                 task_text = str(recording_episode.task_descriptions[frame_index])
-                phase_name = next(
-                    (candidate.name for candidate in controller.phases if candidate.task == task_text),
-                    None,
+                phase_name = (
+                    str(recording_episode.expert_phase_names[frame_index])
+                    if frame_index < len(recording_episode.expert_phase_names)
+                    else next(
+                        (candidate.name for candidate in controller.phases if candidate.task == task_text),
+                        None,
+                    )
                 )
                 return frame_index, phase_name, task_text
 
@@ -2472,8 +2487,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                 "first_below_support_frame": first_below_index,
                 "first_below_support_phase": (
                     None
-                    if first_below_index is None or first_below_index >= len(recording_episode.task_descriptions)
-                    else str(recording_episode.task_descriptions[first_below_index])
+                    if first_below_index is None
+                    or first_below_index >= len(recording_episode.expert_phase_names)
+                    else str(recording_episode.expert_phase_names[first_below_index])
                 ),
             }
         sampled_can_shift = (
@@ -2901,7 +2917,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         robot,
                         camera,
                         action,
-                        current_scripted_task,
+                        drawer_controller.current_language_task,
+                        drawer_controller.current_language_phase_id,
+                        current_scripted_phase,
                     )
                 record_step += 1
                 if scripted_done:

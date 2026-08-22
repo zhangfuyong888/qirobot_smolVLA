@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 
 from data.dataset_writer import EpisodeBuffer, Hdf5DemoWriter
-from data.lerobot_conversion import validate_scene_contracts
+from data.lerobot_conversion import resolve_demo_language_tasks, validate_scene_contracts
 from s4_pipeline.drawer_distractors import asset_contract
+from s4_pipeline.language_phases import load_language_phase_contract
+from tasks.drawer_insert_close_controller import load_scripted_config
 
 
 def test_hdf5_writer_contract(tmp_path: Path):
@@ -15,6 +17,8 @@ def test_hdf5_writer_contract(tmp_path: Path):
         full_joint_pos=[np.zeros(48, dtype=np.float32)],
         active_joint_pos=[np.zeros(26, dtype=np.float32)],
         task_descriptions=["test phase"],
+        language_phase_ids=["approach_can"],
+        expert_phase_names=["right_pregrasp_can"],
         chest_front_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
         left_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
         right_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
@@ -26,7 +30,86 @@ def test_hdf5_writer_contract(tmp_path: Path):
     with h5py.File(path, "r") as stream:
         assert stream["data/demo_0/processed_actions"].shape == (1, 26)
         assert stream["data/demo_0/obs/chest_front_rgb"].shape == (1, 8, 8, 3)
+        assert stream["data/demo_0/obs/task_description"].asstr()[0] == "test phase"
+        assert stream["data/demo_0/obs/language_phase_id"].asstr()[0] == "approach_can"
+        assert stream["data/demo_0/obs/expert_phase_name"].asstr()[0] == "right_pregrasp_can"
         assert stream["data/demo_0/states/rigid_object/drawer_task_object/root_pose"].shape == (1, 7)
+
+
+def test_hdf5_writer_rejects_partial_language_phase_sequence(tmp_path: Path):
+    episode = EpisodeBuffer(
+        actions=[np.zeros(26, dtype=np.float32), np.zeros(26, dtype=np.float32)],
+        full_joint_pos=[np.zeros(48, dtype=np.float32), np.zeros(48, dtype=np.float32)],
+        task_descriptions=["phase"] * 2,
+        language_phase_ids=["prepare_hands"],
+        expert_phase_names=["initial_open_hands"] * 2,
+        chest_front_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)] * 2,
+    )
+    with Hdf5DemoWriter(tmp_path / "bad_language.hdf5", {"record_fps": 20}) as writer:
+        with pytest.raises(ValueError, match="mismatched lengths"):
+            writer.write_episode(episode)
+
+
+def test_converter_maps_legacy_expert_tasks_to_macro_prompts(tmp_path: Path):
+    scripted = load_scripted_config()
+    contract = load_language_phase_contract(scripted)
+    expert = {item["name"]: item for item in scripted["phases"]}
+    path = tmp_path / "legacy.hdf5"
+    with h5py.File(path, "w") as stream:
+        demo = stream.create_group("demo")
+        demo.create_dataset(
+            "obs/task_description",
+            data=np.asarray(
+                [
+                    expert["right_pregrasp_can"]["task"],
+                    expert["right_grasp_can"]["task"],
+                    expert["right_close_hand"]["task"],
+                ],
+                dtype=object,
+            ),
+            dtype=h5py.string_dtype("utf-8"),
+        )
+        tasks, phase_ids = resolve_demo_language_tasks(
+            demo,
+            frame_count=3,
+            default_task="unused",
+            language_contract=contract,
+            source="legacy.hdf5:demo",
+        )
+    assert phase_ids == ["approach_can", "approach_can", "grasp_can"]
+    assert tasks == [contract.for_id(phase_id).task for phase_id in phase_ids]
+
+
+def test_converter_prefers_and_validates_recorded_macro_phase_id(tmp_path: Path):
+    contract = load_language_phase_contract(load_scripted_config())
+    path = tmp_path / "current.hdf5"
+    with h5py.File(path, "w") as stream:
+        demo = stream.create_group("demo")
+        string_dtype = h5py.string_dtype("utf-8")
+        demo.create_dataset(
+            "obs/task_description",
+            data=np.asarray([contract.for_id("lift_can").task], dtype=object),
+            dtype=string_dtype,
+        )
+        demo.create_dataset(
+            "obs/language_phase_id",
+            data=np.asarray(["lift_can"], dtype=object),
+            dtype=string_dtype,
+        )
+        demo.create_dataset(
+            "obs/expert_phase_name",
+            data=np.asarray(["right_lift_can"], dtype=object),
+            dtype=string_dtype,
+        )
+        tasks, phase_ids = resolve_demo_language_tasks(
+            demo,
+            frame_count=1,
+            default_task="unused",
+            language_contract=contract,
+            source="current.hdf5:demo",
+        )
+    assert phase_ids == ["lift_can"]
+    assert tasks == [contract.for_id("lift_can").task]
 
 
 def test_hdf5_writer_rejects_partial_camera_sequence(tmp_path: Path):
