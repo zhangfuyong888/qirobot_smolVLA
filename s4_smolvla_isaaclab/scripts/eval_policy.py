@@ -59,13 +59,19 @@ parser.add_argument("--action-clip", choices=["none", "dataset_minmax", "dataset
 parser.add_argument(
     "--chunk-replan-frames",
     type=int,
-    default=20,
-    help="Predict a new overlapping action chunk every N policy frames (default: 20 = 1.0 s at 20 Hz).",
+    default=40,
+    help="Predict a new overlapping action chunk every N policy frames (default: 40 = 2.0 s at 20 Hz).",
 )
 parser.add_argument("--chunk-overlap-blend-frames", type=int, default=5, help="Cross-fade only the previous and newest stochastic chunks for N frames.")
 parser.add_argument("--phase-transition-blend-frames", type=int, default=8)
 parser.add_argument("--phase-state-gating", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--phase-max-extension-frames", type=int, default=20)
+parser.add_argument(
+    "--drawer-phase-max-extension-frames",
+    type=int,
+    default=80,
+    help="Gate extension for left_approach_handle and pull_drawer (default: 80 = 4.0 s at 20 Hz).",
+)
 parser.add_argument("--phase-q-track-tolerance", type=float, default=0.08)
 parser.add_argument("--phase-hand-tolerance", type=float, default=0.15)
 parser.add_argument("--phase-hand-close-min-progress", type=float, default=0.10)
@@ -176,6 +182,7 @@ from s4_pipeline.rollout_metrics import (
     make_randomization_rng,
     resolve_randomization_cfg,
     resolve_rollout_run_dir,
+    rollout_phase_extension_frames,
     sample_randomization,
     write_summary_json,
 )
@@ -859,7 +866,15 @@ def main() -> None:
         )
         schedule.append(item)
     scheduled_policy_frames = sum(phase["frames"] for phase in schedule)
-    extension_budget = max(int(args_cli.phase_max_extension_frames), 0) * max(len(schedule) - 1, 0)
+    extension_budget = sum(
+        rollout_phase_extension_frames(
+            phase,
+            scripted_cfg,
+            args_cli.phase_max_extension_frames,
+            drawer_frames=args_cli.drawer_phase_max_extension_frames,
+        )
+        for phase in schedule[:-1]
+    )
     scheduled_steps = scheduled_policy_frames * policy_interval
     total_steps = (
         int(args_cli.steps)
@@ -965,7 +980,12 @@ def main() -> None:
                                 commanded_action,
                                 drawer_open,
                             )
-                            extension_limit = max(int(args_cli.phase_max_extension_frames), 0)
+                            extension_limit = rollout_phase_extension_frames(
+                                schedule[phase_index],
+                                scripted_cfg,
+                                args_cli.phase_max_extension_frames,
+                                drawer_frames=args_cli.drawer_phase_max_extension_frames,
+                            )
                             force_transition = phase_extension >= extension_limit
                             if gate_ready or force_transition:
                                 if not gate_ready:

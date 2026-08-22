@@ -15,6 +15,37 @@ from s4_pipeline.drawer_distractors import (
 )
 
 
+_LONG_DRAWER_EXTENSION_PHASES = frozenset({"left_approach_handle", "pull_drawer"})
+
+
+def rollout_phase_extension_frames(
+    phase: dict[str, Any],
+    scripted_cfg: dict[str, Any],
+    default_frames: int,
+    *,
+    drawer_frames: int = 80,
+) -> int:
+    """Return the state-gate extension budget for one rollout phase.
+
+    The initial left-hand handle approach and the physical drawer pull need
+    extra time to settle. Other phases retain the global extension budget.
+    Dataset schedules contain task text rather than scripted phase names, so
+    resolve the name through the current scripted task configuration.
+    """
+    phase_task = str(phase.get("task", ""))
+    phase_cfg = next(
+        (
+            item
+            for item in scripted_cfg.get("phases", [])
+            if str(item.get("task", "")) == phase_task
+        ),
+        {},
+    )
+    if str(phase_cfg.get("name", "")) in _LONG_DRAWER_EXTENSION_PHASES:
+        return max(int(drawer_frames), 0)
+    return max(int(default_frames), 0)
+
+
 def resolve_randomization_cfg(
     scripted_cfg: dict[str, Any],
     *,

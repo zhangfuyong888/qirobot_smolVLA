@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from s4_pipeline import rollout_metrics
 from s4_pipeline.rollout_metrics import (
     aggregate_rollout_summary,
     build_rollout_run_name,
@@ -35,6 +36,22 @@ SCRIPTED = {
         "can_world_z": {"min_m": 1.00, "max_m": 1.04},
     },
 }
+
+
+def test_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
+    scripted = {
+        "phases": [
+            {"name": "left_approach_handle", "task": "approach"},
+            {"name": "left_grasp_handle", "task": "grasp"},
+            {"name": "pull_drawer", "task": "pull"},
+            {"name": "right_pregrasp_can", "task": "pregrasp"},
+        ]
+    }
+
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "approach"}, scripted, 20) == 80
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "pull"}, scripted, 20) == 80
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "grasp"}, scripted, 20) == 20
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "pregrasp"}, scripted, 20) == 20
 
 
 def test_resolve_randomization_respects_cli_and_disable():
