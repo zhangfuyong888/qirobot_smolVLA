@@ -40,6 +40,15 @@ def main() -> None:
     if args.extra_root_path_parts:
         root_path = Path(root_path, *args.extra_root_path_parts)
     output_root = args.output_root or cfg.dataset.lerobot_root
+    configured_output_root = cfg.dataset.lerobot_root.expanduser().resolve(strict=False)
+    requested_output_root = Path(output_root).expanduser().resolve(strict=False)
+    if requested_output_root != configured_output_root:
+        raise ValueError(
+            f"--output-root must match the active dataset root {configured_output_root}; "
+            f"got {requested_output_root}. Set S4_DATA_ROOT before launching if the dataset "
+            "must live on another filesystem."
+        )
+    output_root = requested_output_root
     camera_paths = args.camera_path or cfg.raw.get("dataset", {}).get(
         "camera_paths",
         [CHEST_FRONT_RGB, LEFT_WRIST_RGB, RIGHT_WRIST_RGB],

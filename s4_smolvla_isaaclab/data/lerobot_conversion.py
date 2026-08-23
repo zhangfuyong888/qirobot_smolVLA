@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
+import re
 import shutil
 from typing import TYPE_CHECKING
 
@@ -22,6 +24,41 @@ if TYPE_CHECKING:
     from s4_pipeline.language_phases import LanguagePhaseContract
 
 RIGHT_ONLY_ACTION_SLICE = slice(13, 26)
+SAFE_DATASET_LEAF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def safe_dataset_root(output_root: Path, repo_id: str) -> Path:
+    """Resolve a dataset leaf without permitting traversal or broad targets."""
+    leaf = str(repo_id).split("/")[-1]
+    if not SAFE_DATASET_LEAF.fullmatch(leaf) or leaf in {".", ".."}:
+        raise ValueError(f"unsafe dataset repo/name leaf: {leaf!r}")
+    parent = Path(os.path.abspath(Path(output_root).expanduser()))
+    project_root = Path(__file__).resolve().parents[1]
+    data_root = Path(os.environ.get("S4_DATA_ROOT", project_root / "datasets")).expanduser().resolve(strict=False)
+    if parent in {Path("/"), Path.home().resolve(), project_root.resolve(), data_root}:
+        raise ValueError(f"unsafe broad dataset output root: {parent}")
+    current = Path(parent.anchor)
+    for part in parent.parts[1:]:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"dataset output root contains symlink component: {current}")
+    resolved_parent = parent.resolve(strict=False)
+    target = (resolved_parent / leaf).resolve(strict=False)
+    if target.parent != resolved_parent or target == resolved_parent:
+        raise ValueError(f"dataset target must be a strict child of {resolved_parent}: {target}")
+    return target
+
+
+def validate_overwrite_dataset_target(dataset_root: Path) -> None:
+    """Reject recursive deletion unless the target is an actual LeRobotDataset."""
+    if dataset_root.is_symlink() or not dataset_root.is_dir():
+        raise ValueError(f"refusing to overwrite non-directory dataset target: {dataset_root}")
+    required_markers = (dataset_root / "meta" / "info.json", dataset_root / "data", dataset_root / "videos")
+    if not all(marker.exists() for marker in required_markers):
+        raise ValueError(
+            f"refusing to recursively overwrite a directory that is not recognizably a "
+            f"LeRobotDataset: {dataset_root}"
+        )
 
 
 def _read_utf8_sequence(demo: h5py.Group, path: str, frame_count: int) -> list[str] | None:
@@ -254,13 +291,14 @@ def convert_hdf5_to_lerobot(
     # ``repo_id`` may carry a Hub-style namespace (for example ``local/foo``),
     # while local training and rollout consistently address the leaf dataset
     # directory. Never create an accidental extra namespace directory locally.
-    dataset_root = Path(output_root) / repo_id.split("/")[-1]
+    dataset_root = safe_dataset_root(output_root, repo_id)
     if dataset_root.exists():
         if not overwrite:
             raise FileExistsError(
                 f"LeRobotDataset already exists: {dataset_root}\n"
                 "Use --overwrite to rebuild it, or pass --repo-id/--output-root to write a new dataset."
             )
+        validate_overwrite_dataset_target(dataset_root)
         shutil.rmtree(dataset_root)
 
     dataset = LeRobotDataset.create(

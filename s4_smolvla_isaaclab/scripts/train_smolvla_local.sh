@@ -135,18 +135,21 @@ if [ "$OVERWRITE_OUTPUT" = true ]; then
         echo "--overwrite-output cannot be used together with --resume" >&2
         exit 2
     fi
-    if [ -d "$OUTPUT_DIR" ]; then
+    if [ -e "$OUTPUT_DIR" ] || [ -L "$OUTPUT_DIR" ]; then
         echo "[INFO] Removing existing training output: $OUTPUT_DIR"
-        rm -rf "$OUTPUT_DIR"
+        python3 scripts/safe_remove_train_output.py \
+            --output "$OUTPUT_DIR" \
+            --allowed-root "${S4_OUTPUT_ROOT:-$PWD/outputs}/train" \
+            --project-root "$PWD" \
+            --data-root "${S4_DATA_ROOT:-$PWD/datasets}" >/dev/null
     fi
 fi
 
-if [ "$RESUME" != true ] && [ "$OVERWRITE_OUTPUT" != true ] && [ -d "$OUTPUT_DIR" ]; then
-    if [ -n "$(find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-        echo "Fresh training output is not empty: $OUTPUT_DIR" >&2
-        echo "Use --resume for the same run or --overwrite-output for an intentional fresh run." >&2
-        exit 2
-    fi
+if [ "$RESUME" != true ] && { [ -e "$OUTPUT_DIR" ] || [ -L "$OUTPUT_DIR" ]; }; then
+    echo "Fresh training requires a non-existent output path: $OUTPUT_DIR" >&2
+    echo "LeRobot creates the directory itself. Use --resume for the same run or" >&2
+    echo "--overwrite-output for an intentional fresh run." >&2
+    exit 2
 fi
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
@@ -193,9 +196,60 @@ if [ "$RESUME" = true ]; then
         --dataset.video_backend=pyav
 fi
 
-mkdir -p "$OUTPUT_DIR"
-cp "$DATASET_CONTRACT" "$OUTPUT_DIR/s4_dataset_contract.json"
+OUTPUT_PARENT="$(dirname "$OUTPUT_DIR")"
+OUTPUT_NAME="$(basename "$OUTPUT_DIR")"
+mkdir -p "$OUTPUT_PARENT"
+CONTRACT_STAGE="$(mktemp "$OUTPUT_PARENT/.${OUTPUT_NAME}.s4_dataset_contract.XXXXXX")"
+cp "$DATASET_CONTRACT" "$CONTRACT_STAGE"
 
+# LeRobot rejects an already-existing output directory for fresh training, so
+# keep the provenance contract beside the future run directory until the
+# trainer has created it.  The EXIT handler also installs the contract after a
+# failed/interrupted trainer invocation when a run directory was created; this
+# keeps a partial run attributable and allows a complete checkpoint to be
+# resumed safely.
+TRAIN_LAUNCHED=false
+TRAIN_PID=""
+CONTRACT_WATCHER_PID=""
+publish_fresh_training_contract() {
+    if [ -d "$OUTPUT_DIR" ] && [ ! -L "$OUTPUT_DIR" ]; then
+        install -m 0644 "$CONTRACT_STAGE" "$OUTPUT_DIR/s4_dataset_contract.json"
+        return 0
+    fi
+    return 1
+}
+finalize_fresh_training_contract() {
+    local status=$?
+    if [ -n "$CONTRACT_WATCHER_PID" ]; then
+        kill "$CONTRACT_WATCHER_PID" 2>/dev/null || true
+        wait "$CONTRACT_WATCHER_PID" 2>/dev/null || true
+    fi
+    if [ "$TRAIN_LAUNCHED" = true ] && [ -f "$CONTRACT_STAGE" ]; then
+        if ! publish_fresh_training_contract && [ "$status" -eq 0 ]; then
+            echo "Failed to install dataset provenance contract in: $OUTPUT_DIR" >&2
+            status=2
+        fi
+    fi
+    rm -f -- "$CONTRACT_STAGE"
+    trap - EXIT
+    exit "$status"
+}
+trap finalize_fresh_training_contract EXIT
+
+forward_training_signal() {
+    local signal="$1"
+    local code="$2"
+    if [ -n "$TRAIN_PID" ] && kill -0 "$TRAIN_PID" 2>/dev/null; then
+        kill -s "$signal" "$TRAIN_PID" 2>/dev/null || true
+        wait "$TRAIN_PID" 2>/dev/null || true
+    fi
+    exit "$code"
+}
+trap 'forward_training_signal INT 130' INT
+trap 'forward_training_signal TERM 143' TERM
+trap 'forward_training_signal HUP 129' HUP
+
+TRAIN_LAUNCHED=true
 lerobot-train \
     --policy.type=smolvla \
     --dataset.repo_id="$DATASET" \
@@ -226,4 +280,35 @@ lerobot-train \
     --policy.optimizer_lr="$OPT_LR" \
     --policy.optimizer_weight_decay="$OPT_WD" \
     --policy.optimizer_grad_clip_norm="$OPT_CLIP" \
-    --policy.push_to_hub=false
+    --policy.push_to_hub=false &
+TRAIN_PID=$!
+
+# Publish provenance as soon as LeRobot creates the run directory, rather than
+# waiting until a long training job exits. The EXIT finalizer remains the
+# fallback for fast failures and normal completion.
+(
+    while kill -0 "$TRAIN_PID" 2>/dev/null; do
+        if publish_fresh_training_contract; then
+            exit 0
+        fi
+        sleep 0.2
+    done
+) &
+CONTRACT_WATCHER_PID=$!
+
+set +e
+wait "$TRAIN_PID"
+TRAIN_STATUS=$?
+set -e
+TRAIN_PID=""
+kill "$CONTRACT_WATCHER_PID" 2>/dev/null || true
+wait "$CONTRACT_WATCHER_PID" 2>/dev/null || true
+CONTRACT_WATCHER_PID=""
+if [ "$TRAIN_STATUS" -ne 0 ]; then
+    exit "$TRAIN_STATUS"
+fi
+
+if [ ! -d "$OUTPUT_DIR" ] || [ -L "$OUTPUT_DIR" ]; then
+    echo "Training exited normally but did not create a real output directory: $OUTPUT_DIR" >&2
+    exit 2
+fi

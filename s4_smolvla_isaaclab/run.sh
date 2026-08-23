@@ -151,6 +151,7 @@ Core commands:
   record [--episodes N] [--resume]    Record/continue successful HDF5 demonstrations
   collect-convert [options]           Collect, validate and convert; never train
   collect-train [options]             Guarded collect, convert, check, then train
+  convert-train [options]             Guarded existing HDF5 -> check -> convert -> check -> train
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint
   validate-workspace [options]       Dense offline IK/singularity audit for grasp region
@@ -217,6 +218,7 @@ case "${1:-help}" in
     record|record-hdf5) shift; print_context; record_command "$@" ;;
     collect-convert) shift; bash scripts/collect_convert.sh "$@" ;;
     collect-train) shift; bash scripts/collect_convert_check_train.sh "$@" ;;
+    convert-train) shift; bash scripts/convert_check_train.sh "$@" ;;
     record-parallel) shift; python3 scripts/record_parallel.py "$@" ;;
     convert|convert-lerobot) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/convert_lerobot.py "$@" ;;
     dataset-check) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/dataset_check.py "$@" ;;

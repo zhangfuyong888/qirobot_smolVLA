@@ -28,6 +28,62 @@ def _active_language_contract(cfg):
     return load_language_phase_contract(load_yaml(task_spec.scripted_config))
 
 
+def _validate_portable_contract(contract: dict, cfg, language_contract) -> None:
+    """Validate the conversion artifact consumed by training and rollout."""
+    if contract.get("schema_version") != cfg.dataset.schema_version:
+        _fail(f"dataset schema={contract.get('schema_version')!r}, expected={cfg.dataset.schema_version!r}")
+    if contract.get("action_semantics") != cfg.dataset.action_semantics:
+        _fail(f"dataset action semantics mismatch: {contract.get('action_semantics')}")
+    if int(contract.get("state_dim", -1)) != cfg.features.state_dim:
+        _fail(f"dataset contract state_dim={contract.get('state_dim')}")
+    if int(contract.get("action_dim", -1)) != cfg.features.action_dim:
+        _fail(f"dataset contract action_dim={contract.get('action_dim')}")
+    if int(contract.get("fps", -1)) != cfg.dataset.fps:
+        _fail(f"dataset contract fps={contract.get('fps')}, expected={cfg.dataset.fps}")
+    expected_camera_paths = list(cfg.raw.get("dataset", {}).get("camera_paths", []))
+    if contract.get("camera_paths") != expected_camera_paths:
+        _fail(
+            f"dataset contract camera_paths={contract.get('camera_paths')!r}, "
+            f"expected={expected_camera_paths!r}"
+        )
+    if contract.get("language_contract_version") != language_contract.version:
+        _fail(f"dataset language contract={contract.get('language_contract_version')!r}")
+    if contract.get("language_phases") != language_contract.as_portable_records():
+        _fail("dataset language phase definitions do not match the active scripted config")
+
+
+def _validate_task_sequences(
+    task_pairs: list[tuple[int, str]],
+    episode_indices: list[int],
+    task_indices: list[int],
+    expected_tasks: list[str],
+) -> None:
+    """Validate temporal phase order without assuming categorical IDs are ordered."""
+    index_to_task = {int(index): str(task) for index, task in task_pairs}
+    if len(index_to_task) != len(task_pairs):
+        _fail(f"tasks.parquet contains duplicate task_index values: {task_pairs}")
+    actual_tasks = list(index_to_task.values())
+    if len(actual_tasks) != len(set(actual_tasks)) or set(actual_tasks) != set(expected_tasks):
+        _fail(f"dataset language task set mismatch: actual={actual_tasks}, expected={expected_tasks}")
+
+    transitions_by_episode: dict[int, list[str]] = {}
+    for episode, task_index in zip(episode_indices, task_indices, strict=True):
+        episode = int(episode)
+        task_index = int(task_index)
+        if task_index not in index_to_task:
+            _fail(f"episode={episode} references unknown task_index={task_index}")
+        task = index_to_task[task_index]
+        transitions = transitions_by_episode.setdefault(episode, [])
+        if not transitions or transitions[-1] != task:
+            transitions.append(task)
+    for episode, transitions in sorted(transitions_by_episode.items()):
+        if transitions != expected_tasks:
+            _fail(
+                f"episode={episode} language phase sequence mismatch: "
+                f"actual={transitions}, expected={expected_tasks}"
+            )
+
+
 def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
     import h5py
     import numpy as np
@@ -200,18 +256,21 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
     if task_rows.num_rows == 0:
         _fail("tasks.parquet is empty")
     language_contract = _active_language_contract(cfg)
-    task_pairs = sorted(
-        zip(
+    task_pairs = [
+        (int(index), str(task))
+        for index, task in zip(
             task_rows.column("task_index").to_pylist(),
             task_rows.column("task").to_pylist(),
             strict=True,
-        ),
-        key=lambda item: int(item[0]),
-    )
-    actual_tasks = [str(task) for _, task in task_pairs]
+        )
+    ]
     expected_tasks = [phase.task for phase in language_contract.phases]
-    if actual_tasks != expected_tasks:
-        _fail(f"dataset language task order mismatch: actual={actual_tasks}, expected={expected_tasks}")
+    _validate_task_sequences(
+        task_pairs,
+        [int(value) for value in table.column("episode_index").to_pylist()],
+        [int(value) for value in table.column("task_index").to_pylist()],
+        expected_tasks,
+    )
     if checkpoint:
         model = checkpoint / "pretrained_model" if (checkpoint / "pretrained_model").is_dir() else checkpoint
         ckpt = json.loads((model / "config.json").read_text(encoding="utf-8"))
@@ -242,16 +301,7 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
     if not contract_path.is_file():
         _fail(f"dataset is missing portable contract: {contract_path}")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    if contract.get("action_semantics") != cfg.dataset.action_semantics:
-        _fail(f"dataset action semantics mismatch: {contract.get('action_semantics')}")
-    if int(contract.get("state_dim", -1)) != cfg.features.state_dim:
-        _fail(f"dataset contract state_dim={contract.get('state_dim')}")
-    if int(contract.get("action_dim", -1)) != cfg.features.action_dim:
-        _fail(f"dataset contract action_dim={contract.get('action_dim')}")
-    if contract.get("language_contract_version") != language_contract.version:
-        _fail(f"dataset language contract={contract.get('language_contract_version')!r}")
-    if contract.get("language_phases") != language_contract.as_portable_records():
-        _fail("dataset language phase definitions do not match the active scripted config")
+    _validate_portable_contract(contract, cfg, language_contract)
     if checkpoint:
         checkpoint_contract = next(
             (
