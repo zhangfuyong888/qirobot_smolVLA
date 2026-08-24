@@ -2,8 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from data.lerobot_conversion import safe_dataset_root, validate_overwrite_dataset_target
-from scripts.safe_remove_train_output import validate_train_output
+from data.lerobot_conversion import (
+    publish_converted_dataset,
+    safe_dataset_root,
+    validate_overwrite_dataset_target,
+)
+from scripts.safe_remove_train_output import validate_training_run_marker, validate_train_output
 
 
 def test_dataset_target_is_a_named_strict_child(tmp_path: Path):
@@ -51,6 +55,39 @@ def test_dataset_overwrite_accepts_lerobot_markers(tmp_path: Path):
     validate_overwrite_dataset_target(dataset)
 
 
+def _make_dataset_markers(path: Path, marker: str) -> None:
+    (path / "meta").mkdir(parents=True)
+    (path / "meta" / "info.json").write_text("{}", encoding="utf-8")
+    (path / "meta" / "marker.txt").write_text(marker, encoding="utf-8")
+    (path / "data").mkdir()
+    (path / "videos").mkdir()
+
+
+def test_dataset_publish_replaces_old_only_after_staging_is_complete(tmp_path: Path):
+    target = tmp_path / "drawer"
+    staging = tmp_path / ".drawer.converting.test"
+    _make_dataset_markers(target, "old")
+    _make_dataset_markers(staging, "new")
+
+    publish_converted_dataset(staging, target, overwrite=True)
+
+    assert (target / "meta" / "marker.txt").read_text() == "new"
+    assert not staging.exists()
+    assert not list(tmp_path.glob(".drawer.backup.*"))
+
+
+def test_dataset_publish_refuses_incomplete_staging_and_preserves_old(tmp_path: Path):
+    target = tmp_path / "drawer"
+    staging = tmp_path / ".drawer.converting.test"
+    _make_dataset_markers(target, "old")
+    staging.mkdir()
+
+    with pytest.raises(ValueError, match="not recognizably"):
+        publish_converted_dataset(staging, target, overwrite=True)
+
+    assert (target / "meta" / "marker.txt").read_text() == "old"
+
+
 def test_train_output_must_be_below_allowed_train_root(tmp_path: Path):
     project = tmp_path / "project"
     data = project / "datasets"
@@ -82,3 +119,12 @@ def test_train_output_rejects_symlink_component(tmp_path: Path):
     linked.symlink_to(real, target_is_directory=True)
     with pytest.raises(ValueError, match="symlink component"):
         validate_train_output(linked / "train" / "run", linked / "train", project, project / "datasets")
+
+
+def test_training_overwrite_requires_s4_run_marker(tmp_path: Path):
+    arbitrary = tmp_path / "important"
+    arbitrary.mkdir()
+    with pytest.raises(ValueError, match="no S4 run marker"):
+        validate_training_run_marker(arbitrary)
+    (arbitrary / "s4_dataset_contract.json").write_text("{}", encoding="utf-8")
+    validate_training_run_marker(arbitrary)

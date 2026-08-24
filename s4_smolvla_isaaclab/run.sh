@@ -227,7 +227,7 @@ case "${1:-help}" in
         use_isaaclab_env
         "$S4_ISAACLAB_PREFIX/bin/python" scripts/validate_drawer_grasp_workspace.py "$@"
         ;;
-    train|train-smolvla) shift; print_context; use_smolvla_env; bash scripts/train_smolvla_local.sh "$@" ;;
+    train|train-smolvla) shift; print_context; use_smolvla_env; exec bash scripts/train_smolvla_local.sh "$@" ;;
     preview|preview-smolvla) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/preview_policy.py "$@" ;;
     visualize-smolvla) shift; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/visualize_policy.py "$@" ;;
     rollout|eval-smolvla) shift; print_context; rollout_command "$@" ;;

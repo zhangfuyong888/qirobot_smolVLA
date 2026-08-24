@@ -23,7 +23,7 @@ parser.add_argument("--output-root", type=Path, default=None, help="Parent direc
 parser.add_argument("--repo-id", type=str, default=None)
 parser.add_argument("--camera-path", action="append", default=None)
 parser.add_argument("--robot-type", type=str, default="S4-Bimanual")
-parser.add_argument("--control-mode", choices=["right_only", "bimanual"], default=None)
+parser.add_argument("--control-mode", choices=["bimanual"], default=None)
 parser.add_argument("--overwrite", action="store_true", help="Delete an existing output dataset before converting.")
 parser.add_argument(
     "extra_root_path_parts",

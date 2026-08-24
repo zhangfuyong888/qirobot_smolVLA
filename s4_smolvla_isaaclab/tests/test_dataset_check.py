@@ -18,6 +18,10 @@ def _valid_contract():
         "camera_paths": list(cfg.raw["dataset"]["camera_paths"]),
         "language_contract_version": language.version,
         "language_phases": language.as_portable_records(),
+        "distractor_cans_enabled": False,
+        "distractor_assets": [],
+        "grasp_can_nominal_position": [0.54, -0.13, 1.16],
+        "grasp_can_scale": [1.0, 0.9, 1.0],
     }
 
 
@@ -37,6 +41,7 @@ def test_portable_dataset_contract_matches_active_task():
         ("camera_paths", ["obs/chest_front_rgb"], "camera_paths"),
         ("language_contract_version", "legacy", "language contract"),
         ("language_phases", [], "language phase definitions"),
+        ("grasp_can_scale", [1.0, 1.0, 1.0], "scene contract grasp_can_scale"),
     ),
 )
 def test_portable_dataset_contract_rejects_incompatible_fields(field, bad_value, message):

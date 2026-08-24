@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 from typing import TYPE_CHECKING
+import uuid
 
 import h5py
 import numpy as np
@@ -59,6 +60,26 @@ def validate_overwrite_dataset_target(dataset_root: Path) -> None:
             f"refusing to recursively overwrite a directory that is not recognizably a "
             f"LeRobotDataset: {dataset_root}"
         )
+
+
+def publish_converted_dataset(staging_root: Path, dataset_root: Path, *, overwrite: bool) -> None:
+    """Publish a completed sibling dataset while preserving the old target until swap."""
+    validate_overwrite_dataset_target(staging_root)
+    backup_root: Path | None = None
+    if dataset_root.exists():
+        if not overwrite:
+            raise FileExistsError(f"LeRobotDataset appeared during conversion: {dataset_root}")
+        validate_overwrite_dataset_target(dataset_root)
+        backup_root = dataset_root.parent / f".{dataset_root.name}.backup.{uuid.uuid4().hex}"
+        os.replace(dataset_root, backup_root)
+    try:
+        os.replace(staging_root, dataset_root)
+    except BaseException:
+        if backup_root is not None and backup_root.exists() and not dataset_root.exists():
+            os.replace(backup_root, dataset_root)
+        raise
+    if backup_root is not None:
+        shutil.rmtree(backup_root)
 
 
 def _read_utf8_sequence(demo: h5py.Group, path: str, frame_count: int) -> list[str] | None:
@@ -299,73 +320,86 @@ def convert_hdf5_to_lerobot(
                 "Use --overwrite to rebuild it, or pass --repo-id/--output-root to write a new dataset."
             )
         validate_overwrite_dataset_target(dataset_root)
-        shutil.rmtree(dataset_root)
+    staging_root = dataset_root.parent / f".{dataset_root.name}.converting.{uuid.uuid4().hex}"
+    dataset = None
+    published = False
+    try:
+        dataset = LeRobotDataset.create(
+            repo_id=repo_id,
+            root=str(staging_root),
+            fps=fps,
+            robot_type=robot_type,
+            features=features,
+            video_backend="pyav",
+        )
 
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id,
-        root=str(dataset_root),
-        fps=fps,
-        robot_type=robot_type,
-        features=features,
-        video_backend="pyav",
-    )
-
-    for hdf5_path in hdf5_files:
-        with h5py.File(hdf5_path, "r") as f:
-            demo_names = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
-            for demo_name in demo_names:
-                demo = f["data"][demo_name]
-                if schema.PROCESSED_ACTIONS not in demo:
-                    continue
-                actions = np.asarray(demo[schema.PROCESSED_ACTIONS])
-                if control_mode == "right_only":
-                    actions = actions[:, RIGHT_ONLY_ACTION_SLICE]
-                    states = np.asarray(demo[schema.ACTIVE_JOINT_POS])[:, RIGHT_ONLY_ACTION_SLICE]
-                else:
-                    state_path = schema.ACTIVE_JOINT_POS if schema.ACTIVE_JOINT_POS in demo else schema.FULL_JOINT_POS
-                    states = np.asarray(demo[state_path])
-                cameras = {path: np.asarray(demo[path]) for path in camera_paths}
-                lengths = {
-                    "actions": len(actions),
-                    "states": len(states),
-                    **{path: len(values) for path, values in cameras.items()},
-                }
-                if len(set(lengths.values())) != 1:
-                    raise ValueError(f"{hdf5_path}:{demo_name} frame lengths mismatch: {lengths}")
-                frame_count = len(actions)
-                frame_tasks, _frame_phase_ids = resolve_demo_language_tasks(
-                    demo,
-                    frame_count=frame_count,
-                    default_task=task_description,
-                    language_contract=language_contract,
-                    source=f"{hdf5_path}:{demo_name}",
-                )
-                for i in range(frame_count):
-                    frame = {
-                        "observation.state": states[i].astype(np.float32),
-                        "action": actions[i].astype(np.float32),
-                        "task": frame_tasks[i],
+        for hdf5_path in hdf5_files:
+            with h5py.File(hdf5_path, "r") as f:
+                demo_names = sorted(f["data"].keys(), key=lambda x: int(x.split("_")[-1]))
+                for demo_name in demo_names:
+                    demo = f["data"][demo_name]
+                    if schema.PROCESSED_ACTIONS not in demo:
+                        continue
+                    actions = np.asarray(demo[schema.PROCESSED_ACTIONS])
+                    if control_mode == "right_only":
+                        actions = actions[:, RIGHT_ONLY_ACTION_SLICE]
+                        states = np.asarray(demo[schema.ACTIVE_JOINT_POS])[:, RIGHT_ONLY_ACTION_SLICE]
+                    else:
+                        state_path = (
+                            schema.ACTIVE_JOINT_POS
+                            if schema.ACTIVE_JOINT_POS in demo
+                            else schema.FULL_JOINT_POS
+                        )
+                        states = np.asarray(demo[state_path])
+                    cameras = {path: np.asarray(demo[path]) for path in camera_paths}
+                    lengths = {
+                        "actions": len(actions),
+                        "states": len(states),
+                        **{path: len(values) for path, values in cameras.items()},
                     }
-                    for camera_path, values in cameras.items():
-                        camera_name = camera_path.split("/")[-1]
-                        frame[f"observation.images.{camera_name}"] = values[i]
-                    dataset.add_frame(frame)
-                dataset.save_episode()
-    portable_contract = {
-        "schema_version": "s4_bimanual_v1",
-        "action_semantics": "absolute_joint_target",
-        "state_dim": state_dim,
-        "action_dim": action_dim,
-        "fps": int(fps),
-        "camera_paths": list(camera_paths),
-        "distractor_cans_enabled": bool(recording_contract.get("distractor_cans_enabled", False)),
-        "distractor_assets": list(recording_contract.get("distractor_assets", [])),
-        "grasp_can_nominal_position": list(recording_contract.get("grasp_can_nominal_position", [])),
-        "grasp_can_scale": list(recording_contract.get("grasp_can_scale", [])),
-    }
-    if language_contract is not None:
-        portable_contract["language_contract_version"] = language_contract.version
-        portable_contract["language_phases"] = language_contract.as_portable_records()
-    contract_path = dataset_root / "meta" / "s4_contract.json"
-    contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")
+                    if len(set(lengths.values())) != 1:
+                        raise ValueError(f"{hdf5_path}:{demo_name} frame lengths mismatch: {lengths}")
+                    frame_count = len(actions)
+                    frame_tasks, _frame_phase_ids = resolve_demo_language_tasks(
+                        demo,
+                        frame_count=frame_count,
+                        default_task=task_description,
+                        language_contract=language_contract,
+                        source=f"{hdf5_path}:{demo_name}",
+                    )
+                    for i in range(frame_count):
+                        frame = {
+                            "observation.state": states[i].astype(np.float32),
+                            "action": actions[i].astype(np.float32),
+                            "task": frame_tasks[i],
+                        }
+                        for camera_path, values in cameras.items():
+                            camera_name = camera_path.split("/")[-1]
+                            frame[f"observation.images.{camera_name}"] = values[i]
+                        dataset.add_frame(frame)
+                    dataset.save_episode()
+        dataset.finalize()
+        portable_contract = {
+            "schema_version": "s4_bimanual_v1",
+            "action_semantics": "absolute_joint_target",
+            "state_dim": state_dim,
+            "action_dim": action_dim,
+            "fps": int(fps),
+            "camera_paths": list(camera_paths),
+            "distractor_cans_enabled": bool(recording_contract.get("distractor_cans_enabled", False)),
+            "distractor_assets": list(recording_contract.get("distractor_assets", [])),
+            "grasp_can_nominal_position": list(recording_contract.get("grasp_can_nominal_position", [])),
+            "grasp_can_scale": list(recording_contract.get("grasp_can_scale", [])),
+        }
+        if language_contract is not None:
+            portable_contract["language_contract_version"] = language_contract.version
+            portable_contract["language_phases"] = language_contract.as_portable_records()
+        contract_path = staging_root / "meta" / "s4_contract.json"
+        contract_path.write_text(json.dumps(portable_contract, indent=2) + "\n", encoding="utf-8")
+        publish_converted_dataset(staging_root, dataset_root, overwrite=overwrite)
+        published = True
+    finally:
+        dataset = None
+        if not published and staging_root.exists():
+            shutil.rmtree(staging_root)
     return dataset_root

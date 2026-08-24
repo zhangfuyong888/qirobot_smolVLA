@@ -46,6 +46,13 @@ def validate_train_output(output: Path, allowed_root: Path, project_root: Path, 
     return output_resolved
 
 
+def validate_training_run_marker(target: Path) -> None:
+    if target.is_symlink() or not target.is_dir():
+        raise ValueError(f"training overwrite target is not a real directory: {target}")
+    if not (target / "s4_dataset_contract.json").is_file():
+        raise ValueError(f"training overwrite target has no S4 run marker: {target}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
@@ -55,12 +62,10 @@ def main() -> int:
     args = parser.parse_args()
     try:
         target = validate_train_output(args.output, args.allowed_root, args.project_root, args.data_root)
+        validate_training_run_marker(target)
     except ValueError as exc:
         parser.exit(2, f"unsafe training overwrite: {exc}\n")
-    if target.is_dir():
-        shutil.rmtree(target)
-    elif target.exists():
-        target.unlink()
+    shutil.rmtree(target)
     print(target)
     return 0
 

@@ -50,6 +50,24 @@ def _validate_portable_contract(contract: dict, cfg, language_contract) -> None:
         _fail(f"dataset language contract={contract.get('language_contract_version')!r}")
     if contract.get("language_phases") != language_contract.as_portable_records():
         _fail("dataset language phase definitions do not match the active scripted config")
+    from s4_pipeline.drawer_distractors import (
+        GRASP_CAN_NOMINAL_POSITION,
+        GRASP_CAN_SCALE,
+        asset_contract,
+        distractor_cans_enabled_from_scripted,
+    )
+
+    scripted_cfg = load_yaml(get_task_spec(cfg.dataset.task_id).scripted_config)
+    distractors_enabled = distractor_cans_enabled_from_scripted(scripted_cfg)
+    expected_scene = {
+        "distractor_cans_enabled": distractors_enabled,
+        "distractor_assets": asset_contract() if distractors_enabled else [],
+        "grasp_can_nominal_position": list(GRASP_CAN_NOMINAL_POSITION),
+        "grasp_can_scale": list(GRASP_CAN_SCALE),
+    }
+    for key, expected in expected_scene.items():
+        if contract.get(key) != expected:
+            _fail(f"dataset scene contract {key}={contract.get(key)!r}, expected={expected!r}")
 
 
 def _validate_task_sequences(
@@ -248,10 +266,26 @@ def _check_lerobot(path: Path, cfg, checkpoint: Path | None) -> tuple[int, int]:
         if not candidates:
             _fail(f"No videos for {key}")
         video_files.extend(candidates)
-        with av.open(str(candidates[0])) as container:
-            frame = next(container.decode(video=0))
-            if (frame.height, frame.width, 3) != cfg.features.camera_shapes[key]:
-                _fail(f"decoded {key} shape={(frame.height, frame.width, 3)}")
+        encoded_frames = 0
+        for candidate in candidates:
+            try:
+                with av.open(str(candidate)) as container:
+                    stream = container.streams.video[0]
+                    encoded_frames += int(stream.frames)
+                    first = next(container.decode(video=0))
+                    if (first.height, first.width, 3) != cfg.features.camera_shapes[key]:
+                        _fail(f"decoded {key} shape={(first.height, first.width, 3)} in {candidate}")
+                    if stream.duration is not None:
+                        container.seek(max(int(stream.duration) - 2, 0), stream=stream, backward=True)
+                        last = None
+                        for last in container.decode(video=0):
+                            pass
+                        if last is None:
+                            _fail(f"could not decode the tail of video: {candidate}")
+            except (av.error.FFmpegError, EOFError, StopIteration) as exc:
+                _fail(f"video decode failed for {candidate}: {exc}")
+        if encoded_frames != table.num_rows:
+            _fail(f"video frame count for {key}={encoded_frames}, expected={table.num_rows}")
     task_rows = pq.read_table(path / "meta/tasks.parquet")
     if task_rows.num_rows == 0:
         _fail("tasks.parquet is empty")

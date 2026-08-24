@@ -73,10 +73,19 @@ fi
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
             "FAKE_TRAIN_MODE": mode,
+            "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
         }
     )
     result = subprocess.run(
-        ["bash", str(TRAIN_SCRIPT), str(TRAIN_CONFIG), "--steps", "10", "--save-freq", "5"],
+        [
+            "bash",
+            str(TRAIN_SCRIPT),
+            str(TRAIN_CONFIG),
+            "--steps",
+            "10",
+            "--save-freq",
+            "5",
+        ],
         cwd=ROOT,
         env=env,
         text=True,
@@ -120,6 +129,7 @@ printf '%s\n' "$@" | grep -q -- '--resume=true'
             "S4_OUTPUT_ROOT": str(tmp_path / "outputs"),
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
+            "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
         }
     )
     resumed = subprocess.run(
@@ -175,6 +185,7 @@ def test_fresh_training_rejects_any_existing_output_path(tmp_path: Path, kind: s
             "S4_OUTPUT_ROOT": str(output_root),
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
+            "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
         }
     )
     result = subprocess.run(

@@ -909,7 +909,7 @@ def main() -> None:
             args_cli.phase_max_extension_frames,
             drawer_frames=args_cli.drawer_phase_max_extension_frames,
         )
-        for phase in schedule[:-1]
+        for phase in schedule
     )
     scheduled_steps = scheduled_policy_frames * policy_interval
     total_steps = (
