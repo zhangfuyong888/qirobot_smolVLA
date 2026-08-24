@@ -109,7 +109,7 @@ flowchart LR
 
 | 项目 | 当前实现 |
 |---|---|
-| 专家状态机 / 模型语言 | 20 个控制阶段 / 10 个语言宏阶段 |
+| 专家状态机 / 模型语言 | 23 个控制阶段 / 10 个语言宏阶段 |
 | 主罐随机 | 默认启用，5×5 分层格内连续随机 |
 | 抓取相关物体位移门控 | 20 mm |
 | 同一位置重试 | 初始尝试之外额外重试 3 次 |
@@ -146,7 +146,6 @@ docs/course/
 
 - `README.md`、`run.sh`、`.env.example`：项目入口和路径配置；
 - `configs/tasks/`：数据、专家和训练的真实配置；
-- `docs/INSTALLATION.md`、`docs/CONFIGURATION.md`：安装与配置；
-- `docs/DATA_COLLECTION.md`、`docs/DATASET_CONVERSION.md`：数据链路；
-- `docs/TRAINING.md`、`docs/ONLINE_ROLLOUT.md`：模型与闭环；
-- `docs/knowledge_base/`：实现细节和历史问题知识库。
+- `docs/README.md`：精简后的工程文档索引；
+- `docs/REPRODUCTION.md`：双环境、资产、模型与部署；
+- `docs/PIPELINE.md`：采集、转换、训练、Rollout、契约与诊断。

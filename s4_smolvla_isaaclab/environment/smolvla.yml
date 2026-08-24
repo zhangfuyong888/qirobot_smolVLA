@@ -18,4 +18,4 @@ dependencies:
       - datasets==5.0.0
       - pyyaml==6.0.2
 # Install the external LeRobot checkout in editable mode after creating this
-# environment. See docs/INSTALLATION.md.
+# environment. See docs/REPRODUCTION.md.

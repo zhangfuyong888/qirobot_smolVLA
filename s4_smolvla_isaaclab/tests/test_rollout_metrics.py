@@ -18,9 +18,15 @@ from s4_pipeline.drawer_distractors import GRASP_CAN_NOMINAL_POSITION
 
 
 SCRIPTED = {
+    "drawer": {
+        "initial_open_m": 0.0,
+        "joint_name": "drawer_top_joint",
+        "joint_position_sign": 1.0,
+        "opening_axis_base": [-1.0, 0.0, 0.0],
+        "target_open_m": 0.18,
+    },
     "randomization": {
         "can_xy": {"enabled": True, "x_range": [-0.05, 0.05], "y_range": [-0.05, 0.05]},
-        "drawer_initial_open": {"enabled": True, "range": [0.0, 0.05]},
         "distractor_cans": {
             "enabled": True,
             "ranges": [
@@ -66,41 +72,40 @@ def test_macro_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
     ) == 20
 
 
-def test_resolve_randomization_respects_cli_and_disable():
+def test_resolve_randomization_respects_can_cli_and_keeps_drawer_fixed():
     enabled = resolve_randomization_cfg(
         SCRIPTED,
         randomize_task=True,
         can_x_range=(-0.02, 0.02),
-        drawer_open_range=(0.01, 0.03),
     )
     assert enabled["enabled"] is True
     assert enabled["can_xy"]["enabled"] is True
     assert enabled["can_xy"]["x_range"] == [-0.02, 0.02]
     assert enabled["can_xy"]["y_range"] == [-0.05, 0.05]
-    assert enabled["drawer_initial_open"]["range"] == [0.01, 0.03]
+    assert enabled["fixed_drawer_initial_open_m"] == 0.0
 
     disabled = resolve_randomization_cfg(SCRIPTED, randomize_task=False)
     assert disabled["enabled"] is False
     assert disabled["can_xy"]["x_range"] == [0.0, 0.0]
-    assert disabled["drawer_initial_open"]["range"] == [0.0, 0.0]
+    assert disabled["fixed_drawer_initial_open_m"] == 0.0
 
 
-def test_yaml_can_xy_off_keeps_drawer_random_under_success_rate():
+def test_yaml_can_xy_off_still_keeps_drawer_fixed_under_success_rate():
     scripted = {
+        "drawer": {"initial_open_m": 0.0},
         "randomization": {
             "can_xy": {"enabled": False, "x_range": [-0.05, 0.05], "y_range": [-0.05, 0.05]},
-            "drawer_initial_open": {"enabled": True, "range": [0.0, 0.05]},
             "distractor_cans": {"enabled": False},
         }
     }
     cfg = resolve_randomization_cfg(scripted, randomize_task=True)
     assert cfg["can_xy"]["enabled"] is False
-    assert cfg["drawer_initial_open"]["enabled"] is True
+    assert cfg["fixed_drawer_initial_open_m"] == 0.0
     assert make_can_grid_sampler(cfg, make_randomization_rng(42)) is None
     sample = sample_randomization(cfg, seed=42, rng=make_randomization_rng(42))
     assert sample["can_x_offset_m"] == 0.0
     assert sample["can_y_offset_m"] == 0.0
-    assert 0.0 <= sample["drawer_open_m"] <= 0.05
+    assert sample["drawer_open_m"] == 0.0
     assert sample["distractor_can_xy"] == {}
 
 
@@ -115,7 +120,7 @@ def test_sample_randomization_keeps_fixed_seed_42():
     assert all(sample["seed"] == 42 for sample in samples_a)
     assert samples_a[0] != samples_a[1]
     assert -0.05 <= samples_a[0]["can_x_offset_m"] <= 0.05
-    assert 0.0 <= samples_a[0]["drawer_open_m"] <= 0.05
+    assert samples_a[0]["drawer_open_m"] == 0.0
     assert set(samples_a[0]["distractor_can_xy"]) == {
         "distractor_master_chef_can",
         "distractor_mustard_bottle",
@@ -147,7 +152,6 @@ def test_rollout_stratified_grid_visits_every_cell_once():
                 "x_range": [-0.05, 0.05],
                 "y_range": [-0.05, 0.05],
             },
-            "drawer_initial_open": {"enabled": False, "range": [0.0, 0.0]},
         }
     }
     cfg = resolve_randomization_cfg(scripted, randomize_task=True)
@@ -254,9 +258,9 @@ def test_aggregate_rollout_summary_rates():
     assert summary["output_dir"] == "/tmp/run"
     assert summary["randomization"]["variables"] == [
         "can_xy_offset_m",
-        "drawer_open_m",
         "distractor_can_xy",
     ]
+    assert summary["randomization"]["fixed_drawer_initial_open_m"] == 0.0
     assert summary["episodes"] == 4
     assert summary["success_count"] == 2
     assert summary["complete_count"] == 2

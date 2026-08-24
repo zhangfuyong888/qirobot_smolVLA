@@ -94,7 +94,7 @@ def load_scripted_config(path: Path = DEFAULT_SCRIPTED_CONFIG) -> dict[str, Any]
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         raise ValueError(f"Drawer scripted config must be a mapping: {path}")
-    drawer_cfg = data.get("randomization", {}).get("drawer_initial_open", {})
+    drawer_cfg = data.get("drawer", {})
     target_open_m = drawer_cfg.get("target_open_m")
     if target_open_m is not None:
         for phase in data.get("phases", []):

@@ -1,340 +1,287 @@
 # S4 SmolVLA IsaacLab
 
-基于 **IsaacLab + LeRobot + SmolVLA** 的人形机器人双臂视觉语言动作（VLA）教程工程。
-项目覆盖从仿真任务搭建、专家轨迹采集、LeRobotDataset 转换、SmolVLA 训练，到
-IsaacLab 闭环 rollout 和动作诊断的完整链路。
+这是一个基于 **Isaac Sim 5.1、IsaacLab、LeRobot 和 SmolVLA** 的双臂机器人仿真学习工程。当前主线任务 `drawer_insert_close` 使用左手拉开抽屉，右手抓取罐子并放入抽屉，随后关闭抽屉并返回 Home。
 
-当前主任务 `drawer_insert_close`：左手拉开抽屉，右手抓取罐子并放入抽屉，
-随后右手退避、左手关闭抽屉，双臂回到结束姿态。
+项目提供从专家数据采集到在线闭环评估的完整接口：
 
-> 本仓库是可复现的项目代码，不包含 Isaac Sim、IsaacLab、单独分发的场景资产包、
-> LeRobot 源码、SmolVLM2 基础权重或训练数据。使用前需按
-> [安装文档](docs/INSTALLATION.md)准备这些外部资源。
-
-## 项目状态
-
-历史 `v0`（20 段语言）链路曾在固定 seed、关闭随机化的场景中完成端到端验证：
-
-| 项目 | 已验证配置 |
-|---|---|
-| 任务 | `drawer_insert_close` |
-| 数据集 | 200 episodes / 92,036 frames |
-| 观测与动作 | 26D state / 26D absolute joint target |
-| 视觉输入 | 胸前、左腕、右腕三路 RGB，680x480 |
-| 数据与策略频率 | 20 Hz |
-| 物理控制频率 | 120 Hz |
-| 模型 | SmolVLA，action chunk 50 |
-| 已验证 checkpoint | `360000/pretrained_model` |
-| rollout 基线 | `complete=True`、`success=True`、drawer `0.001 m`、can z `1.023 m` |
-
-当前活动配置已升级为 `drawer_10phase_v1`，对应新数据集
-`s4_drawer_insert_close_v1_10phase`，需要重新转换、fresh training 和 Rollout 验证。
-上述历史 checkpoint 不兼容新语言契约；单次固定场景成功也不代表随机场景统计成功率。
-
-## 主要能力
-
-- 可注册、可切换的任务系统，场景和任务控制逻辑保留在 `tasks/`。
-- IsaacLab 中的双臂 TCP IK、null-space posture bias 和 6D 灵巧手控制映射。
-- 胸前与双腕三路 RGB 同步采集。
-- 带失败丢弃、超时重试和成功判定的 HDF5 专家数据采集。
-- HDF5 到 LeRobotDataset 的本地转换与契约检查。
-- 使用外部 LeRobot checkout 训练 SmolVLA，不修改 LeRobot 源码。
-- 通过 JSON-lines 子进程协议隔离 IsaacLab 与 SmolVLA 两个 Python 环境。
-- action chunk 重叠融合、20 Hz 插值、phase blend 和 rollout 诊断。
-- 独立 Meta Quest 3 WebXR 双手柄摇操，支持双臂 clutch 和连续灵巧手开合。
-- 视频、raw/fused/commanded/actual action CSV 及诊断图输出。
-- 新任务模板、自动检查和完整工程知识库。
-
-## 系统架构
-
-```mermaid
-flowchart LR
-  A[IsaacLab scripted task] -->|20 Hz| B[HDF5]
-  B --> C[LeRobotDataset]
-  C --> D[SmolVLA training]
-  D --> E[Checkpoint]
-  E --> F[Policy server]
-  F -->|JSON-lines action chunks| G[IsaacLab rollout]
-  G --> H[Video + CSV + PNG]
+```text
+IsaacLab 专家策略
+→ HDF5 成功轨迹
+→ LeRobotDataset
+→ SmolVLA 训练
+→ checkpoint
+→ Policy Server
+→ IsaacLab Rollout
 ```
 
-项目使用两个隔离环境：
+> 当前活动版本是 `drawer_10phase_v3_safe_handle_clear`。旧数据集或旧 checkpoint 不能仅凭 26D 维度相同就认为与当前版本兼容，必须通过 `dataset-check` 检查。
 
-- `env_isaaclab`：Python 3.11，运行 Isaac Sim、IsaacLab、场景、采集和 rollout。
-- `smolvla`：Python 3.12，运行 LeRobotDataset 转换、训练、离线预览和策略服务。
+## 1. 当前技术契约
 
-`run.sh` 会根据子命令选择正确环境，通常不需要手动 `conda activate`。详细边界见
-[环境说明](docs/ENVIRONMENTS.md)和[系统架构](docs/ARCHITECTURE.md)。
+| 项目 | 当前值 |
+|---|---|
+| 活跃任务 | `drawer_insert_close` |
+| Schema | `s4_bimanual_v1` |
+| 语言契约 | `drawer_10phase_v3_safe_handle_clear` |
+| 专家控制阶段 / 语言阶段 | 23 / 10 |
+| State / Action | 26D / 26D |
+| Action 语义 | `absolute_joint_target` |
+| 关节顺序 | 左臂 7 + 左手 6 + 右臂 7 + 右手 6 |
+| 相机 | 胸前、左腕、右腕三路 RGB，480×680 |
+| 控制频率 / 数据频率 | 120 Hz / 20 Hz |
+| Action Chunk | 50 个策略帧 |
+| 默认在线重规划 | 40 个策略帧 |
+| 抽屉初始开度 | 固定 `0.00 m` |
+| 主罐随机化 | 5×5 分层网格内连续随机 |
+| 当前数据集 | `s4_drawer_insert_close_v3_10phase_safe_handle_clear` |
 
-## 快速开始
+契约来源是：
 
-### 1. 准备配置
+- `configs/tasks/drawer_insert_close.dataset.json`
+- `configs/tasks/drawer_insert_close.scripted.yaml`
+- `configs/tasks/drawer_insert_close.smolvla.yaml`
+
+## 2. 仓库与外部资源
+
+推荐目录结构：
+
+```text
+workspace/
+├── smolVLA/                         # 顶层 Git 仓库
+│   ├── s4_smolvla_isaaclab/         # 本项目
+│   └── lerobot/                      # 固定 commit 的 Git submodule
+└── IsaacLab/                         # 外部 IsaacLab checkout
+```
+
+Git 仓库不包含以下大文件：
+
+- Isaac Sim 和外部 IsaacLab；
+- `local_assets/` 场景资产包；
+- SmolVLM2 基础模型；
+- HDF5、LeRobotDataset；
+- 训练 checkpoint 和 Rollout 输出。
+
+这些资源必须单独分发，并由 `.env` 指向实际路径。
+
+## 3. 从克隆到首次 Rollout
+
+以下步骤面向“已有训练数据集和 checkpoint，希望直接复现 Rollout”的使用者。完整环境导出、资产制作和自主训练见 [复现与部署](docs/REPRODUCTION.md)。
+
+> **只做 Rollout 也必须安装两个环境。** `env_isaaclab` 运行仿真、相机和机器人控制；`smolvla` 运行本机 Policy Server，负责加载 checkpoint、读取 LeRobotDataset 的阶段信息并生成动作。当前 `run.sh rollout` 会从 `S4_SMOLVLA_PREFIX/bin/python` 启动这个子进程，因此缺少任意一个环境都无法完成当前在线 Rollout。只有未来实现远程 Policy Server 后，仿真工作站才可能只安装 `env_isaaclab`。
+
+### 3.1 克隆代码和 LeRobot
 
 ```bash
-git clone <project-url>
+git clone --recurse-submodules <YOUR_REPOSITORY_URL> smolVLA
+cd smolVLA
+git submodule status
 cd s4_smolvla_isaaclab
-
-cp .env.example .env
-# 编辑 .env，填写 IsaacLab、LeRobot 和模型路径
 ```
 
-将单独分发的场景资产包解压到 `local_assets/isaac/5.1/`。如果本机已有完整
-Isaac 5.1 资产库，也可以执行 `bash run.sh prepare-assets --verify`，自动归纳本项目
-实际引用的 USD 依赖。`local_assets/` 已被 Git 忽略，详见
-[外部资产](docs/EXTERNAL_ASSETS.md)。
+如果之前没有递归克隆，在顶层 `smolVLA/` 执行：
 
-至少需要配置：
+```bash
+git submodule update --init --recursive
+```
+
+不要自行把 `lerobot/` 更新到最新分支；当前验证 commit 记录在 `environment/versions.md`。
+
+### 3.2 准备外部 IsaacLab
+
+安装与 Isaac Sim 5.1 匹配的 IsaacLab checkout，并保持下列入口存在：
+
+```text
+/path/to/IsaacLab/isaaclab.sh
+```
+
+当前已记录的 IsaacLab commit 和包版本见 `environment/versions.md`。
+
+### 3.3 创建两个 Conda 环境
+
+仿真环境：
+
+```bash
+conda env create -f environment/isaaclab.yml
+conda activate env_isaaclab
+python -m pip install --upgrade pip
+python -m pip install 'isaacsim[all,extscache]==5.1.0' \
+  --extra-index-url https://pypi.nvidia.com
+
+cd /path/to/IsaacLab
+./isaaclab.sh --install none
+```
+
+SmolVLA 环境：
+
+```bash
+cd /path/to/smolVLA/s4_smolvla_isaaclab
+conda env create -f environment/smolvla.yml
+conda activate smolvla
+python -m pip install -e /path/to/smolVLA/lerobot
+```
+
+`run.sh` 会自动选择环境：场景、采集和 Rollout simulator 使用 Python 3.11；转换、检查、训练和 Policy Server 使用 Python 3.12。
+
+### 3.4 放置外部资源
+
+将维护者提供的场景资产解压为：
+
+```text
+s4_smolvla_isaaclab/local_assets/isaac/5.1/
+├── Isaac/...
+└── manifest.json
+```
+
+将基础模型放到：
+
+```text
+s4_smolvla_isaaclab/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct/
+```
+
+如果要直接 Rollout，还需要收到彼此匹配的：
+
+```text
+datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear/
+outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/
+```
+
+### 3.5 配置本机路径
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`：
 
 ```dotenv
-S4_PROJECT_ROOT=/path/to/s4_smolvla_isaaclab
+S4_PROJECT_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab
 ISAACLAB_ROOT=/path/to/IsaacLab
-ISAAC_ASSET_ROOT=/path/to/Assets/Isaac/5.1
-S4_SCENE_ASSET_ROOT=/path/to/s4_smolvla_isaaclab/local_assets/isaac/5.1
-LEROBOT_ROOT=/path/to/lerobot
-SMOLVLA_MODEL_ROOT=/path/to/models
+ISAAC_ASSET_ROOT=/path/to/isaacsim_assets/Assets/Isaac/5.1
+S4_SCENE_ASSET_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab/local_assets/isaac/5.1
+LEROBOT_ROOT=/path/to/smolVLA/lerobot
+SMOLVLA_MODEL_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab/models
+S4_DATA_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab/datasets
+S4_OUTPUT_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab/outputs
+S4_CACHE_ROOT=/path/to/smolVLA/s4_smolvla_isaaclab/.cache
+S4_ISAACLAB_ENV=env_isaaclab
+S4_SMOLVLA_ENV=smolvla
 ```
 
-### 2. 检查环境
+`.env` 是本机文件，不要提交到 Git。
+
+### 3.6 逐层检查
+
+没有数据集和 checkpoint 时：
 
 ```bash
-bash run.sh doctor --strict
+bash run.sh doctor
 bash run.sh list-tasks
 bash run.sh activate-task drawer_insert_close
 ```
 
-`doctor --strict` 应确认双环境 imports、外部资产、26D schema、三路相机、数据集和
-checkpoint 契约。首次安装请先阅读[安装文档](docs/INSTALLATION.md)。
-
-### 3. 启动场景
+场景检查：
 
 ```bash
 bash run.sh sim
 ```
 
-启动后应检查机器人、两个抽屉、罐子、三路相机和初始关节状态。建议正式采集前先
-执行一轮有界面采集，再执行 headless 采集。
+确认环境材质、光照、机器人、抽屉、罐子和相机正常后退出。
 
-### 4. 使用 Meta Quest 3 摇操双臂
-
-```bash
-# 首次使用，IP 替换为 PC 的局域网地址
-bash run.sh teleop-cert --ip 192.168.1.116
-
-# 启动 IsaacLab 和 controller-only WebXR 服务
-bash run.sh teleop
-```
-
-在 Quest Browser 打开终端显示的 HTTPS URL。左右 Grip 独立控制双臂 clutch，左右
-Trigger 连续控制对应灵巧手。该入口不传输视频，也不改变已有采集、训练和 rollout
-命令。详见[Meta Quest 3 双臂摇操](docs/TELEOPERATION.md)。
-
-## 标准工作流
-
-### 采集专家数据
+已有数据集与 checkpoint 时，执行严格检查：
 
 ```bash
-# 可视化检查一轮
-bash run.sh record --episodes 1
+bash run.sh doctor --strict
 
-# 无界面正式采集
-bash run.sh record --episodes 200 --headless
-```
-
-只有通过任务成功判定的 episode 才会写入最终数据；超时或失败 episode 会丢弃并重试。
-采集细节见[数据采集](docs/DATA_COLLECTION.md)。
-
-### 转换并验证数据集
-
-```bash
-bash run.sh convert --overwrite
-bash run.sh dataset-check
-```
-
-同时验证现有 checkpoint：
-
-```bash
 bash run.sh dataset-check \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model
+  datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model
 ```
 
-检查内容包括 state/action shape、NaN/Inf、FPS、时间戳、三路视频解码以及
-checkpoint feature compatibility。参见[转换](docs/DATASET_CONVERSION.md)和
-[数据集验证](docs/DATASET_VALIDATION.md)。
+### 3.7 启动 Rollout
 
-### 训练 SmolVLA
-
-```bash
-bash run.sh train
-```
-
-从最近 checkpoint 继续：
-
-```bash
-bash run.sh train --resume
-```
-
-训练参数的唯一配置入口是
-[`configs/tasks/drawer_insert_close.smolvla.yaml`](configs/tasks/drawer_insert_close.smolvla.yaml)。
-不要只根据 training loss 判断策略质量；还应结合 offline preview 和闭环 rollout。
-
-### 离线预览
-
-```bash
-bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
-  --num-frames 20 \
-  --device cuda
-```
-
-离线 MAE 用于检查数据与模型接口，不等价于闭环任务成功率。
-
-### 在线 rollout
-
-固定场景回归（关闭随机化）：
+有渲染窗口的固定场景回归：
 
 ```bash
 bash run.sh rollout \
-  --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --chunk-replan-frames 40 \
+  --chunk-overlap-blend-frames 5 \
+  --phase-transition-blend-frames 8 \
+  --phase-max-extension-frames 20 \
+  --drawer-phase-max-extension-frames 80 \
   --policy-device cuda
 ```
 
-随机化成功率（默认范围来自任务 `scripted.yaml`）：
+20 轮随机主罐位置成功率：
 
 ```bash
 bash run.sh rollout \
-  --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --chunk-replan-frames 40 \
+  --chunk-overlap-blend-frames 5 \
+  --phase-transition-blend-frames 8 \
+  --phase-max-extension-frames 20 \
+  --drawer-phase-max-extension-frames 80 \
   --policy-device cuda
 ```
 
-每次运行写入 `outputs/eval/rollout_<时间>_<det|randN>_ckpt<step>/` 一个子文件夹
-（多轮随机的 `ep001...` 视频/CSV/PNG 和 `summary.json` 都在同一目录）。
-可用 `--output-dir` 自定义目录名。进一步分析：
+加上 `--headless` 可隐藏窗口，但三路相机仍会渲染。输出写入 `outputs/eval/rollout_<timestamp>_.../`，包括视频、动作 CSV、诊断图和 `summary.json`。
+
+## 4. 自主采集和训练
+
+小规模有界面采集：
 
 ```bash
-bash run.sh diagnose outputs/eval/<run_dir>/ep001_actions.csv
+bash run.sh record --episodes 5
 ```
 
-诊断链路区分 `raw_action`、`fused_action`、`commanded_action` 和
-`actual_joint_pos`，用于定位策略跳变、融合效果或底层跟踪误差。详见
-[在线 rollout](docs/ONLINE_ROLLOUT.md)。
-
-## 核心数据契约
-
-Schema：`s4_bimanual_v1`
+完整的安全顺序是：
 
 ```text
-observation.state / action =
-  left_arm_7 + left_hand_6 + right_arm_7 + right_hand_6
+采集成功 HDF5
+→ 检查 HDF5
+→ 转换 LeRobotDataset
+→ 检查 LeRobotDataset
+→ fresh training
+→ checkpoint 契约检查
+→ 固定场景 Rollout
+→ 随机场景成功率
 ```
 
-- 实际任务维度为 26D；SmolVLA 的 50D state 和 32D action 是 padding 上限。
-- action 是 absolute joint target，不是 delta action。
-- 三路 feature key 固定为：
-  - `observation.images.chest_front_rgb`
-  - `observation.images.left_wrist_rgb`
-  - `observation.images.right_wrist_rgb`
-- 20 Hz 数据通过每个 action 保持 6 个物理步接入 120 Hz 控制循环。
+不要直接照抄一个带 `--overwrite` 的总命令。正式数据应使用独立输出路径，并在每个破坏性操作前确认目标。完整命令见 [完整流水线](docs/PIPELINE.md)。
 
-修改 joint 顺序、维度、action 语义、相机 key、FPS 或 hand mapping 会破坏已有
-dataset/checkpoint 兼容性。完整定义见[数据契约](docs/DATA_SCHEMA.md)和
-[核心契约知识库](docs/knowledge_base/CORE_CONTRACTS.md)。
+## 5. 文档
 
-## 项目结构
+工程文档只保留三份：
 
-```text
-s4_smolvla_isaaclab/
-├── run.sh                  # 统一 CLI 和双环境路由
-├── configs/                # active task、外部资源和任务配置
-├── tasks/                  # TaskSpec、scene builder、controller、任务模板
-├── s4_robot/               # 机器人配置、IK、动作与灵巧手映射
-├── s4_pipeline/            # 路径、active task 和配置解析
-├── data/                   # HDF5 schema/writer 和 LeRobot 转换
-├── scripts/                # 采集、训练、评估、rollout 和诊断入口
-├── teleoperation/          # Quest WebXR、协议、clutch 映射和独立 runtime
-├── environment/            # 双 Conda 环境和版本采集
-├── tests/                  # 配置、契约、schema、协议和视频测试
-├── docs/                   # 使用文档与工程知识库
-├── assets/                 # 项目拥有的机器人和场景资产
-├── local_assets/           # 单独分发的场景资产包，不进入 Git
-├── datasets/               # 本地生成，不进入 Git
-├── models/                 # 外部基础模型，不进入 Git
-└── outputs/                # checkpoint、视频和诊断，不进入 Git
-```
+- [文档索引](docs/README.md)
+- [复现与部署](docs/REPRODUCTION.md)
+- [完整流水线、契约与诊断](docs/PIPELINE.md)
 
-## 创建新任务
+课程教程保留在 [docs/course/](docs/course/SMOLVLA_ADVANCED_TECHNICAL_COURSE.md)，按“原理 → 项目实现 → 部署”分为三章。
 
-新任务原则上只新增或配置：
+## 6. 重要安全边界
 
-1. `TaskSpec` 和 registry 条目。
-2. `configs/tasks/<task>.dataset.json`。
-3. `configs/tasks/<task>.scripted.yaml`。
-4. `configs/tasks/<task>.smolvla.yaml`。
-5. `tasks/<task>_scene.py` 和 `tasks/<task>_controller.py`。
-6. randomization、success criteria 和必要测试。
+- `--episodes N` 表示目标成功 episode 总数，不是总尝试数。
+- 失败尝试写入失败日志，不进入最终训练数据。
+- Resume 必须使用同一个 HDF5，并保持采集契约不变。
+- `--overwrite` 只应在明确接受替换目标时使用。
+- State/action 顺序、相机 key、FPS、Action 语义或语言契约变化后，需要重新转换、重新训练并重新 Rollout。
+- IK 可达不等于物理抓取成功；离线误差低不等于在线成功率高。
+- 数据集和 checkpoint 必须通过契约检查，不能只看目录名或 tensor 维度。
 
-转换、训练和 policy server 应继续复用公共实现。完整步骤见
-[新任务教程](docs/NEW_TASK_TUTORIAL.md)和
-[新任务检查清单](docs/knowledge_base/NEW_TASK_CHECKLIST.md)。
+## 7. 真实接口
 
-## 常用命令
+随代码变化时，以当前命令和配置为准：
 
 ```bash
-bash run.sh --help
-bash run.sh doctor --strict
-bash run.sh list-tasks
-bash run.sh sim
-bash run.sh record --episodes 10 --headless
-bash run.sh convert --overwrite
-bash run.sh dataset-check
-bash run.sh train
-bash run.sh preview
-bash run.sh rollout --deterministic
-bash run.sh rollout --success-rate 20
-bash run.sh clean --dry-run
+bash run.sh help
+bash run.sh collect-convert --help
+bash run.sh train --help
 ```
 
-`clean` 默认只预览将处理的文件。删除数据、模型或输出前必须检查 dry-run 结果。
-
-## 开发验证
-
-```bash
-python3 -m compileall -q s4_pipeline s4_robot tasks data scripts tests
-bash -n run.sh scripts/*.sh environment/*.sh
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
-  conda run -n env_isaaclab python -m pytest -q tests
-bash run.sh doctor --strict
-git diff --check
-```
-
-确认外部 LeRobot 未被修改：
-
-```bash
-bash -c 'set -a; source .env; git -C "${LEROBOT_ROOT}" status --short'
-```
-
-## 文档
-
-- [文档总索引](docs/README.md)
-- [五分钟快速开始](docs/QUICKSTART.md)
-- [安装与外部依赖](docs/INSTALLATION.md)
-- [配置说明](docs/CONFIGURATION.md)
-- [训练](docs/TRAINING.md)
-- [在线 rollout](docs/ONLINE_ROLLOUT.md)
-- [rollout 诊断](docs/ROLLOUT_DIAGNOSTICS.md)
-- [故障排查](docs/TROUBLESHOOTING.md)
-- [工程知识库](docs/knowledge_base/README.md)
-- [后续 AI 协作指南](docs/knowledge_base/AI_COLLABORATION_GUIDE.md)
-
-## 使用边界
-
-- 项目不会修改外部 `lerobot/` 或 `IsaacLab/` 源码。
-- 不要提交 `datasets/`、`models/`、`outputs/`、日志和本机 `.env`。
-- 不要用 stiffness/damping 调整掩盖 action 接口、时序或归一化错误。
-- 不要仅凭 training loss 或单帧 offline MAE 宣称任务成功。
-- 修改核心数据契约前，先确认是否需要重新采集、转换和训练。
-
-这是研究与教学工程，不是经过安全认证的真实机器人控制系统。
+核心入口是 `run.sh`；外部 LeRobot 作为固定 submodule 使用，本项目不要求修改 LeRobot 源码。

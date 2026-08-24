@@ -55,20 +55,24 @@ randomization:
     # Keep the post-grasp lift deterministic. The fixed XYZ displacement is
     # configured by targets.right_can_lift below.
     enabled: false
-  drawer_initial_open:
-    enabled: true
-    range: [0.00, 0.05]
-    joint_name: "drawer_top_joint"
-    # The USD joint range is [0.0, 0.4] m. Positive joint motion opens the
-    # cabinet; the cabinet's 180-degree yaw maps that motion to base_link -X.
-    joint_position_sign: 1.0
-    opening_axis_base: [-1.0, 0.0, 0.0]
-    target_open_m: 0.18
+
+# Deterministic drawer geometry and task targets. The drawer now starts fully
+# closed in collection and rollout; only the can position remains randomized.
+drawer:
+  initial_open_m: 0.00
+  joint_name: "drawer_top_joint"
+  # The USD joint range is [0.0, 0.4] m. Positive joint motion opens the
+  # cabinet; the cabinet's 180-degree yaw maps that motion to base_link -X.
+  joint_position_sign: 1.0
+  opening_axis_base: [-1.0, 0.0, 0.0]
+  target_open_m: 0.18
 
 hands:
   # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
-  left_close: [1.0, 0.22, 0.85, 0.85, 0.85, 0.85]
+  # Keep the thumb geometry unchanged and reduce the four-finger closure so
+  # the fingers wrap the handle without over-curling into the drawer front.
+  left_close: [1.0, 0.22, 0.75, 0.75, 0.75, 0.75]
   # Fully extend the four fingers and spread the thumb farther before the
   # lateral approach. The close target remains intentionally unchanged.
   right_open: [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -112,27 +116,40 @@ targets:
     anchor: drawer_handle_initial
     offset_frame: base_link
     offset: [-0.1235, -0.0130, 0.108]
-    rpy: [-1.5, 0.0, 1.5]
+    rpy: [-1.5, -0.05, 1.5]
     orientation_weight: 0.20
   left_handle_transition_2:
     anchor: drawer_handle_initial
     offset_frame: base_link
     offset: [-0.1185, -0.0120, 0.0818]
-    rpy: [-1.5, -0.10, 1.5]
+    rpy: [-1.5, -0.15, 1.5]
     orientation_weight: 0.35
   left_handle_transition_3:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.0915, -0.0105, 0.0218]
-    rpy: [-1.5, -0.10, 1.5]
+    # The first fixed-drawer trials converged repeatably 6 mm behind, 8 mm to
+    # the side, and 15 mm above the old target. Move the target to that stable
+    # IK/contact branch instead of accepting a permanent Cartesian residual.
+    offset: [-0.0975, -0.0185, 0.0368]
+    rpy: [-1.5, -0.20, 1.5]
+    orientation_weight: 0.60
+  left_handle_preload:
+    anchor: drawer_handle_closed
+    offset_frame: base_link
+    # Pull 8 mm from the final grasp pose. Requiring corresponding drawer
+    # motion verifies that the closed hand is mechanically coupled to the
+    # handle before the full pull begins.
+    offset: [-0.1055, -0.0185, 0.0368]
+    rpy: [-1.5, -0.20, 1.5]
     orientation_weight: 0.60
   left_drawer_open:
     anchor: drawer_handle_open
     offset_frame: base_link
-    # TCP = closed_handle + opening_axis_base * target_open_m + offset.
-    # Keep the grasp offset unchanged; target_open_m supplies the pull travel.
-    offset: [-0.0850, -0.0105, 0.0188]
-    rpy: [-1.5, -0.10, 1.5]
+    # Preserve the final grasp's handle-relative transform throughout the full
+    # pull. target_open_m alone supplies the drawer travel, avoiding a wrist
+    # shift immediately after the preload succeeds.
+    offset: [-0.0975, -0.0185, 0.0368]
+    rpy: [-1.5, -0.20, 1.5]
     orientation_weight: 0.60
   left_drawer_closed:
     # Fallback TCP pose and orientation weight for close/release phases. During
@@ -172,7 +189,7 @@ targets:
     offset: [-0.0235, -0.3330, 0.1728]
     rpy: [0.0, -1.5, 1.5]
 
-language_contract_version: drawer_10phase_v1
+language_contract_version: drawer_10phase_v3_safe_handle_clear
 language_phases:
   - id: prepare_hands
     task: "Open both hands and prepare for the task."
@@ -188,8 +205,8 @@ language_phases:
     rollout_gate_phase: left_close_hand
   - id: pull_drawer
     task: "Pull the drawer open with the left hand."
-    source_phases: [pull_drawer]
-    rollout_gate_phase: pull_drawer
+    source_phases: [left_preload_handle, pull_drawer, left_hold_drawer_open]
+    rollout_gate_phase: left_hold_drawer_open
   - id: approach_can
     task: "Move the open right hand around the can and hold it steady."
     source_phases: [right_pregrasp_can, right_grasp_can, right_settle_before_close]
@@ -212,7 +229,7 @@ language_phases:
     rollout_gate_phase: right_retreat_clear_drawer
   - id: close_drawer_and_home
     task: "Close the drawer and return both arms home."
-    source_phases: [right_retreat_and_start_close, left_open_hand, left_joint_transition_after_release, left_home]
+    source_phases: [right_retreat_and_start_close, left_open_hand, left_clear_handle_after_release, left_joint_transition_after_release, left_home]
     rollout_gate_phase: left_home
 
 phases:
@@ -245,24 +262,53 @@ phases:
   - name: left_grasp_handle
     task: "Move the left hand onto the drawer handle."
     left: {target: left_handle_transition_3}
-    min_steps: 20
+    tolerance: 0.020
+    orientation_tolerance: 0.30
+    hold_seconds: 0.5
     max_steps: 1000
 
   - name: left_close_hand
     task: "Close the left hand around the drawer handle and wait."
     left: {target: left_handle_transition_3}
     left_hand: close
+    tolerance: 0.020
+    orientation_tolerance: 0.30
     hold_seconds: 2.0
+    max_steps: 1000
+
+  - name: left_preload_handle
+    task: "Apply a small pull to verify the left-hand grasp on the drawer handle."
+    left: {target: left_handle_preload}
+    left_hand: close
+    tolerance: 0.020
+    orientation_tolerance: 0.30
+    min_steps: 20
+    hold_seconds: 0.5
+    # A 3 mm measured response to the 8 mm preload is sufficient evidence that
+    # the hand is coupled to the handle; otherwise discard this demonstration.
+    drawer_open_min: 0.003
     max_steps: 1000
 
   - name: pull_drawer
     task: "Pull the drawer open with the left hand."
     left: {target: left_drawer_open}
+    tolerance: 0.025
+    orientation_tolerance: 0.35
     min_steps: 30
     max_steps: 1000
     # The commanded anchor is 0.18 m open. Require at least 0.08 m of measured
     # physical opening before continuing; tune this separately from the target.
     drawer_open_min: 0.08
+
+  - name: left_hold_drawer_open
+    task: "Hold the opened drawer steady with the left hand."
+    left: {target: left_drawer_open}
+    left_hand: close
+    tolerance: 0.025
+    orientation_tolerance: 0.35
+    hold_seconds: 0.5
+    drawer_open_min: 0.08
+    max_steps: 1000
 
   - name: right_pregrasp_can
     task: "Move the right hand to the pre-grasp pose above the can."
@@ -425,12 +471,29 @@ phases:
     left_hand: open
     hold_current_left_pose: true
     hold_seconds: 1.0
+    # Keep issuing the open command for one second, but do not require the
+    # measured fingers to reach their free-space angles while the palm is still
+    # wrapped around the closed handle. The following short Cartesian clear
+    # moves the hand backward/upward and retains the strict measured-open gate.
+    require_left_hand_actual_reached: false
+    max_steps: 1000
+
+  - name: left_clear_handle_after_release
+    task: "Move the open left hand backward and upward to clear the closed drawer handle."
+    # Resolve this target from the measured release pose: -X moves toward the
+    # robot and +Z lifts above the handle.  Preserve the live wrist orientation
+    # so this short disengagement does not introduce an IK branch change.
+    left_offset_from_current: [-0.040, 0.000, 0.050]
+    left_hand: open
     require_left_hand_actual_reached: true
-    # The closed drawer handle physically prevents one left finger from
-    # reaching the no-contact open angle. Recent successful place attempts
-    # consistently settle at ~0.30 rad maximum error; this phase only needs to
-    # verify release before lifting away, not free-space full extension.
-    hand_actual_tolerance: 0.35
+    hand_actual_tolerance: 0.05
+    drawer_open_max: 0.040
+    tolerance: 0.020
+    orientation_tolerance: 0.55
+    target_alpha: 0.12
+    max_joint_step: 0.015
+    hold_seconds: 0.0
+    min_steps: 60
     max_steps: 1000
 
   - name: left_joint_transition_after_release

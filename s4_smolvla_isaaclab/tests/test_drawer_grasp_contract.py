@@ -54,7 +54,17 @@ def test_grasp_config_is_stationary_and_deterministic():
     minimum_center_x = 0.54 + cfg["randomization"]["can_xy"]["x_range"][0]
     assert minimum_center_x - tomato_can_radius_x >= cabinet_support_near_x + 0.005
     assert cfg["randomization"]["right_can_lift"]["enabled"] is False
-    assert cfg["randomization"]["drawer_initial_open"]["enabled"] is True
+    assert "drawer_initial_open" not in cfg["randomization"]
+    assert cfg["drawer"]["initial_open_m"] == 0.0
+    assert cfg["drawer"]["target_open_m"] == 0.18
+    assert cfg["hands"]["left_close"] == [1.0, 0.22, 0.75, 0.75, 0.75, 0.75]
+    assert cfg["targets"]["left_handle_transition_1"]["rpy"] == [-1.5, -0.05, 1.5]
+    assert cfg["targets"]["left_handle_transition_2"]["rpy"] == [-1.5, -0.15, 1.5]
+    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.0975, -0.0185, 0.0368]
+    assert cfg["targets"]["left_handle_transition_3"]["rpy"] == [-1.5, -0.20, 1.5]
+    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1055, -0.0185, 0.0368]
+    assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.0975, -0.0185, 0.0368]
+    assert cfg["targets"]["left_drawer_open"]["rpy"] == [-1.5, -0.20, 1.5]
     assert cfg["hands"]["right_open"] == [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert cfg["hands"]["right_close"] == [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
     assert cfg["targets"]["right_can_grasp"]["offset"] == [-0.050, -0.038, 0.030]
@@ -63,6 +73,19 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["targets"]["right_can_grasp"]["rpy"] == [0.0, -1.4, 0.0]
 
     phases = {phase["name"]: phase for phase in cfg["phases"]}
+    assert phases["left_grasp_handle"]["tolerance"] == 0.020
+    assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.30
+    assert phases["left_grasp_handle"]["hold_seconds"] == 0.5
+    assert phases["left_close_hand"]["tolerance"] == 0.020
+    assert phases["left_close_hand"]["orientation_tolerance"] == 0.30
+    assert phases["left_preload_handle"]["drawer_open_min"] == 0.003
+    assert phases["left_preload_handle"]["hold_seconds"] == 0.5
+    assert phases["left_preload_handle"]["tolerance"] == 0.020
+    assert phases["pull_drawer"]["tolerance"] == 0.025
+    assert phases["pull_drawer"]["orientation_tolerance"] == 0.35
+    assert phases["left_hold_drawer_open"]["hold_seconds"] == 0.5
+    assert phases["left_hold_drawer_open"]["drawer_open_min"] == 0.08
+    assert phases["left_hold_drawer_open"]["tolerance"] == 0.025
     assert phases["initial_open_hands"]["hand_actual_tolerance"] == 0.10
     assert phases["right_pregrasp_can"]["tolerance"] == 0.010
     assert phases["right_grasp_can"]["tolerance"] == 0.028
@@ -98,8 +121,17 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["right_retreat_clear_drawer"]["right_offset_from_current"] == [-0.10, -0.18, 0.02]
     assert "right" not in phases["right_retreat_and_start_close"]
     assert phases["right_retreat_and_start_close"]["right_arm_home"] is True
-    assert phases["left_open_hand"]["require_left_hand_actual_reached"] is True
-    assert phases["left_open_hand"]["hand_actual_tolerance"] == 0.35
+    assert phases["left_open_hand"]["hold_current_left_pose"] is True
+    assert phases["left_open_hand"]["hold_seconds"] == 1.0
+    assert phases["left_open_hand"]["require_left_hand_actual_reached"] is False
+    clear = phases["left_clear_handle_after_release"]
+    assert clear["left_offset_from_current"] == [-0.040, 0.000, 0.050]
+    assert clear["require_left_hand_actual_reached"] is True
+    assert clear["hand_actual_tolerance"] == 0.05
+    assert clear["drawer_open_max"] == 0.040
+    assert clear["target_alpha"] == 0.12
+    assert clear["max_joint_step"] == 0.015
+    assert clear["hold_seconds"] == 0.0
     transition = phases["left_joint_transition_after_release"]
     assert transition["left_arm_joint_target"] == [
         0.430,
@@ -124,6 +156,92 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["right_settle_before_close"]["hold_seconds"] == 1.0
     assert phases["right_close_hand"]["right_hand"] == "close"
     assert phases["right_hold_grasp"]["right_hand"] == "close"
+
+
+def test_left_release_wait_does_not_deadlock_on_handle_contact():
+    controller = DrawerInsertCloseController(
+        _FakeTcpController(),
+        initial_action=np.zeros(26, dtype=np.float32),
+        anchors=_anchors(),
+    )
+    phase_index = next(
+        index for index, phase in enumerate(controller.phases) if phase.name == "left_open_hand"
+    )
+    controller.phase_index = phase_index
+    pose = (
+        controller.current_phase.left.pos.copy(),
+        controller.current_phase.left.quat_wxyz.copy(),
+    )
+    controller._prepare_current_phase(pose, None, drawer_open_m=0.0)
+    phase = controller.current_phase
+    controller._dt = 1.0 / 120.0
+    controller.phase_steps = int(np.ceil(phase.hold_seconds * 120.0))
+
+    commanded = np.zeros(26, dtype=np.float32)
+    commanded[7:13] = phase.left_hand
+    actual = commanded.copy()
+    # Simulate four fingers remaining partly flexed while they still touch the
+    # handle.  The release wait must advance so the next phase can disengage.
+    actual[9:13] = 0.55
+
+    assert controller._advance_if_ready(
+        pose,
+        None,
+        drawer_open_m=0.0,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=actual,
+    ) is True
+    assert controller.current_phase.name == "left_clear_handle_after_release"
+    assert controller.current_phase.require_left_hand_actual_reached is True
+
+
+def test_left_clear_handle_moves_backward_up_before_joint_transition():
+    controller = DrawerInsertCloseController(
+        _FakeTcpController(),
+        initial_action=np.zeros(26, dtype=np.float32),
+        anchors=_anchors(),
+    )
+    phase_index = next(
+        index
+        for index, phase in enumerate(controller.phases)
+        if phase.name == "left_clear_handle_after_release"
+    )
+    controller.phase_index = phase_index
+    entry_pose = (
+        np.asarray([0.355, 0.358, 0.104], dtype=np.float32),
+        np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+    controller._prepare_current_phase(entry_pose, None, drawer_open_m=0.0)
+    phase = controller.current_phase
+    assert np.allclose(phase.left.pos, entry_pose[0] + [-0.040, 0.000, 0.050])
+    assert np.allclose(phase.left.quat_wxyz, entry_pose[1])
+
+    controller._dt = 1.0 / 120.0
+    controller.phase_steps = phase.min_steps
+    commanded = np.zeros(26, dtype=np.float32)
+    commanded[7:13] = phase.left_hand
+    blocked = commanded.copy()
+    blocked[9:13] = 0.40
+    target_pose = (phase.left.pos.copy(), phase.left.quat_wxyz.copy())
+
+    assert controller._advance_if_ready(
+        target_pose,
+        None,
+        drawer_open_m=0.0,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=blocked,
+    ) is False
+    assert controller._advance_if_ready(
+        target_pose,
+        None,
+        drawer_open_m=0.0,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=commanded,
+    ) is True
+    assert controller.current_phase.name == "left_joint_transition_after_release"
 
 
 def test_left_release_transition_commands_and_gates_on_joint_target():
@@ -183,6 +301,44 @@ def test_left_release_transition_commands_and_gates_on_joint_target():
         actual_action=actual_action,
     ) is True
     assert controller.current_phase.name == "left_home"
+
+
+def test_left_preload_requires_measured_drawer_response_before_full_pull():
+    controller = DrawerInsertCloseController(
+        _FakeTcpController(),
+        initial_action=np.zeros(26, dtype=np.float32),
+        anchors=_anchors(),
+    )
+    phase_index = next(
+        index for index, phase in enumerate(controller.phases) if phase.name == "left_preload_handle"
+    )
+    controller.phase_index = phase_index
+    phase = controller.current_phase
+    pose = (phase.left.pos.copy(), phase.left.quat_wxyz.copy())
+    commanded = np.zeros(26, dtype=np.float32)
+    commanded[7:13] = phase.left_hand
+    controller.phase_steps = max(phase.min_steps, int(np.ceil(phase.hold_seconds * 120.0)))
+    controller._dt = 1.0 / 120.0
+
+    assert controller._advance_if_ready(
+        pose,
+        None,
+        drawer_open_m=0.002,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=commanded,
+    ) is False
+    assert controller.current_phase.name == "left_preload_handle"
+
+    assert controller._advance_if_ready(
+        pose,
+        None,
+        drawer_open_m=0.004,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=commanded,
+    ) is True
+    assert controller.current_phase.name == "pull_drawer"
 
 
 def test_release_waits_for_actual_open_hand_and_can_inside_drawer():

@@ -14,4 +14,4 @@ dependencies:
       - pin==2.7.0
       - pin-pink==3.1.0
 # Isaac Sim 5.1 and IsaacLab 0.54.2 are external installations. Follow
-# docs/INSTALLATION.md; they are intentionally not copied into this project.
+# docs/REPRODUCTION.md; they are intentionally not copied into this project.

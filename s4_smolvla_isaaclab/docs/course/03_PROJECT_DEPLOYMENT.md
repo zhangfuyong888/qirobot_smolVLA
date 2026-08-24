@@ -112,7 +112,7 @@ conda env create -f environment/isaaclab.yml
 conda activate env_isaaclab
 
 cd "$ISAACLAB_ROOT"
-./isaaclab.sh --install
+./isaaclab.sh --install none
 ```
 
 当前环境文件固定的核心依赖包括 Python 3.11、NumPy 1.26、h5py 3.16、OpenCV 4.11、Pinocchio 2.7 和 Pink 3.1。Isaac Sim 与 IsaacLab 本体仍由外部安装提供。
@@ -269,15 +269,20 @@ bash run.sh sim
 ### 3.9.4 小规模数据链路验收
 
 ```bash
-bash run.sh collect-convert \
+bash run.sh record \
+  --output datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/deployment_smoke_2.hdf5 \
   --episodes 2 \
   --random-seed 42 \
   --episode-timeout-s 300 \
-  --record-every-n 6 \
-  --overwrite
+  --record-every-n 6
+
+bash run.sh dataset-check \
+  datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/deployment_smoke_2.hdf5 \
+  --hdf5 \
+  --expected-episodes 2
 ```
 
-这一步会实际启动仿真并写入数据，只应在环境验收后执行。应确认成功 episode 写入 HDF5、失败尝试进入独立日志、转换完成且 `dataset-check` 通过。
+这一步会实际启动仿真并写入数据，只应在环境验收后执行。使用独立 smoke 文件可避免覆盖正式 HDF5 或 LeRobotDataset；应同时查看失败日志和专家动作质量。
 
 ### 3.9.5 正式采集、转换与检查
 
@@ -288,12 +293,12 @@ bash run.sh collect-convert \
   --episode-timeout-s 300 \
   --reset-settle-s 2.0 \
   --record-every-n 6 \
-  --max-failed-attempts 3 \
-  --headless \
-  --overwrite
+  --max-failed-attempts 20 \
+  --hdf5-file datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/production_200_seed42/drawer_insert_close_scripted.hdf5 \
+  --headless
 ```
 
-`--episodes 200` 表示目标成功 episode 总数，不是总尝试数。`--overwrite` 在这条流水线中可能覆盖对应采集/转换目标，运行前必须确认目标路径；需要保留现有 HDF5 并继续采集时，应使用项目支持的 `--resume` 流程并核对目标总数。
+`--episodes 200` 表示目标成功 episode 总数，不是总尝试数。首次生成目标 LeRobotDataset 时不要传 `--overwrite`；只有明确替换已有转换结果时才使用它。需要保留现有 HDF5 并继续采集时，保持同一 `--hdf5-file` 并增加 `--resume`。完整、安全的分步命令见 `docs/PIPELINE.md`。
 
 ### 3.9.6 训练与 checkpoint 检查
 
@@ -382,7 +387,7 @@ flowchart TD
 | 目录 | 内容 | 建议策略 |
 |---|---|---|
 | `datasets/staging/` | 原始 HDF5 和失败日志 | 采集后立即备份；转换前保留原件 |
-| `datasets/lerobot/` | LeRobotDataset、视频和 metadata | 与 HDF5 的 contract 一起保存 |
+| `datasets/lerobot_data/` | LeRobotDataset、视频和 metadata | 与 HDF5 的 contract 一起保存 |
 | `models/` | 外部基础模型 | 记录来源、revision 和校验值 |
 | `outputs/train/` | checkpoint 和训练状态 | 保留完整 `last` 与关键步数 |
 | `outputs/eval/` | Rollout 视频、CSV、PNG、summary | 与 checkpoint、seed、配置一起归档 |
@@ -455,4 +460,3 @@ flowchart TD
 完整部署不是把 Python 包安装成功，而是让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约和 checkpoint 同时对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、资产归纳、`doctor` 和数据检查等基础设施；后续重点是完善固定下载来源、校验清单、版本兼容矩阵和一键预检。
 
 部署完成后，应返回[第二章](02_PROJECT_IMPLEMENTATION.md)按照“专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率”的顺序验证完整闭环。
-

@@ -30,6 +30,25 @@ def _run_python(prefix: Path, code: str) -> tuple[bool, str]:
     return proc.returncode == 0, output[-1] if output else f"exit={proc.returncode}"
 
 
+def resolve_latest_checkpoint(output_dir: Path) -> Path:
+    """Return the current complete pretrained-model path for strict checks."""
+    checkpoints = Path(output_dir) / "checkpoints"
+    last = checkpoints / "last" / "pretrained_model"
+    if (last / "config.json").is_file():
+        return last
+    numeric = sorted(
+        (
+            item
+            for item in checkpoints.iterdir()
+            if item.is_dir() and item.name.isdigit() and (item / "pretrained_model/config.json").is_file()
+        ),
+        key=lambda item: int(item.name),
+    ) if checkpoints.is_dir() else []
+    if numeric:
+        return numeric[-1] / "pretrained_model"
+    return last
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate S4 project dependencies and active-task contract.")
     parser.add_argument("--strict", action="store_true", help="Also require dataset and checkpoint outputs.")
@@ -98,7 +117,7 @@ def main() -> None:
     checks.append(_check("smolvla imports", ok, detail))
 
     dataset = cfg.dataset.lerobot_root / cfg.dataset.repo_id.split("/")[-1]
-    checkpoint = cfg.training.output_dir / "checkpoints/360000/pretrained_model"
+    checkpoint = resolve_latest_checkpoint(cfg.training.output_dir)
     if args.strict or dataset.exists():
         checks.append(_check("LeRobotDataset", (dataset / "meta/info.json").is_file(), str(dataset)))
     if args.strict or checkpoint.exists():

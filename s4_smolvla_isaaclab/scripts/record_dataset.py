@@ -1568,6 +1568,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     task_spec = get_task_spec(str(scene.get("task_id")))
     drawer_scripted_config = None
     drawer_randomization_cfg: dict[str, object] = {}
+    drawer_task_cfg: dict[str, object] = {}
     drawer_dashboard_cfg: dict[str, object] = {}
     drawer_rng = None
     can_grid_sampler: StratifiedGrid2D | None = None
@@ -1584,6 +1585,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         scripted_cfg = load_yaml(drawer_scripted_config)
         drawer_language_contract = load_language_phase_contract(scripted_cfg)
         drawer_randomization_cfg = scripted_cfg.get("randomization", {})
+        drawer_task_cfg = dict(scripted_cfg.get("drawer", {}) or {})
         logging_cfg = scripted_cfg.get("logging", {})
         if isinstance(logging_cfg, dict):
             dashboard_cfg = logging_cfg.get("progress_dashboard", {})
@@ -1605,7 +1607,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         print(
             f"[RECORD] can_xy_randomization={bool(can_cfg['enabled'])} "
             f"distractor_cans={bool(distractor_cfg['enabled'])} "
-            f"drawer_initial_open={bool((drawer_randomization_cfg.get('drawer_initial_open') or {}).get('enabled', True))}",
+            f"drawer_initial_open=fixed:{float(drawer_task_cfg.get('initial_open_m', 0.0)):.3f}m",
             flush=True,
         )
         drawer_rng = np.random.default_rng(drawer_seed)
@@ -1626,10 +1628,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         if drawer_rng is None:
             return {}
         can_cfg = drawer_randomization_cfg.get("can_xy", {})
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
         x_range = can_cfg.get("x_range", [0.0, 0.0]) if can_cfg.get("enabled", False) else [0.0, 0.0]
         y_range = can_cfg.get("y_range", [0.0, 0.0]) if can_cfg.get("enabled", False) else [0.0, 0.0]
-        open_range = drawer_cfg.get("range", [0.0, 0.0]) if drawer_cfg.get("enabled", True) else [0.0, 0.0]
         if can_grid_sampler is not None:
             grid_sample = grid_sample_override or can_grid_sampler.sample()
             current_grid_sample = grid_sample
@@ -1683,9 +1683,6 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             **grid_metadata,
             "distractor_can_xy": distractor_positions,
             "right_can_lift_offset": lift_offset,
-            "drawer_initial_open_m": float(
-                drawer_rng.uniform(float(open_range[0]), float(open_range[1]))
-            ),
         }
 
     def collection_state() -> dict[str, object]:
@@ -1777,8 +1774,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
 
     drawer_top_joint_id = None
     if drawer is not None:
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        drawer_joint_name = str(drawer_cfg.get("joint_name", "drawer_top_joint"))
+        drawer_joint_name = str(drawer_task_cfg.get("joint_name", "drawer_top_joint"))
         drawer_joint_ids, _ = drawer.find_joints(f"^{drawer_joint_name}$")
         if len(drawer_joint_ids) != 1:
             raise RuntimeError(f"Expected one {drawer_joint_name}, found ids={drawer_joint_ids}")
@@ -1807,9 +1803,8 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     def reset_drawer(context: dict[str, object]) -> None:
         if drawer is None or drawer_top_joint_id is None:
             return
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        amount = float(context.get("drawer_initial_open_m", 0.0))
-        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
+        amount = float(drawer_task_cfg.get("initial_open_m", 0.0))
+        sign = float(drawer_task_cfg.get("joint_position_sign", 1.0))
         drawer.reset()
         joint_pos = drawer.data.default_joint_pos.clone()
         joint_vel = drawer.data.default_joint_vel.clone()
@@ -1820,8 +1815,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
     def current_drawer_open_m() -> float | None:
         if drawer is None or drawer_top_joint_id is None:
             return None
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        sign = float(drawer_cfg.get("joint_position_sign", 1.0))
+        sign = float(drawer_task_cfg.get("joint_position_sign", 1.0))
         return sign * float(drawer.data.joint_pos[0, drawer_top_joint_id].item())
 
     def evaluate_drawer_task_success() -> tuple[bool, dict[str, object]]:
@@ -2226,14 +2220,13 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         closed_handle_pose_b = pose_world_to_base(closed_handle_pose_w, base_pose_w) if closed_handle_pose_w else None
         if can_pose_b is None or closed_handle_pose_b is None:
             raise RuntimeError("Can or closed drawer-handle pose is unavailable")
-        drawer_cfg = drawer_randomization_cfg.get("drawer_initial_open", {})
-        opening_axis = np.asarray(drawer_cfg.get("opening_axis_base", [-1.0, 0.0, 0.0]), dtype=np.float32)
+        opening_axis = np.asarray(drawer_task_cfg.get("opening_axis_base", [-1.0, 0.0, 0.0]), dtype=np.float32)
         axis_norm = float(np.linalg.norm(opening_axis))
         if axis_norm < 1.0e-6:
-            raise ValueError("randomization.drawer_initial_open.opening_axis_base must be non-zero")
+            raise ValueError("drawer.opening_axis_base must be non-zero")
         opening_axis /= axis_norm
-        initial_open = float(episode_context.get("drawer_initial_open_m", 0.0))
-        target_open = float(drawer_cfg.get("target_open_m", 0.06))
+        initial_open = float(drawer_task_cfg.get("initial_open_m", 0.0))
+        target_open = float(drawer_task_cfg.get("target_open_m", 0.06))
         initial_handle_pose_b = (
             closed_handle_pose_b[0] + opening_axis * initial_open,
             closed_handle_pose_b[1].copy(),
@@ -2526,7 +2519,11 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             diagnostic_cause = "initial_right_hand_not_fully_open"
         elif phase_name == "initial_open_hands" and left_hand_tracking_error > 0.030:
             diagnostic_cause = "initial_left_hand_not_fully_open"
-        elif phase_name == "left_open_hand" and left_hand_tracking_error > 0.030:
+        elif phase_name in (
+            "left_open_hand",
+            "left_clear_handle_after_release",
+            "left_joint_transition_after_release",
+        ) and left_hand_tracking_error > 0.030:
             diagnostic_cause = "left_hand_release_blocked_by_drawer_handle"
         elif right_arm_tracking_error > 0.10:
             diagnostic_cause = "right_arm_command_tracking_error"

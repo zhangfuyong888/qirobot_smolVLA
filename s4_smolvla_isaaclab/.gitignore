@@ -19,6 +19,3 @@ outputs/
 *.mp4
 *.avi
 *.parquet
-
-# ai agent read files
-docs/knowledge_base/

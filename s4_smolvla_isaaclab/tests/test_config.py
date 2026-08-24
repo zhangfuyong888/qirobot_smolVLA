@@ -14,9 +14,9 @@ def test_active_task_config_resolves_paths():
     assert config.dataset.action_semantics == "absolute_joint_target"
     assert (config.dataset.fps, config.dataset.control_fps) == (20, 120)
     assert len(config.features.camera_keys) == 3
-    assert config.dataset.repo_id == "local/s4_drawer_insert_close_v1_10phase"
-    assert training["dataset"] == "s4_drawer_insert_close_v1_10phase"
-    assert training["language_contract_version"] == "drawer_10phase_v1"
-    assert str(config.training.output_dir).endswith("smolvla_drawer_insert_close_v1_10phase")
+    assert config.dataset.repo_id == "local/s4_drawer_insert_close_v3_10phase_safe_handle_clear"
+    assert training["dataset"] == "s4_drawer_insert_close_v3_10phase_safe_handle_clear"
+    assert training["language_contract_version"] == "drawer_10phase_v3_safe_handle_clear"
+    assert str(config.training.output_dir).endswith("smolvla_drawer_insert_close_v3_10phase_safe_handle_clear")
     assert "${" not in str(config.dataset.staging_root)
     assert "${" not in training["vlm_model_name"]

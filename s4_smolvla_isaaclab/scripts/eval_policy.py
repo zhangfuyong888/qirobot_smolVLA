@@ -113,14 +113,6 @@ parser.add_argument(
     help="Override scripted.yaml can_xy.y_range in metres.",
 )
 parser.add_argument(
-    "--drawer-open-range",
-    type=float,
-    nargs=2,
-    metavar=("MIN", "MAX"),
-    default=None,
-    help="Override scripted.yaml drawer_initial_open.range in metres.",
-)
-parser.add_argument(
     "--distractor-cans",
     action=argparse.BooleanOptionalAction,
     default=None,
@@ -562,7 +554,7 @@ def reset_drawer_scene(
     initial_action[ACTION_SLICES.right_hand] = np.asarray(hand_cfg["right_open"], dtype=np.float32)
     full_target = make_full_joint_target(initial_action, robot.joint_names, robot_q[0].cpu().numpy(), include_mimic=True)
 
-    drawer_cfg = random_cfg.get("drawer_initial_open", {})
+    drawer_cfg = scripted_cfg.get("drawer", {})
     joint_name = str(drawer_cfg.get("joint_name", "drawer_top_joint"))
     joint_ids, _ = drawer.find_joints(f"^{joint_name}$")
     if len(joint_ids) != 1:
@@ -848,7 +840,6 @@ def main() -> None:
         randomize_task=bool(args_cli.randomize_task),
         can_x_range=args_cli.can_x_range,
         can_y_range=args_cli.can_y_range,
-        drawer_open_range=args_cli.drawer_open_range,
     )
     random_cfg["distractor_cans_enabled"] = distractor_cans_enabled
     random_cfg["grasp_can_nominal_position"] = list(grasp_can_nominal_position)
@@ -927,8 +918,7 @@ def main() -> None:
         f"[EVAL] randomization can_xy_enabled={bool(random_cfg['can_xy'].get('enabled'))} "
         f"can_x={random_cfg['can_xy'].get('x_range')} "
         f"can_y={random_cfg['can_xy'].get('y_range')} "
-        f"drawer_open_enabled={bool(random_cfg['drawer_initial_open'].get('enabled'))} "
-        f"drawer_open={random_cfg['drawer_initial_open'].get('range')} "
+        f"drawer_open=fixed:{float(random_cfg.get('fixed_drawer_initial_open_m', 0.0)):.3f}m "
         f"grasp_can_scale={grasp_can_scale}"
     )
     print_schedule(schedule, policy_interval, project_cfg.dataset.fps)

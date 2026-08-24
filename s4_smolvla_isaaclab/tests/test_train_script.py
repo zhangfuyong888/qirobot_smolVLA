@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 TRAIN_SCRIPT = ROOT / "scripts" / "train_smolvla_local.sh"
 TRAIN_CONFIG = ROOT / "configs" / "tasks" / "drawer_insert_close.smolvla.yaml"
-DATASET_NAME = "s4_drawer_insert_close_v1_10phase"
+DATASET_NAME = "s4_drawer_insert_close_v3_10phase_safe_handle_clear"
 
 
 def _run_fake_training(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], Path, dict]:
@@ -22,7 +22,7 @@ def _run_fake_training(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedP
         "state_dim": 26,
         "action_dim": 26,
         "fps": 20,
-        "language_contract_version": "drawer_10phase_v1",
+        "language_contract_version": "drawer_10phase_v3_safe_handle_clear",
     }
     contract_path = dataset_root / "meta" / "s4_contract.json"
     contract_path.parent.mkdir(parents=True)
@@ -93,7 +93,7 @@ fi
         timeout=20,
         check=False,
     )
-    output_dir = output_root / "train" / "smolvla_drawer_insert_close_v1_10phase"
+    output_dir = output_root / "train" / "smolvla_drawer_insert_close_v3_10phase_safe_handle_clear"
     return result, output_dir, contract
 
 
@@ -166,10 +166,10 @@ def test_fresh_training_rejects_any_existing_output_path(tmp_path: Path, kind: s
     dataset_root = data_root / "lerobot_data" / DATASET_NAME / "meta"
     dataset_root.mkdir(parents=True)
     (dataset_root / "s4_contract.json").write_text(
-        json.dumps({"language_contract_version": "drawer_10phase_v1"}), encoding="utf-8"
+        json.dumps({"language_contract_version": "drawer_10phase_v3_safe_handle_clear"}), encoding="utf-8"
     )
     output_root = tmp_path / "outputs"
-    output_dir = output_root / "train" / "smolvla_drawer_insert_close_v1_10phase"
+    output_dir = output_root / "train" / "smolvla_drawer_insert_close_v3_10phase_safe_handle_clear"
     output_dir.parent.mkdir(parents=True)
     if kind == "empty_directory":
         output_dir.mkdir()

@@ -164,9 +164,9 @@ Core commands:
 
 Rollout notes:
   --deterministic     seed=42, disable task randomization (regression)
-  --success-rate N    seed=42, N episodes; honors YAML can_xy/drawer/distractor enables
+  --success-rate N    seed=42, N episodes; honors YAML can_xy/distractor enables
   Pass-through flags: --episodes, --seed (default 42), --randomize-task/--no-randomize-task,
-  --can-x-range, --can-y-range, --drawer-open-range, --distractor-cans/--no-distractor-cans,
+  --can-x-range, --can-y-range, --distractor-cans/--no-distractor-cans,
   --output-dir, --output-video, --summary-json, --save-videos/--no-save-videos,
   --save-diagnostics/--no-save-diagnostics
   Record pass-through: --can-xy-randomization/--no-can-xy-randomization,

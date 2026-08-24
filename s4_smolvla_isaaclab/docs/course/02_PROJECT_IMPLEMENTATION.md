@@ -26,9 +26,9 @@
 
 如果专家本身经常碰倒罐子、在闭手过程中移动手臂或放置后过早退出，模型会把这些行为当成正确目标。因此，先提高专家成功率通常比先增加训练步数更重要。
 
-### 2.1.2 当前 20 阶段状态机
+### 2.1.2 当前 23 阶段状态机
 
-当前 YAML 中实际有 20 个阶段，而不是历史知识库中的 16 个。
+当前 YAML 中实际有 23 个专家控制阶段，而不是历史知识库中的 16、20 或 22 个。
 
 | # | 阶段 | 主要目标 | 关键门控 |
 |---:|---|---|---|
@@ -37,29 +37,34 @@
 | 3 | `left_approach_handle_fine` | 中间过渡 | 左 TCP |
 | 4 | `left_grasp_handle` | 到达把手 | 左 TCP |
 | 5 | `left_close_hand` | 闭合抓把手 | 时间保持 |
-| 6 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
-| 7 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
-| 8 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
-| 9 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
-| 10 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
-| 11 | `right_hold_grasp` | 保持抓握 | 0.5 s |
-| 12 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
-| 13 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
-| 14 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
-| 15 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
-| 16 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 右手实际张开 |
-| 17 | `right_retreat_and_start_close` | 右臂回 Home、左手关抽屉 | 抽屉开度 <0.020 m |
-| 18 | `left_open_hand` | 左手松开把手 | 实际张开、保持 1.0 s |
-| 19 | `left_joint_transition_after_release` | 左臂关节过渡 | 关节误差、抽屉关闭 |
-| 20 | `left_home` | 双臂回 Home | Home、手、抽屉门控 |
+| 6 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
+| 7 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
+| 8 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 左 TCP、抽屉开度、0.5 s |
+| 9 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
+| 10 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
+| 11 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
+| 12 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
+| 13 | `right_hold_grasp` | 保持抓握 | 0.5 s |
+| 14 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
+| 15 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
+| 16 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
+| 17 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
+| 18 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 右手实际张开 |
+| 19 | `right_retreat_and_start_close` | 右臂回 Home、左手关抽屉 | 抽屉开度 <0.020 m |
+| 20 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s，不在接触把手时等待自由空间张开角 |
+| 21 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
+| 22 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
+| 23 | `left_home` | 双臂回 Home | Home、手、抽屉门控 |
 
 ```mermaid
 stateDiagram-v2
     [*] --> OpenHands
     OpenHands --> LeftApproach
     LeftApproach --> LeftGrasp
-    LeftGrasp --> PullDrawer
-    PullDrawer --> RightPregrasp
+    LeftGrasp --> PreloadHandle
+    PreloadHandle --> PullDrawer
+    PullDrawer --> HoldDrawerOpen
+    HoldDrawerOpen --> RightPregrasp
     RightPregrasp --> RightGrasp
     RightGrasp --> SettleOpen
     SettleOpen --> CloseHand
@@ -71,17 +76,19 @@ stateDiagram-v2
     LiftClear --> RetreatClear
     RetreatClear --> CloseDrawer
     CloseDrawer --> LeftRelease
-    LeftRelease --> JointTransition
+    LeftRelease --> ClearHandle
+    ClearHandle --> JointTransition
     JointTransition --> Home
     Home --> [*]
 ```
 
 状态图将若干细分接近阶段合并为逻辑块，表格保留了真实阶段名。
 
-这些 20 个阶段是**专家控制阶段**，不再逐个作为模型语言。当前
-`drawer_10phase_v1` 将相邻控制阶段归并为 10 个语言宏阶段；采集仍执行上述全部
+这些 23 个阶段是**专家控制阶段**，其中包括抓把手后的轻微预拉确认、拉开后的
+稳定保持，以及关门松手后的后上方脱离；它们不再逐个作为模型语言。当前
+`drawer_10phase_v3_safe_handle_clear` 将相邻控制阶段归并为 10 个语言宏阶段；采集仍执行上述全部
 控制动作，只降低模型任务文本和 Rollout schedule 的切换次数。稳定映射见
-`docs/LANGUAGE_PHASES.md`，不能用 prompt 字符串代替阶段 ID 充当程序契约。
+工程入口与当前语言契约摘要集中在 `docs/PIPELINE.md`，不能用 prompt 字符串代替阶段 ID 充当程序契约。
 
 ### 2.1.3 Anchor 与相对目标
 
@@ -91,7 +98,7 @@ Anchor 是从当前仿真状态测得的参考点，例如初始抽屉把手、�
 p^{target}=p^{anchor}+\Delta p_{base}
 \]
 
-相对目标比固定世界坐标更适合随机化：罐子位置变化时，预抓取、抓取和抬升目标随罐子一起移动；抽屉初始开度变化时，把手目标也由实时状态更新。
+相对目标比固定世界坐标更适合随机化：罐子位置变化时，预抓取、抓取和抬升目标随罐子一起移动。抽屉当前固定从关闭状态开始，但把手和开门目标仍通过实测锚点计算。
 
 一个简化目标配置如下：
 
@@ -220,14 +227,14 @@ z\in[1.00,1.04]\ \mathrm{m}
 
 右手松开后不会直接向外抽离，而是先垂直抬升 0.10 m，再向机器人侧和远离抽屉方向移动 `[-0.10,-0.18,+0.02] m`。这降低了张开手指扫到罐子或抽屉边缘的风险。
 
-右手清空抽屉后可立即回 Home，同时左手关闭抽屉。左手松开把手后使用显式关节过渡：
+右手清空抽屉后可立即回 Home，同时左手关闭抽屉。抽屉关闭后，左手先在原位持续发出 1.0 秒张开命令。由于手掌仍包裹实体把手，此时不要求手指达到无接触时的完整张开角；否则接触约束会让状态机一直等待。随后使用显式关节过渡：
 
 ```yaml
 left_arm_joint_target:
   [0.430, 0.677, 0.100, -1.782, -0.029, -0.098, -0.402]
 ```
 
-该中间姿态让肘部后收并使手腕向后上方离开把手，再回 Home，避免纯 Cartesian IK 选择前伸肘部或绕大弯。
+张手等待后，左手先相对实测位置向机器人方向后退 4 cm、向上抬升 5 cm，并保持当前腕部姿态；只有 TCP 到位、手指实际张开且抽屉仍关闭，才进入上述固定关节姿态。该中间姿态继续让肘部后收，再回 Home，避免手指在大幅关节运动开始时擦碰把手，也避免纯 Cartesian IK 选择前伸肘部或绕大弯。
 
 ### 2.1.10 重力补偿的作用边界
 
@@ -284,7 +291,7 @@ f_{data}=\frac{f_{control}}{N}=\frac{120}{6}=20\ \mathrm{Hz}
 | `obs/right_wrist_rgb` | 右腕相机 | 训练视觉 |
 | `obs/task_description` | 当前阶段任务文本 | 语言条件 |
 | `obs/language_phase_id` | 10 阶段稳定 ID | 转换与 Rollout 契约 |
-| `obs/expert_phase_name` | 20 阶段真实控制名 | 失败诊断 |
+| `obs/expert_phase_name` | 23 阶段真实控制名 | 失败诊断 |
 | EEF pose | 左/右 TCP | 工程诊断 |
 | drawer object pose | 主罐位姿 | 任务诊断 |
 
@@ -612,7 +619,7 @@ bash run.sh dataset-check
 
 ```bash
 bash run.sh dataset-check \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model
 ```
 
 #### 受保护的完整流水线
@@ -832,7 +839,7 @@ Flow Matching loss 衡量模型预测速度场与目标速度的差异。下降�
 
 ```bash
 bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
@@ -880,7 +887,7 @@ sequenceDiagram
     World-->>Obs: 新状态与新图像
 ```
 
-每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 10 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`。它不是在 Rollout 时直接读取 20 个专家阶段的时长。
+每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 10 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`。它不是在 Rollout 时直接读取 23 个专家阶段的时长。
 
 ### 2.5.2 当前 Rollout 参数
 
@@ -981,7 +988,7 @@ Rollout 的 10 阶段 schedule 来源于数据时长，但开启 `phase-state-ga
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -993,12 +1000,12 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v1_10phase/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
 随机评估遵循 scripted YAML 的 `enabled` 开关与数据集 `s4_contract.json`：当前默认
-启用主罐 5×5 分层格内随机和抽屉初开度随机，不生成干扰物。多轮共用同一 RNG 流。
+启用主罐 5×5 分层格内随机，不生成干扰物；抽屉始终从完全关闭状态开始。多轮共用同一 RNG 流。
 
 #### 诊断动作日志
 

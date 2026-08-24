@@ -56,17 +56,16 @@ def resolve_randomization_cfg(
     randomize_task: bool,
     can_x_range: tuple[float, float] | list[float] | None = None,
     can_y_range: tuple[float, float] | list[float] | None = None,
-    drawer_open_range: tuple[float, float] | list[float] | None = None,
 ) -> dict[str, Any]:
-    """Merge YAML randomization with optional CLI range overrides.
+    """Merge YAML can randomization with optional CLI range overrides.
 
-    Task randomization only covers can XY offset and drawer initial opening.
-    When ``randomize_task`` is False, ranges collapse to zero so the scene stays
-    at the nominal can pose and closed drawer.
+    The drawer initial opening is deterministic and lives under ``drawer`` in
+    the scripted config. When ``randomize_task`` is False, only the can range
+    collapses to zero.
     """
     base = dict(scripted_cfg.get("randomization", {}) or {})
     can_cfg = dict(base.get("can_xy", {}) or {})
-    drawer_cfg = dict(base.get("drawer_initial_open", {}) or {})
+    drawer_cfg = dict(scripted_cfg.get("drawer", {}) or {})
 
     if can_x_range is not None:
         if len(can_x_range) != 2:
@@ -78,30 +77,20 @@ def resolve_randomization_cfg(
             raise ValueError(f"--can-y-range expects 2 values, got {can_y_range!r}")
         can_cfg["y_range"] = [float(can_y_range[0]), float(can_y_range[1])]
         can_cfg["enabled"] = True
-    if drawer_open_range is not None:
-        if len(drawer_open_range) != 2:
-            raise ValueError(f"--drawer-open-range expects 2 values, got {drawer_open_range!r}")
-        drawer_cfg["range"] = [float(drawer_open_range[0]), float(drawer_open_range[1])]
-        drawer_cfg["enabled"] = True
-
     if not randomize_task:
         can_cfg["x_range"] = [0.0, 0.0]
         can_cfg["y_range"] = [0.0, 0.0]
-        drawer_cfg["range"] = [0.0, 0.0]
         can_cfg["enabled"] = False
-        drawer_cfg["enabled"] = False
     else:
-        # Preserve explicit YAML/CLI enabled flags. Missing can_xy.enabled defaults
-        # on so collection and rollout match the random-can / no-distractor recipe.
+        # Preserve the YAML/CLI can switch. Missing can_xy.enabled defaults on
+        # so collection and rollout match the random-can recipe.
         can_cfg.setdefault("enabled", True)
-        drawer_cfg.setdefault("enabled", True)
         can_cfg.setdefault("x_range", [0.0, 0.0])
         can_cfg.setdefault("y_range", [0.0, 0.0])
-        drawer_cfg.setdefault("range", [0.0, 0.0])
 
     resolved = dict(base)
     resolved["can_xy"] = can_cfg
-    resolved["drawer_initial_open"] = drawer_cfg
+    resolved["fixed_drawer_initial_open_m"] = float(drawer_cfg.get("initial_open_m", 0.0))
     resolved["enabled"] = bool(randomize_task)
     return resolved
 
@@ -145,22 +134,21 @@ def sample_randomization(
     rng: Any | None = None,
     can_grid_sampler: StratifiedGrid2D | None = None,
 ) -> dict[str, Any]:
-    """Sample can XY offset and drawer opening for one episode.
+    """Sample can XY offset for one episode.
 
-    Only can position and drawer opening are randomized. ``seed`` is always the
-    fixed experiment seed (default 42) and is recorded as-is.
+    The drawer always uses the deterministic initial opening copied into the
+    resolved config. ``seed`` is recorded as-is.
     """
     import numpy as np
 
     generator = rng if rng is not None else np.random.default_rng(int(seed))
     can_cfg = random_cfg.get("can_xy", {}) or {}
-    drawer_cfg = random_cfg.get("drawer_initial_open", {}) or {}
     distractor_cfg = random_cfg.get("distractor_cans", {}) or {}
     can_nominal = random_cfg.get("grasp_can_nominal_position", GRASP_CAN_NOMINAL_POSITION)
 
     can_x = 0.0
     can_y = 0.0
-    drawer_open = 0.0
+    drawer_open = float(random_cfg.get("fixed_drawer_initial_open_m", 0.0))
     grid_sample = None
     if bool(random_cfg.get("enabled", False)):
         if bool(can_cfg.get("enabled", False)):
@@ -172,9 +160,6 @@ def sample_randomization(
                 y_range = can_cfg.get("y_range", [0.0, 0.0])
                 can_x = float(generator.uniform(*x_range))
                 can_y = float(generator.uniform(*y_range))
-        if bool(drawer_cfg.get("enabled", True)):
-            open_range = drawer_cfg.get("range", [0.0, 0.0])
-            drawer_open = float(generator.uniform(*open_range))
 
     distractor_positions: dict[str, list[float]] = {}
     if bool(random_cfg.get("distractor_cans_enabled", False)):
@@ -371,12 +356,11 @@ def aggregate_rollout_summary(
         "randomize_task": bool(randomize_task),
         "seed": int(base_seed),
         "randomization": {
-            "variables": ["can_xy_offset_m", "drawer_open_m", "distractor_can_xy"],
+            "variables": ["can_xy_offset_m", "distractor_can_xy"],
             "can_xy": randomization.get("can_xy", {}),
-            "drawer_initial_open": {
-                "range": (randomization.get("drawer_initial_open", {}) or {}).get("range"),
-                "enabled": (randomization.get("drawer_initial_open", {}) or {}).get("enabled"),
-            },
+            "fixed_drawer_initial_open_m": float(
+                randomization.get("fixed_drawer_initial_open_m", 0.0)
+            ),
         },
         "success_count": successes,
         "complete_count": completes,

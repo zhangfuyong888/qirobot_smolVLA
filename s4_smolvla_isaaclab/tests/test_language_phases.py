@@ -30,7 +30,7 @@ def test_drawer_language_contract_covers_all_expert_phases_once_in_order():
     scripted = load_scripted_config()
     contract = language.load_language_phase_contract(scripted)
 
-    assert contract.version == "drawer_10phase_v1"
+    assert contract.version == "drawer_10phase_v3_safe_handle_clear"
     assert tuple(phase.id for phase in contract.phases) == EXPECTED_IDS
     assert len({phase.task for phase in contract.phases}) == 10
 
@@ -47,6 +47,9 @@ def test_drawer_language_contract_maps_expert_name_legacy_text_and_prompt():
 
     assert contract.for_expert_phase("left_approach_handle").id == "approach_drawer_handle"
     assert contract.for_expert_phase("left_grasp_handle").id == "approach_drawer_handle"
+    assert contract.for_expert_phase("left_preload_handle").id == "pull_drawer"
+    assert contract.for_expert_phase("left_hold_drawer_open").id == "pull_drawer"
+    assert contract.rollout_gate_config("pull_drawer", scripted)["name"] == "left_hold_drawer_open"
     legacy = expert_by_name["right_settle_before_close"]["task"]
     assert contract.for_legacy_task(legacy).id == "approach_can"
     prompt = contract.for_id("release_and_retreat").task
