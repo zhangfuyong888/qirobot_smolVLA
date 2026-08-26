@@ -44,10 +44,10 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["randomization"]["can_xy"]["enabled"] is True
     assert cfg["randomization"]["distractor_cans"]["enabled"] is False
     assert cfg["randomization"]["can_xy"]["x_range"] == [-0.025, -0.005]
-    assert cfg["randomization"]["can_xy"]["y_range"] == [-0.17, 0.01]
+    assert cfg["randomization"]["can_xy"]["y_range"] == [-0.16, 0.00]
     x_width = np.ptp(cfg["randomization"]["can_xy"]["x_range"])
     y_width = np.ptp(cfg["randomization"]["can_xy"]["y_range"])
-    assert np.isclose(x_width * y_width, 0.0036)  # 36 cm^2 reserved re-enable area
+    assert np.isclose(x_width * y_width, 0.0032)  # 32 cm^2 active randomization area
     assert cfg["randomization"]["can_xy"]["max_grasp_retries_same_position"] == 3
     cabinet_support_near_x = 0.4752
     tomato_can_radius_x = 0.03383
@@ -58,13 +58,18 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["drawer"]["initial_open_m"] == 0.0
     assert cfg["drawer"]["target_open_m"] == 0.18
     assert cfg["hands"]["left_close"] == [1.0, 0.22, 0.75, 0.75, 0.75, 0.75]
+    assert cfg["targets"]["left_handle_transition_1"]["offset"] == [-0.1635, -0.0230, 0.168]
     assert cfg["targets"]["left_handle_transition_1"]["rpy"] == [-1.5, -0.05, 1.5]
+    assert cfg["targets"]["left_handle_transition_2"]["offset"] == [-0.1585, -0.0220, 0.1418]
     assert cfg["targets"]["left_handle_transition_2"]["rpy"] == [-1.5, -0.15, 1.5]
-    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.0975, -0.0185, 0.0368]
+    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.0975, -0.0285, 0.0368]
     assert cfg["targets"]["left_handle_transition_3"]["rpy"] == [-1.5, -0.20, 1.5]
-    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1055, -0.0185, 0.0368]
-    assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.0975, -0.0185, 0.0368]
-    assert cfg["targets"]["left_drawer_open"]["rpy"] == [-1.5, -0.20, 1.5]
+    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1055, -0.0285, 0.0368]
+    assert cfg["targets"]["left_handle_preload"]["rpy"] == [-1.5, -0.26, 1.5]
+    assert cfg["targets"]["left_handle_preload"]["orientation_weight"] == 0.70
+    assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.0975, -0.0285, 0.0368]
+    assert cfg["targets"]["left_drawer_open"]["rpy"] == [-1.5, -0.32, 1.5]
+    assert cfg["targets"]["left_drawer_open"]["orientation_weight"] == 0.75
     assert cfg["hands"]["right_open"] == [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert cfg["hands"]["right_close"] == [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
     assert cfg["targets"]["right_can_grasp"]["offset"] == [-0.050, -0.038, 0.030]

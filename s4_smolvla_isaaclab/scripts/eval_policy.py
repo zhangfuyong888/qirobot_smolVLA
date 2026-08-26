@@ -166,7 +166,7 @@ import torch
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.language_phases import LanguagePhaseContract, load_language_phase_contract
-from s4_pipeline.rollout_control import apply_phase_action_mask
+from s4_pipeline.rollout_control import apply_phase_action_mask, rollout_hard_failure_reason
 from s4_pipeline.rollout_metrics import (
     aggregate_rollout_summary,
     default_summary_json_path,
@@ -1114,14 +1114,30 @@ def main() -> None:
                             force_transition = phase_extension >= extension_limit
                             if gate_ready or force_transition:
                                 if not gate_ready:
+                                    failure_condition = str(
+                                        schedule[phase_index].get(
+                                            "rollout_failure_condition", "none"
+                                        )
+                                    )
+                                    hard_failure_reason = None
+                                    if failure_condition != "none":
+                                        gate_cfg = language_contract.rollout_gate_config(
+                                            str(schedule[phase_index]["language_phase_id"]),
+                                            scripted_cfg,
+                                        )
+                                        hard_failure_reason = rollout_hard_failure_reason(
+                                            failure_condition,
+                                            drawer_open_m=drawer_open,
+                                            gate_config=gate_cfg,
+                                        )
                                     timeout_behavior = str(
                                         schedule[phase_index].get("rollout_timeout", "fail")
                                     )
-                                    if timeout_behavior == "fail":
+                                    if hard_failure_reason is not None or timeout_behavior == "fail":
                                         rollout_failure_reason = (
                                             f"phase={schedule[phase_index].get('language_phase_id', phase_index)} "
                                             f"gate timeout after {phase_extension} extension frames: "
-                                            f"{', '.join(gate_reasons)}"
+                                            f"{hard_failure_reason or ', '.join(gate_reasons)}"
                                         )
                                         print(f"[EVAL][GATE][FAIL] {rollout_failure_reason}")
                                         break

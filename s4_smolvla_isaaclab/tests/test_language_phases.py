@@ -35,7 +35,16 @@ def test_drawer_language_contract_covers_all_expert_phases_once_in_order():
     assert contract.version == "drawer_12phase_v4_serial_acquire"
     assert tuple(phase.id for phase in contract.phases) == EXPECTED_IDS
     assert len({phase.task for phase in contract.phases}) == 12
-    assert all(phase.rollout_timeout == "fail" for phase in contract.phases)
+    assert all(phase.rollout_timeout == "advance" for phase in contract.phases)
+    failure_condition_by_id = {
+        phase.id: phase.rollout_failure_condition for phase in contract.phases
+    }
+    assert failure_condition_by_id["left_pull_drawer"] == "drawer_open_min"
+    assert all(
+        condition == "none"
+        for phase_id, condition in failure_condition_by_id.items()
+        if phase_id != "left_pull_drawer"
+    )
 
     expert_names = tuple(item["name"] for item in scripted["phases"])
     mapped_names = tuple(name for phase in contract.phases for name in phase.source_phases)

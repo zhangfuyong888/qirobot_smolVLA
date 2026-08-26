@@ -34,7 +34,16 @@ def test_phase_schedule_is_annotated_with_stable_macro_ids():
     assert [item["active_action_groups"] for item in annotated] == [
         list(phase.active_action_groups) for phase in contract.phases
     ]
-    assert all(item["rollout_timeout"] == "fail" for item in annotated)
+    assert all(item["rollout_timeout"] == "advance" for item in annotated)
+    failure_condition_by_id = {
+        item["language_phase_id"]: item["rollout_failure_condition"] for item in annotated
+    }
+    assert failure_condition_by_id["left_pull_drawer"] == "drawer_open_min"
+    assert all(
+        condition == "none"
+        for phase_id, condition in failure_condition_by_id.items()
+        if phase_id != "left_pull_drawer"
+    )
 
 
 def test_phase_schedule_rejects_prompt_not_in_dataset_contract():

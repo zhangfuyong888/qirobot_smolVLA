@@ -9,6 +9,7 @@ from typing import Any
 ACTION_GROUPS = frozenset({"left_arm", "left_hand", "right_arm", "right_hand"})
 ROLLOUT_TIMEOUTS = frozenset({"advance", "fail"})
 ROLLOUT_EXTENSIONS = frozenset({"default", "drawer"})
+ROLLOUT_FAILURE_CONDITIONS = frozenset({"none", "drawer_open_min"})
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class LanguagePhase:
     active_action_groups: tuple[str, ...]
     rollout_timeout: str
     rollout_extension: str
+    rollout_failure_condition: str
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,7 @@ class LanguagePhaseContract:
                 "active_action_groups": list(phase.active_action_groups),
                 "rollout_timeout": phase.rollout_timeout,
                 "rollout_extension": phase.rollout_extension,
+                "rollout_failure_condition": phase.rollout_failure_condition,
             }
             for phase in self.phases
         ]
@@ -105,6 +108,7 @@ def load_language_phase_contract(scripted_cfg: dict[str, Any]) -> LanguagePhaseC
     expert_names = tuple(str(item.get("name", "")) for item in raw_expert_phases)
     if any(not name for name in expert_names) or len(set(expert_names)) != len(expert_names):
         raise ValueError("Expert phase names must be non-empty and unique")
+    expert_by_name = {str(item["name"]): item for item in raw_expert_phases}
     expert_tasks = {str(item["name"]): str(item.get("task", "")) for item in raw_expert_phases}
     phases: list[LanguagePhase] = []
     for raw in raw_language_phases:
@@ -146,6 +150,21 @@ def load_language_phase_contract(scripted_cfg: dict[str, Any]) -> LanguagePhaseC
                 f"Language phase {phase_id!r} rollout_extension must be one of "
                 f"{sorted(ROLLOUT_EXTENSIONS)}"
             )
+        rollout_failure_condition = str(
+            raw.get("rollout_failure_condition", "none")
+        ).strip()
+        if rollout_failure_condition not in ROLLOUT_FAILURE_CONDITIONS:
+            raise ValueError(
+                f"Language phase {phase_id!r} rollout_failure_condition must be one of "
+                f"{sorted(ROLLOUT_FAILURE_CONDITIONS)}"
+            )
+        if rollout_failure_condition == "drawer_open_min":
+            gate_cfg = expert_by_name[rollout_gate_phase]
+            if gate_cfg.get("drawer_open_min") is None:
+                raise ValueError(
+                    f"Language phase {phase_id!r} uses drawer_open_min failure condition "
+                    f"but gate phase {rollout_gate_phase!r} has no drawer_open_min"
+                )
         phases.append(
             LanguagePhase(
                 phase_id,
@@ -155,6 +174,7 @@ def load_language_phase_contract(scripted_cfg: dict[str, Any]) -> LanguagePhaseC
                 active_action_groups,
                 rollout_timeout,
                 rollout_extension,
+                rollout_failure_condition,
             )
         )
 

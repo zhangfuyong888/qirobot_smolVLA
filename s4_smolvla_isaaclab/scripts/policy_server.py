@@ -84,6 +84,9 @@ def _annotate_phase_schedule(
                 "active_action_groups": [str(group) for group in active_groups],
                 "rollout_timeout": str(contract_phase.get("rollout_timeout", "fail")),
                 "rollout_extension": str(contract_phase.get("rollout_extension", "default")),
+                "rollout_failure_condition": str(
+                    contract_phase.get("rollout_failure_condition", "none")
+                ),
             }
         )
     expected_ids = [str(item["id"]) for item in raw_phases]

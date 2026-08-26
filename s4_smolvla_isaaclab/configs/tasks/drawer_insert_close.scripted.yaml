@@ -26,8 +26,9 @@ randomization:
     # Extend toward the right shoulder, where the arm has substantially better
     # leverage. Keep the far corner out of the higher-condition IK band:
     # world y=[-0.300,-0.120]. The resulting
-    # 2 cm x 18 cm = 36 cm^2 region is still over 5x the previous 7 cm^2 area.
-    y_range: [-0.17, 0.01]
+    # Keep 1 cm away from both former Y extremes. The resulting
+    # 2 cm x 16 cm = 32 cm^2 region still preserves meaningful variation.
+    y_range: [-0.16, 0.00]
     # Split the continuous XY range into 5x5 cells. Each successful group of
     # 25 episodes visits every cell once in shuffled order, while the precise
     # point remains uniformly random inside that cell. Failed points advance
@@ -115,22 +116,27 @@ targets:
   left_handle_transition_1:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.1235, -0.0130, 0.108]
+    # Keep the open fingers safely above and behind the cabinet top during the
+    # long Home-to-handle sweep: 40 mm farther toward the robot and 60 mm up
+    # relative to the original transition path.
+    offset: [-0.1635, -0.0230, 0.168]
     rpy: [-1.5, -0.05, 1.5]
     orientation_weight: 0.20
   left_handle_transition_2:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    offset: [-0.1185, -0.0120, 0.0818]
+    # The terminal pre-grasp keeps the same enlarged clearance: 40 mm farther
+    # and 60 mm higher than the original point. The final acquire phase, rather
+    # than the initial sweep, performs the controlled descent onto the handle.
+    offset: [-0.1585, -0.0220, 0.1418]
     rpy: [-1.5, -0.15, 1.5]
     orientation_weight: 0.35
   left_handle_transition_3:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    # The first fixed-drawer trials converged repeatably 6 mm behind, 8 mm to
-    # the side, and 15 mm above the old target. Move the target to that stable
-    # IK/contact branch instead of accepting a permanent Cartesian residual.
-    offset: [-0.0975, -0.0185, 0.0368]
+    # Keep the validated grasp depth/height and shift the whole handle path
+    # 10 mm toward robot-right (-Y) so the palm centers on the handle.
+    offset: [-0.0975, -0.0285, 0.0368]
     rpy: [-1.5, -0.20, 1.5]
     orientation_weight: 0.60
   left_handle_preload:
@@ -139,18 +145,23 @@ targets:
     # Pull 8 mm from the final grasp pose. Requiring corresponding drawer
     # motion verifies that the closed hand is mechanically coupled to the
     # handle before the full pull begins.
-    offset: [-0.1055, -0.0185, 0.0368]
-    rpy: [-1.5, -0.20, 1.5]
-    orientation_weight: 0.60
+    offset: [-0.1055, -0.0285, 0.0368]
+    # Start pitching the wrist down during the short preload so the fingers
+    # stay wrapped around the handle before the long pull.
+    rpy: [-1.5, -0.26, 1.5]
+    orientation_weight: 0.70
   left_drawer_open:
     anchor: drawer_handle_open
     offset_frame: base_link
     # Preserve the final grasp's handle-relative transform throughout the full
     # pull. target_open_m alone supplies the drawer travel, avoiding a wrist
     # shift immediately after the preload succeeds.
-    offset: [-0.0975, -0.0185, 0.0368]
-    rpy: [-1.5, -0.20, 1.5]
-    orientation_weight: 0.60
+    offset: [-0.0975, -0.0285, 0.0368]
+    # Maintain a modest downward wrist pitch throughout the pull. This avoids
+    # the upward wrist flare observed in rollout that can unload the fingers
+    # and let the handle escape.
+    rpy: [-1.5, -0.32, 1.5]
+    orientation_weight: 0.75
   left_drawer_closed:
     # Fallback TCP pose and orientation weight for close/release phases. During
     # left_close_drawer, the live TCP position is replaced by a
@@ -196,84 +207,85 @@ language_phases:
     source_phases: [initial_open_hands]
     rollout_gate_phase: initial_open_hands
     active_action_groups: [left_hand, right_hand]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: left_pregrasp_handle
     task: "Move the open left hand to the pre-grasp pose near the drawer handle."
     source_phases: [left_approach_handle, left_approach_handle_fine, left_hold_handle_pregrasp]
     rollout_gate_phase: left_hold_handle_pregrasp
     active_action_groups: [left_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: drawer
   - id: left_acquire_handle
     task: "Approach the drawer handle and close the left hand around it securely."
     source_phases: [left_grasp_handle, left_close_hand, left_preload_handle]
     rollout_gate_phase: left_preload_handle
     active_action_groups: [left_arm, left_hand]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: drawer
   - id: left_pull_drawer
     task: "Pull the drawer fully open with the left hand and hold it steady."
     source_phases: [pull_drawer, left_hold_drawer_open]
     rollout_gate_phase: left_hold_drawer_open
     active_action_groups: [left_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
+    rollout_failure_condition: drawer_open_min
     rollout_extension: drawer
   - id: right_pregrasp_can
     task: "Move the open right hand to the pre-grasp pose near the can."
     source_phases: [right_pregrasp_can, right_hold_can_pregrasp]
     rollout_gate_phase: right_hold_can_pregrasp
     active_action_groups: [right_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: right_acquire_can
     task: "Approach the can and close the right hand around it securely."
     source_phases: [right_grasp_can, right_settle_before_close, right_close_hand, right_hold_grasp]
     rollout_gate_phase: right_hold_grasp
     active_action_groups: [right_arm, right_hand]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: right_lift_can
     task: "Lift the grasped can clear of the support surface."
     source_phases: [right_lift_can]
     rollout_gate_phase: right_lift_can
     active_action_groups: [right_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: right_place_can
     task: "Move the grasped can into the open drawer."
     source_phases: [right_place_in_drawer]
     rollout_gate_phase: right_place_in_drawer
     active_action_groups: [right_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: right_release_and_retreat
     task: "Release the can and move the open right hand clear of the drawer."
     source_phases: [right_open_hand, right_lift_clear_drawer, right_retreat_clear_drawer]
     rollout_gate_phase: right_retreat_clear_drawer
     active_action_groups: [right_arm, right_hand]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: right_return_home
     task: "Return the right arm home while keeping the drawer open."
     source_phases: [right_home_after_retreat]
     rollout_gate_phase: right_home_after_retreat
     active_action_groups: [right_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
   - id: left_close_drawer
     task: "Close the drawer with the left hand."
     source_phases: [left_close_drawer]
     rollout_gate_phase: left_close_drawer
     active_action_groups: [left_arm]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: drawer
   - id: left_release_and_home
     task: "Release the drawer handle, move clear, and return the left arm home."
     source_phases: [left_open_hand, left_clear_handle_after_release, left_joint_transition_after_release, left_home]
     rollout_gate_phase: left_home
     active_action_groups: [left_arm, left_hand]
-    rollout_timeout: fail
+    rollout_timeout: advance
     rollout_extension: default
 
 phases:
