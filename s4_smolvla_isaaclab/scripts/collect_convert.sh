@@ -16,6 +16,7 @@ HDF5_FILE=""
 LEROBOT_OUTPUT_ROOT=""
 REPO_ID=""
 MAX_FAILED_ATTEMPTS=""
+CONTINUE_ON_FAILURE=false
 ALLOW_SKIPPED_GRID_CELLS=false
 
 usage() {
@@ -40,6 +41,8 @@ Options:
   --overwrite               Replace an existing converted dataset
   --resume                  Append to --hdf5-file until --episodes total successes
   --max-failed-attempts N   Abort if failures exceed N (default: 1000 safety cap)
+  --continue-on-failure      Keep retrying rejected/timeout attempts without a failure-count cap;
+                             failed attempts are logged and never committed to HDF5
   --allow-skipped-grid-cells
                             Permit conversion when a grid cell was skipped
   -h, --help                Show this help
@@ -65,6 +68,7 @@ while [[ $# -gt 0 ]]; do
         --overwrite) OVERWRITE=true; shift ;;
         --resume) RESUME=true; shift ;;
         --max-failed-attempts) MAX_FAILED_ATTEMPTS="$2"; shift 2 ;;
+        --continue-on-failure) CONTINUE_ON_FAILURE=true; shift ;;
         --allow-skipped-grid-cells) ALLOW_SKIPPED_GRID_CELLS=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown collect-convert option: $1" >&2; usage >&2; exit 2 ;;
@@ -88,10 +92,14 @@ if [[ "$RECORD_EVERY_N" -ne 6 ]]; then
     echo "--record-every-n must be 6 for the configured 120 Hz simulation -> 20 Hz dataset contract" >&2
     exit 2
 fi
-if [[ -z "$MAX_FAILED_ATTEMPTS" ]]; then
+if [[ "$CONTINUE_ON_FAILURE" == true && -n "$MAX_FAILED_ATTEMPTS" ]]; then
+    echo "Use either --continue-on-failure or --max-failed-attempts, not both" >&2
+    exit 2
+fi
+if [[ "$CONTINUE_ON_FAILURE" == false && -z "$MAX_FAILED_ATTEMPTS" ]]; then
     MAX_FAILED_ATTEMPTS=1000
 fi
-if ! [[ "$MAX_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
+if [[ "$CONTINUE_ON_FAILURE" == false ]] && ! [[ "$MAX_FAILED_ATTEMPTS" =~ ^[0-9]+$ ]]; then
     echo "--max-failed-attempts must be a non-negative integer" >&2
     exit 2
 fi
@@ -145,8 +153,10 @@ RECORD_ARGS=(
     --random-seed "$RANDOM_SEED"
     --failure-log "$FAILURE_LOG"
     --failure-summary "$FAILURE_SUMMARY"
-    --max-failed-attempts "$MAX_FAILED_ATTEMPTS"
 )
+if [[ "$CONTINUE_ON_FAILURE" == false ]]; then
+    RECORD_ARGS+=(--max-failed-attempts "$MAX_FAILED_ATTEMPTS")
+fi
 if [[ "$HEADLESS" == true ]]; then
     RECORD_ARGS+=(--headless)
 fi
@@ -164,6 +174,11 @@ echo "  Random seed:    $RANDOM_SEED"
 echo "  Attempt timeout:${EPISODE_TIMEOUT_S}s"
 echo "  Reset settle:   ${RESET_SETTLE_S}s"
 echo "  Failure report: $FAILURE_SUMMARY"
+if [[ "$CONTINUE_ON_FAILURE" == true ]]; then
+    echo "  Failure budget: disabled (rejected attempts are logged and discarded)"
+else
+    echo "  Failure budget: $MAX_FAILED_ATTEMPTS cumulative attempts"
+fi
 echo "  Headless:       $HEADLESS"
 echo "  Dataset repo:   $REPO_ID"
 echo "  Dataset parent: $LEROBOT_OUTPUT_ROOT"
@@ -177,8 +192,10 @@ CHECK_ARGS=(
     "$HDF5_FILE" --hdf5
     --expected-episodes "$EPISODES"
     --failure-summary "$FAILURE_SUMMARY"
-    --max-failed-attempts "$MAX_FAILED_ATTEMPTS"
 )
+if [[ "$CONTINUE_ON_FAILURE" == false ]]; then
+    CHECK_ARGS+=(--max-failed-attempts "$MAX_FAILED_ATTEMPTS")
+fi
 if [[ "$ALLOW_SKIPPED_GRID_CELLS" == true ]]; then
     CHECK_ARGS+=(--allow-skipped-grid-cells)
 fi

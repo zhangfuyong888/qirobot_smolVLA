@@ -151,6 +151,7 @@ bash run.sh record \
 - `--episodes 200` 是最终成功 episode 总数；
 - 失败或超时 episode 不提交到 HDF5 成功组；
 - 失败原因、阶段和物体位置写入独立日志；
+- 偶发物理失败需要持续采集时，`collect-convert` 可使用 `--continue-on-failure`。它只取消累计失败次数上限；失败 episode 仍被丢弃并记录，程序异常、契约检查失败和最终成功数不足仍会终止流水线；
 - Headless 只隐藏窗口，相机仍然渲染；
 - 最终数据只接受满足抽屉与罐子成功条件的 episode。
 
