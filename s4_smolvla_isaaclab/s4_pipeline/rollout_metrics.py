@@ -15,8 +15,12 @@ from s4_pipeline.drawer_distractors import (
 )
 
 
-_LONG_DRAWER_EXTENSION_PHASES = frozenset({"left_approach_handle", "pull_drawer"})
-_LONG_DRAWER_EXTENSION_LANGUAGE_PHASES = frozenset({"approach_drawer_handle", "pull_drawer"})
+_LONG_DRAWER_EXTENSION_PHASES = frozenset(
+    {"left_hold_handle_pregrasp", "left_preload_handle", "left_hold_drawer_open", "left_close_drawer"}
+)
+_LONG_DRAWER_EXTENSION_LANGUAGE_PHASES = frozenset(
+    {"left_pregrasp_handle", "left_acquire_handle", "left_pull_drawer", "left_close_drawer"}
+)
 
 
 def rollout_phase_extension_frames(
@@ -33,6 +37,11 @@ def rollout_phase_extension_frames(
     Dataset schedules contain task text rather than scripted phase names, so
     resolve the name through the current scripted task configuration.
     """
+    extension_kind = str(phase.get("rollout_extension", ""))
+    if extension_kind == "drawer":
+        return max(int(drawer_frames), 0)
+    if extension_kind == "default":
+        return max(int(default_frames), 0)
     language_phase_id = str(phase.get("language_phase_id", ""))
     if language_phase_id in _LONG_DRAWER_EXTENSION_LANGUAGE_PHASES:
         return max(int(drawer_frames), 0)

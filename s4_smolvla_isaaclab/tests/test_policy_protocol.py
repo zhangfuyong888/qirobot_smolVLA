@@ -31,6 +31,10 @@ def test_phase_schedule_is_annotated_with_stable_macro_ids():
     assert [item["language_phase_id"] for item in annotated] == [
         phase.id for phase in contract.phases
     ]
+    assert [item["active_action_groups"] for item in annotated] == [
+        list(phase.active_action_groups) for phase in contract.phases
+    ]
+    assert all(item["rollout_timeout"] == "fail" for item in annotated)
 
 
 def test_phase_schedule_rejects_prompt_not_in_dataset_contract():

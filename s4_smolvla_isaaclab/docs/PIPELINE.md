@@ -6,10 +6,10 @@
 
 ```mermaid
 flowchart LR
-    A[scripted.yaml<br/>23 个专家阶段] --> B[IsaacLab 120 Hz]
+    A[scripted.yaml<br/>26 个专家阶段] --> B[IsaacLab 120 Hz]
     B -->|每 6 步记录| C[HDF5 20 Hz]
     C --> D[dataset-check]
-    D --> E[LeRobotDataset<br/>10 个语言阶段]
+    D --> E[LeRobotDataset<br/>12 个语言阶段]
     E --> F[dataset-check]
     F --> G[SmolVLA 训练]
     G --> H[checkpoint contract]
@@ -26,14 +26,14 @@ flowchart LR
 |---|---|
 | Task | `drawer_insert_close` |
 | Schema | `s4_bimanual_v1` |
-| Language contract | `drawer_10phase_v3_safe_handle_clear` |
+| Language contract | `drawer_12phase_v4_serial_acquire` |
 | State | 26D actual joint state |
 | Action | 26D absolute joint target |
 | 顺序 | 左臂 7、左手 6、右臂 7、右手 6 |
 | 相机 | `chest_front_rgb`、`left_wrist_rgb`、`right_wrist_rgb` |
 | 图像 | RGB，480×680 |
 | 控制 / 数据频率 | 120 / 20 Hz |
-| 专家 / 语言阶段 | 23 / 10 |
+| 专家 / 语言阶段 | 26 / 12 |
 | Action Chunk | 50 帧 |
 | 训练 padding 上限 | state 50D、action 32D |
 | 主罐随机 | 5×5 分层网格内连续随机 |
@@ -59,20 +59,22 @@ flowchart LR
 
 ### 2.2 语言阶段
 
-当前 10 个任务文本按顺序是：
+当前 12 个任务文本按顺序是：
 
 1. `Open both hands and prepare for the task.`
-2. `Move the left hand onto the drawer handle.`
-3. `Close the left hand around the drawer handle and hold it.`
-4. `Pull the drawer open with the left hand.`
-5. `Move the open right hand around the can and hold it steady.`
-6. `Close the right hand around the can and hold it steady.`
+2. `Move the open left hand to the pre-grasp pose near the drawer handle.`
+3. `Approach the drawer handle and close the left hand around it securely.`
+4. `Pull the drawer fully open with the left hand and hold it steady.`
+5. `Move the open right hand to the pre-grasp pose near the can.`
+6. `Approach the can and close the right hand around it securely.`
 7. `Lift the grasped can clear of the support surface.`
 8. `Move the grasped can into the open drawer.`
 9. `Release the can and move the open right hand clear of the drawer.`
-10. `Close the drawer and return both arms home.`
+10. `Return the right arm home while keeping the drawer open.`
+11. `Close the drawer with the left hand.`
+12. `Release the drawer handle, move clear, and return the left arm home.`
 
-23 个专家阶段通过稳定 ID 映射到这 10 个语言宏阶段。转换后的 task 顺序不是依赖 metadata 的首次出现顺序，而是由当前语言契约校验和重建。
+26 个专家阶段通过稳定 ID 映射到这 12 个语言宏阶段。预抓握先单独稳定，随后精确接近与手指闭合在同一语言段内连续执行；右臂先回 Home，左臂再关闭抽屉。转换后的 task 顺序不是依赖 metadata 的首次出现顺序，而是由当前语言契约校验和重建。
 
 ## 3. 采集前检查
 
@@ -100,7 +102,7 @@ bash run.sh sim
 
 ```bash
 bash run.sh record \
-  --output datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/smoke_5_seed42.hdf5 \
+  --output datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/smoke_5_seed42.hdf5 \
   --episodes 5 \
   --random-seed 42 \
   --episode-timeout-s 300 \
@@ -120,7 +122,7 @@ cd /path/to/smolVLA/s4_smolvla_isaaclab
 
 EPISODES=200
 MAX_FAILURES=20
-DATASET_NAME=s4_drawer_insert_close_v3_10phase_safe_handle_clear
+DATASET_NAME=s4_drawer_insert_close_v4_12phase_serial_acquire
 RUN_DIR="datasets/staging/${DATASET_NAME}/production_200_seed42"
 HDF5_FILE="${RUN_DIR}/drawer_insert_close_scripted.hdf5"
 FAILURE_LOG="${RUN_DIR}/drawer_insert_close_scripted_failures.jsonl"
@@ -236,7 +238,7 @@ bash run.sh collect-convert \
   --reset-settle-s 2.0 \
   --record-every-n 6 \
   --max-failed-attempts 20 \
-  --hdf5-file datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/production_200_seed42/drawer_insert_close_scripted.hdf5 \
+  --hdf5-file datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/production_200_seed42/drawer_insert_close_scripted.hdf5 \
   --headless
 ```
 
@@ -290,7 +292,7 @@ bash run.sh train \
 ## 9. checkpoint 检查
 
 ```bash
-CHECKPOINT="outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/500000/pretrained_model"
+CHECKPOINT="outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/500000/pretrained_model"
 
 bash run.sh dataset-check \
   "${LEROBOT_DIR}" \
@@ -323,7 +325,7 @@ sequenceDiagram
     participant Policy as SmolVLA Server / Python 3.12
     Sim->>Policy: 3 路 RGB + 26D state + task text
     Policy-->>Sim: 50 帧 action chunk
-    Sim->>Sim: overlap/phase blend + clip + step limit
+    Sim->>Sim: overlap/phase blend + 单臂阶段掩码 + clip + step limit
     Sim->>Sim: 20 Hz 目标插值到 120 Hz 控制
 ```
 
@@ -360,6 +362,8 @@ bash run.sh rollout \
 
 `--success-rate 20` 使用当前 YAML 的主罐随机范围；抽屉仍固定从 `0.00 m` 开始。Action Chunk 50 与重规划间隔 40 是不同概念：模型预测 50 帧，但执行到 40 帧时可以请求新 chunk，并用 5 帧 overlap 融合。
 
+每个语言阶段在数据契约中声明允许变化的 action group。策略仍预测完整 26D，但非活动臂和手保持阶段入口命令：左手操作抽屉时右臂保持，右手操作罐子时左臂持续保持抽屉。关键阶段门控超出扩展预算后会结束该轮并写入 `failure_reason`，不会强制带着错误状态进入下一阶段。
+
 ## 12. Rollout 诊断
 
 输出默认位于：
@@ -380,6 +384,7 @@ bash run.sh diagnose outputs/eval/<run>/ep001_actions.csv
 |---|---|
 | Raw | 当前策略请求返回的原始动作 |
 | Fused | chunk overlap 和阶段切换融合后的动作 |
+| Masked | 应用语言阶段活动臂约束后的动作 |
 | Command | clip、步长限制和插值后发给控制器的目标 |
 | Actual | 仿真中实际关节状态 |
 

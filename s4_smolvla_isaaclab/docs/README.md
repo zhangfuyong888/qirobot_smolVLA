@@ -17,12 +17,12 @@
 | 项目 | 当前配置 |
 |---|---|
 | Task | `drawer_insert_close` |
-| Language contract | `drawer_10phase_v3_safe_handle_clear` |
-| Dataset | `s4_drawer_insert_close_v3_10phase_safe_handle_clear` |
+| Language contract | `drawer_12phase_v4_serial_acquire` |
+| Dataset | `s4_drawer_insert_close_v4_12phase_serial_acquire` |
 | State/action | 26D / 26D absolute joint target |
 | Cameras | 胸前、左腕、右腕 RGB |
 | Dataset/control rate | 20 Hz / 120 Hz |
-| Expert/language phases | 23 / 10 |
+| Expert/language phases | 26 / 12 |
 | Drawer reset | 固定关闭，`0.00 m` |
 | Can sampling | 5×5 分层网格内连续随机 |
 

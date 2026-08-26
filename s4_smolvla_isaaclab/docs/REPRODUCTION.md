@@ -225,8 +225,8 @@ models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct/
 直接 Rollout 需要一起分发：
 
 ```text
-datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear/
-outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/
+datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire/
+outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/
 ```
 
 不能只复制单个权重文件。checkpoint 至少需要完整 `pretrained_model/`，训练续跑还需要 `training_state/` 和完整 `checkpoints/last`。
@@ -287,8 +287,8 @@ bash run.sh sim
 bash run.sh doctor --strict
 
 bash run.sh dataset-check \
-  datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model
+  datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model
 ```
 
 第四层：固定场景 Rollout。
@@ -296,8 +296,8 @@ bash run.sh dataset-check \
 ```bash
 bash run.sh rollout \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
-  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
   --policy-device cuda
 ```
 
@@ -307,8 +307,8 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
-  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
   --policy-device cuda
 ```
 

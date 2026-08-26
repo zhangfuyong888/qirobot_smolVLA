@@ -61,15 +61,31 @@ def _annotate_phase_schedule(
         return schedule
     if not isinstance(raw_phases, list) or not raw_phases:
         raise ValueError("Dataset s4_contract.json has an invalid language_phases list")
-    by_prompt = {str(item.get("task", "")): str(item.get("id", "")) for item in raw_phases}
-    if not all(by_prompt) or not all(by_prompt.values()) or len(by_prompt) != len(raw_phases):
+    by_prompt = {str(item.get("task", "")): dict(item) for item in raw_phases}
+    if (
+        not all(by_prompt)
+        or not all(str(item.get("id", "")) for item in by_prompt.values())
+        or len(by_prompt) != len(raw_phases)
+    ):
         raise ValueError("Dataset language phase prompts and IDs must be non-empty and unique")
     annotated: list[dict[str, Any]] = []
     for item in schedule:
         prompt = str(item.get("task", ""))
         if prompt not in by_prompt:
             raise ValueError(f"Dataset task {prompt!r} is not present in language contract")
-        annotated.append({**item, "language_phase_id": by_prompt[prompt]})
+        contract_phase = by_prompt[prompt]
+        active_groups = contract_phase.get("active_action_groups")
+        if not isinstance(active_groups, list) or not active_groups:
+            raise ValueError(f"Dataset language phase {prompt!r} has no active_action_groups")
+        annotated.append(
+            {
+                **item,
+                "language_phase_id": str(contract_phase["id"]),
+                "active_action_groups": [str(group) for group in active_groups],
+                "rollout_timeout": str(contract_phase.get("rollout_timeout", "fail")),
+                "rollout_extension": str(contract_phase.get("rollout_extension", "default")),
+            }
+        )
     expected_ids = [str(item["id"]) for item in raw_phases]
     actual_ids = [str(item["language_phase_id"]) for item in annotated]
     if actual_ids != expected_ids:

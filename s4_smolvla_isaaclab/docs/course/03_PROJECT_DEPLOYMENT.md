@@ -270,14 +270,14 @@ bash run.sh sim
 
 ```bash
 bash run.sh record \
-  --output datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/deployment_smoke_2.hdf5 \
+  --output datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/deployment_smoke_2.hdf5 \
   --episodes 2 \
   --random-seed 42 \
   --episode-timeout-s 300 \
   --record-every-n 6
 
 bash run.sh dataset-check \
-  datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/deployment_smoke_2.hdf5 \
+  datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/deployment_smoke_2.hdf5 \
   --hdf5 \
   --expected-episodes 2
 ```
@@ -294,7 +294,7 @@ bash run.sh collect-convert \
   --reset-settle-s 2.0 \
   --record-every-n 6 \
   --max-failed-attempts 20 \
-  --hdf5-file datasets/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear/production_200_seed42/drawer_insert_close_scripted.hdf5 \
+  --hdf5-file datasets/staging/s4_drawer_insert_close_v4_12phase_serial_acquire/production_200_seed42/drawer_insert_close_scripted.hdf5 \
   --headless
 ```
 

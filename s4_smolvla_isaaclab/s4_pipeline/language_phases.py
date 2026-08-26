@@ -6,12 +6,20 @@ from dataclasses import dataclass
 from typing import Any
 
 
+ACTION_GROUPS = frozenset({"left_arm", "left_hand", "right_arm", "right_hand"})
+ROLLOUT_TIMEOUTS = frozenset({"advance", "fail"})
+ROLLOUT_EXTENSIONS = frozenset({"default", "drawer"})
+
+
 @dataclass(frozen=True)
 class LanguagePhase:
     id: str
     task: str
     source_phases: tuple[str, ...]
     rollout_gate_phase: str
+    active_action_groups: tuple[str, ...]
+    rollout_timeout: str
+    rollout_extension: str
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,9 @@ class LanguagePhaseContract:
                 "task": phase.task,
                 "source_phases": list(phase.source_phases),
                 "rollout_gate_phase": phase.rollout_gate_phase,
+                "active_action_groups": list(phase.active_action_groups),
+                "rollout_timeout": phase.rollout_timeout,
+                "rollout_extension": phase.rollout_extension,
             }
             for phase in self.phases
         ]
@@ -112,7 +123,40 @@ def load_language_phase_contract(scripted_cfg: dict[str, Any]) -> LanguagePhaseC
             raise ValueError(
                 f"Language phase {phase_id!r} rollout_gate_phase must belong to source_phases"
             )
-        phases.append(LanguagePhase(phase_id, task, source_phases, rollout_gate_phase))
+        active_raw = raw.get("active_action_groups")
+        if not isinstance(active_raw, list) or not active_raw:
+            raise ValueError(f"Language phase {phase_id!r} requires active_action_groups")
+        active_action_groups = tuple(str(group) for group in active_raw)
+        if len(set(active_action_groups)) != len(active_action_groups):
+            raise ValueError(f"Language phase {phase_id!r} has duplicate active_action_groups")
+        unknown_groups = sorted(set(active_action_groups) - ACTION_GROUPS)
+        if unknown_groups:
+            raise ValueError(
+                f"Language phase {phase_id!r} has unknown active_action_groups={unknown_groups}"
+            )
+        rollout_timeout = str(raw.get("rollout_timeout", "fail")).strip()
+        if rollout_timeout not in ROLLOUT_TIMEOUTS:
+            raise ValueError(
+                f"Language phase {phase_id!r} rollout_timeout must be one of "
+                f"{sorted(ROLLOUT_TIMEOUTS)}"
+            )
+        rollout_extension = str(raw.get("rollout_extension", "default")).strip()
+        if rollout_extension not in ROLLOUT_EXTENSIONS:
+            raise ValueError(
+                f"Language phase {phase_id!r} rollout_extension must be one of "
+                f"{sorted(ROLLOUT_EXTENSIONS)}"
+            )
+        phases.append(
+            LanguagePhase(
+                phase_id,
+                task,
+                source_phases,
+                rollout_gate_phase,
+                active_action_groups,
+                rollout_timeout,
+                rollout_extension,
+            )
+        )
 
     ids = [phase.id for phase in phases]
     prompts = [phase.task for phase in phases]

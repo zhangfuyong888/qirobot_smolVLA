@@ -17,7 +17,7 @@ def test_hdf5_writer_contract(tmp_path: Path):
         full_joint_pos=[np.zeros(48, dtype=np.float32)],
         active_joint_pos=[np.zeros(26, dtype=np.float32)],
         task_descriptions=["test phase"],
-        language_phase_ids=["approach_can"],
+        language_phase_ids=["right_pregrasp_can"],
         expert_phase_names=["right_pregrasp_can"],
         chest_front_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
         left_wrist_rgb=[np.zeros((8, 8, 3), dtype=np.uint8)],
@@ -31,7 +31,7 @@ def test_hdf5_writer_contract(tmp_path: Path):
         assert stream["data/demo_0/processed_actions"].shape == (1, 26)
         assert stream["data/demo_0/obs/chest_front_rgb"].shape == (1, 8, 8, 3)
         assert stream["data/demo_0/obs/task_description"].asstr()[0] == "test phase"
-        assert stream["data/demo_0/obs/language_phase_id"].asstr()[0] == "approach_can"
+        assert stream["data/demo_0/obs/language_phase_id"].asstr()[0] == "right_pregrasp_can"
         assert stream["data/demo_0/obs/expert_phase_name"].asstr()[0] == "right_pregrasp_can"
         assert stream["data/demo_0/states/rigid_object/drawer_task_object/root_pose"].shape == (1, 7)
 
@@ -76,7 +76,7 @@ def test_converter_maps_legacy_expert_tasks_to_macro_prompts(tmp_path: Path):
             language_contract=contract,
             source="legacy.hdf5:demo",
         )
-    assert phase_ids == ["approach_can", "approach_can", "grasp_can"]
+    assert phase_ids == ["right_pregrasp_can", "right_acquire_can", "right_acquire_can"]
     assert tasks == [contract.for_id(phase_id).task for phase_id in phase_ids]
 
 
@@ -88,12 +88,12 @@ def test_converter_prefers_and_validates_recorded_macro_phase_id(tmp_path: Path)
         string_dtype = h5py.string_dtype("utf-8")
         demo.create_dataset(
             "obs/task_description",
-            data=np.asarray([contract.for_id("lift_can").task], dtype=object),
+            data=np.asarray([contract.for_id("right_lift_can").task], dtype=object),
             dtype=string_dtype,
         )
         demo.create_dataset(
             "obs/language_phase_id",
-            data=np.asarray(["lift_can"], dtype=object),
+            data=np.asarray(["right_lift_can"], dtype=object),
             dtype=string_dtype,
         )
         demo.create_dataset(
@@ -108,8 +108,8 @@ def test_converter_prefers_and_validates_recorded_macro_phase_id(tmp_path: Path)
             language_contract=contract,
             source="current.hdf5:demo",
         )
-    assert phase_ids == ["lift_can"]
-    assert tasks == [contract.for_id("lift_can").task]
+    assert phase_ids == ["right_lift_can"]
+    assert tasks == [contract.for_id("right_lift_can").task]
 
 
 def test_hdf5_writer_rejects_partial_camera_sequence(tmp_path: Path):

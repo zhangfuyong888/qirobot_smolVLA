@@ -26,46 +26,51 @@
 
 如果专家本身经常碰倒罐子、在闭手过程中移动手臂或放置后过早退出，模型会把这些行为当成正确目标。因此，先提高专家成功率通常比先增加训练步数更重要。
 
-### 2.1.2 当前 23 阶段状态机
+### 2.1.2 当前 26 阶段状态机
 
-当前 YAML 中实际有 23 个专家控制阶段，而不是历史知识库中的 16、20 或 22 个。
+当前 YAML 中实际有 26 个专家控制阶段，并映射为 12 个语言宏阶段。预抓握先在无接触区域稳定，精确接近和闭手随后在同一语言段内连续执行。
 
 | # | 阶段 | 主要目标 | 关键门控 |
 |---:|---|---|---|
 | 1 | `initial_open_hands` | 双手张开并稳定 | 双手实际位置 |
 | 2 | `left_approach_handle` | 左手粗接近 | 左 TCP |
 | 3 | `left_approach_handle_fine` | 中间过渡 | 左 TCP |
-| 4 | `left_grasp_handle` | 到达把手 | 左 TCP |
-| 5 | `left_close_hand` | 闭合抓把手 | 时间保持 |
-| 6 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
-| 7 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
-| 8 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 左 TCP、抽屉开度、0.5 s |
-| 9 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
-| 10 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
-| 11 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
-| 12 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
-| 13 | `right_hold_grasp` | 保持抓握 | 0.5 s |
-| 14 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
-| 15 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
-| 16 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
-| 17 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
-| 18 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 右手实际张开 |
-| 19 | `right_retreat_and_start_close` | 右臂回 Home、左手关抽屉 | 抽屉开度 <0.020 m |
-| 20 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s，不在接触把手时等待自由空间张开角 |
-| 21 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
-| 22 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
-| 23 | `left_home` | 双臂回 Home | Home、手、抽屉门控 |
+| 4 | `left_hold_handle_pregrasp` | 张开的左手在预抓握点稳定 | 左手实际张开、0.5 s |
+| 5 | `left_grasp_handle` | 从预抓握点精确到达把手 | 左 TCP |
+| 6 | `left_close_hand` | 闭合抓把手 | 时间保持 |
+| 7 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
+| 8 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
+| 9 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 左 TCP、抽屉开度、0.5 s |
+| 10 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
+| 11 | `right_hold_can_pregrasp` | 张开的右手在预抓握点稳定 | 手实际张开、罐位移、0.5 s |
+| 12 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
+| 13 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
+| 14 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
+| 15 | `right_hold_grasp` | 保持抓握 | 0.5 s |
+| 16 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
+| 17 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
+| 18 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
+| 19 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
+| 20 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 手张开、物体边界/速度 |
+| 21 | `right_home_after_retreat` | 左手保持抽屉，右臂单独回 Home | 右 Home、抽屉保持打开 |
+| 22 | `left_close_drawer` | 右臂保持 Home，左手单独关抽屉 | 抽屉开度 <0.020 m |
+| 23 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s |
+| 24 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
+| 25 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
+| 26 | `left_home` | 左臂回 Home | Home、手、抽屉门控 |
 
 ```mermaid
 stateDiagram-v2
     [*] --> OpenHands
     OpenHands --> LeftApproach
-    LeftApproach --> LeftGrasp
+    LeftApproach --> HoldLeftPregrasp
+    HoldLeftPregrasp --> LeftGrasp
     LeftGrasp --> PreloadHandle
     PreloadHandle --> PullDrawer
     PullDrawer --> HoldDrawerOpen
     HoldDrawerOpen --> RightPregrasp
-    RightPregrasp --> RightGrasp
+    RightPregrasp --> HoldRightPregrasp
+    HoldRightPregrasp --> RightGrasp
     RightGrasp --> SettleOpen
     SettleOpen --> CloseHand
     CloseHand --> HoldGrasp
@@ -74,7 +79,8 @@ stateDiagram-v2
     Place --> Release
     Release --> LiftClear
     LiftClear --> RetreatClear
-    RetreatClear --> CloseDrawer
+    RetreatClear --> RightHome
+    RightHome --> CloseDrawer
     CloseDrawer --> LeftRelease
     LeftRelease --> ClearHandle
     ClearHandle --> JointTransition
@@ -84,10 +90,10 @@ stateDiagram-v2
 
 状态图将若干细分接近阶段合并为逻辑块，表格保留了真实阶段名。
 
-这些 23 个阶段是**专家控制阶段**，其中包括抓把手后的轻微预拉确认、拉开后的
+这些 26 个阶段是**专家控制阶段**，其中包括预抓握稳定、抓把手后的轻微预拉确认、拉开后的
 稳定保持，以及关门松手后的后上方脱离；它们不再逐个作为模型语言。当前
-`drawer_10phase_v3_safe_handle_clear` 将相邻控制阶段归并为 10 个语言宏阶段；采集仍执行上述全部
-控制动作，只降低模型任务文本和 Rollout schedule 的切换次数。稳定映射见
+`drawer_12phase_v4_serial_acquire` 将相邻控制阶段归并为 12 个语言宏阶段；采集仍执行上述全部
+控制动作，并避免在接触点把“精确接近”和“闭手”拆成两个语言段。稳定映射见
 工程入口与当前语言契约摘要集中在 `docs/PIPELINE.md`，不能用 prompt 字符串代替阶段 ID 充当程序契约。
 
 ### 2.1.3 Anchor 与相对目标
@@ -290,7 +296,7 @@ f_{data}=\frac{f_{control}}{N}=\frac{120}{6}=20\ \mathrm{Hz}
 | `obs/left_wrist_rgb` | 左腕相机 | 训练视觉 |
 | `obs/right_wrist_rgb` | 右腕相机 | 训练视觉 |
 | `obs/task_description` | 当前阶段任务文本 | 语言条件 |
-| `obs/language_phase_id` | 10 阶段稳定 ID | 转换与 Rollout 契约 |
+| `obs/language_phase_id` | 12 阶段稳定 ID | 转换与 Rollout 契约 |
 | `obs/expert_phase_name` | 23 阶段真实控制名 | 失败诊断 |
 | EEF pose | 左/右 TCP | 工程诊断 |
 | drawer object pose | 主罐位姿 | 任务诊断 |
@@ -465,7 +471,7 @@ HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeR
 | `obs/chest_front_rgb` | `observation.images.chest_front_rgb` | RGB 视频 |
 | `obs/left_wrist_rgb` | `observation.images.left_wrist_rgb` | RGB 视频 |
 | `obs/right_wrist_rgb` | `observation.images.right_wrist_rgb` | RGB 视频 |
-| `obs/task_description` / `language_phase_id` | `task` / `task_index` | 规范化后的 10 阶段文本 |
+| `obs/task_description` / `language_phase_id` | `task` / `task_index` | 规范化后的 12 阶段文本 |
 | HDF5 demo | LeRobot episode | episode 边界 |
 
 ```mermaid
@@ -619,7 +625,7 @@ bash run.sh dataset-check
 
 ```bash
 bash run.sh dataset-check \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<step>/pretrained_model
 ```
 
 #### 受保护的完整流水线
@@ -839,7 +845,7 @@ Flow Matching loss 衡量模型预测速度场与目标速度的差异。下降�
 
 ```bash
 bash run.sh preview \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
@@ -887,7 +893,7 @@ sequenceDiagram
     World-->>Obs: 新状态与新图像
 ```
 
-每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 10 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`。它不是在 Rollout 时直接读取 23 个专家阶段的时长。
+每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 12 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`，同时携带活动 action group 和门控超时策略。它不是在 Rollout 时直接读取 26 个专家阶段的时长。
 
 ### 2.5.2 当前 Rollout 参数
 
@@ -934,14 +940,15 @@ q_{k,j}^{cmd}=a_k+\frac{j}{6}(a_{k+1}-a_k),\qquad j=1,\ldots,6
 
 插值使 20 Hz 动作在 120 Hz 控制中连续，但无法修复语义错误。若动作块把右手移向错误一侧，插值只会让错误动作更平滑。
 
-### 2.5.5 Raw、Fused、Command 与 Actual
+### 2.5.5 Raw、Fused、Masked、Command 与 Actual
 
-诊断 CSV 对每个 20 Hz 策略帧保存四层信号：
+诊断 CSV 对每个 20 Hz 策略帧保存五层信号：
 
 ```mermaid
 flowchart LR
     R[Raw<br/>最新模型 chunk] --> F[Fused/Ensemble<br/>chunk + 阶段融合]
-    F --> C[Command<br/>裁剪 + 限速 endpoint]
+    F --> M[Masked<br/>非活动手臂保持阶段入口目标]
+    M --> C[Command<br/>裁剪 + 限速 endpoint]
     C --> I[120 Hz 插值和控制]
     I --> A[Actual<br/>下一策略边界实测状态]
 ```
@@ -950,14 +957,15 @@ flowchart LR
 |---|---|
 | Raw 相邻跳变大 | 模型或随机 chunk 不连续 |
 | Raw 大、Fused 小 | temporal fusion 发挥作用 |
-| Fused 与 Command 差大 | 裁剪或步长限制强烈介入 |
+| Fused 与 Masked 差大 | 阶段单臂约束正在抑制非活动手臂输出 |
+| Masked 与 Command 差大 | 裁剪或步长限制强烈介入 |
 | Command 与 Actual 差大 | 执行器、碰撞、关节限制、重力或 mimic 跟踪问题 |
 
 Actual 已按“当前 command 对下一 policy boundary 的实际状态”对齐，不能与旧版同帧 tracking 指标直接比较。
 
 ### 2.5.6 阶段状态门控
 
-Rollout 的 10 阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。每个语言阶段通过稳定 ID 选择其末端专家门控。系统会检查关节跟踪、手指动作和闭合进度；普通阶段条件不足时最多延长 20 帧，`approach_drawer_handle` 与 `pull_drawer` 最多延长 80 帧。
+Rollout 的 12 阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。每个语言阶段通过稳定 ID 选择末端专家门控，并携带活动 action group、超时策略和扩展类型。系统检查活动臂跟踪、手指状态、Home、抽屉开度，以及配置存在时的罐子边界、速度和位移。当前关键阶段门控耗尽扩展预算会终止本轮并记录失败原因，不会强制进入后续阶段；标记为 `drawer` 的阶段最多延长 80 帧，其余阶段默认延长 20 帧。
 
 这是一种介于纯时间播放和完整任务状态机之间的机制：
 
@@ -988,7 +996,7 @@ Rollout 的 10 阶段 schedule 来源于数据时长，但开启 `phase-state-ga
 bash run.sh rollout \
   --headless \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 
@@ -1000,7 +1008,7 @@ bash run.sh rollout \
 bash run.sh rollout \
   --headless \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<step>/pretrained_model \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<step>/pretrained_model \
   --policy-device cuda
 ```
 

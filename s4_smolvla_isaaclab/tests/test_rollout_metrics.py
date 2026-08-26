@@ -44,31 +44,33 @@ SCRIPTED = {
 }
 
 
-def test_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
+def test_rollout_drawer_pregrasp_acquire_pull_and_close_get_80_extension_frames():
     scripted = {
         "phases": [
-            {"name": "left_approach_handle", "task": "approach"},
-            {"name": "left_grasp_handle", "task": "grasp"},
-            {"name": "pull_drawer", "task": "pull"},
+            {"name": "left_hold_handle_pregrasp", "task": "pregrasp"},
+            {"name": "left_preload_handle", "task": "acquire"},
+            {"name": "left_hold_drawer_open", "task": "pull"},
+            {"name": "left_close_drawer", "task": "close"},
             {"name": "right_pregrasp_can", "task": "pregrasp"},
         ]
     }
 
-    assert rollout_metrics.rollout_phase_extension_frames({"task": "approach"}, scripted, 20) == 80
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "pregrasp"}, scripted, 20) == 80
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "acquire"}, scripted, 20) == 80
     assert rollout_metrics.rollout_phase_extension_frames({"task": "pull"}, scripted, 20) == 80
-    assert rollout_metrics.rollout_phase_extension_frames({"task": "grasp"}, scripted, 20) == 20
-    assert rollout_metrics.rollout_phase_extension_frames({"task": "pregrasp"}, scripted, 20) == 20
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "close"}, scripted, 20) == 80
+    assert rollout_metrics.rollout_phase_extension_frames({"task": "other"}, scripted, 20) == 20
 
 
-def test_macro_rollout_drawer_approach_and_pull_get_80_extension_frames_only():
+def test_macro_rollout_uses_contract_extension_kind_before_legacy_ids():
     assert rollout_metrics.rollout_phase_extension_frames(
-        {"language_phase_id": "approach_drawer_handle", "task": "macro approach"}, {}, 20
+        {"language_phase_id": "left_pregrasp_handle", "rollout_extension": "drawer"}, {}, 20
     ) == 80
     assert rollout_metrics.rollout_phase_extension_frames(
-        {"language_phase_id": "pull_drawer", "task": "macro pull"}, {}, 20
+        {"language_phase_id": "left_pull_drawer", "rollout_extension": "drawer"}, {}, 20
     ) == 80
     assert rollout_metrics.rollout_phase_extension_frames(
-        {"language_phase_id": "approach_can", "task": "macro can"}, {}, 20
+        {"language_phase_id": "right_pregrasp_can", "rollout_extension": "default"}, {}, 20
     ) == 20
 
 

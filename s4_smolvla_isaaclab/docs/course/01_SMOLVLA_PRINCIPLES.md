@@ -319,7 +319,7 @@ sequenceDiagram
 | Dataset FPS | 20 Hz |
 | Control FPS | 120 Hz |
 | 图像 | 3 路 680×480 RGB |
-| Dataset ID | `local/s4_drawer_insert_close_v3_10phase_safe_handle_clear` |
+| Dataset ID | `local/s4_drawer_insert_close_v4_12phase_serial_acquire` |
 
 策略张量通常采用 CHW，因此模型配置中的图像 shape 为 `[3,480,680]`；HDF5 和视频帧采用 HWC，即 `[480,680,3]`。二者是同一图像的不同内存布局。
 
@@ -410,7 +410,7 @@ flowchart LR
 - 双臂分工和并发动作；
 - 灵巧手接触与抓握；
 - 可动抽屉与物体之间的物理交互；
-- 23 个专家控制阶段、10 个模型语言宏阶段构成的长时序；
+- 26 个专家控制阶段、12 个模型语言宏阶段构成的长时序；
 - 多个局部成功条件和一个最终成功条件。
 
 ### 1.3.2 场景与三路视觉

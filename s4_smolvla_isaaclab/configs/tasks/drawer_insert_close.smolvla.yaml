@@ -4,10 +4,10 @@
 task: drawer_insert_close
 robot: S4-UpperBody
 
-dataset: s4_drawer_insert_close_v3_10phase_safe_handle_clear
+dataset: s4_drawer_insert_close_v4_12phase_serial_acquire
 dataset_root: ${S4_DATA_ROOT}/lerobot_data
-output_dir: ${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear
-language_contract_version: drawer_10phase_v3_safe_handle_clear
+output_dir: ${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire
+language_contract_version: drawer_12phase_v4_serial_acquire
 
 steps: 500000
 batch_size: 16

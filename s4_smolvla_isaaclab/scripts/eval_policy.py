@@ -70,7 +70,7 @@ parser.add_argument(
     "--drawer-phase-max-extension-frames",
     type=int,
     default=80,
-    help="Gate extension for left_approach_handle and pull_drawer (default: 80 = 4.0 s at 20 Hz).",
+    help="Gate extension for language phases marked rollout_extension=drawer (default: 80 = 4.0 s at 20 Hz).",
 )
 parser.add_argument("--phase-q-track-tolerance", type=float, default=0.08)
 parser.add_argument("--phase-hand-tolerance", type=float, default=0.15)
@@ -166,6 +166,7 @@ import torch
 from s4_pipeline.config import load_project_config
 from s4_pipeline.paths import DATASET_CONFIG_PATH
 from s4_pipeline.language_phases import LanguagePhaseContract, load_language_phase_contract
+from s4_pipeline.rollout_control import apply_phase_action_mask
 from s4_pipeline.rollout_metrics import (
     aggregate_rollout_summary,
     default_summary_json_path,
@@ -651,11 +652,20 @@ def phase_transition_gate(
     commanded_action: np.ndarray,
     drawer_open: float,
     language_contract: LanguagePhaseContract | None = None,
+    task_object_position_world: np.ndarray | None = None,
+    task_object_linear_velocity_world: np.ndarray | None = None,
+    task_object_start_position_world: np.ndarray | None = None,
 ) -> tuple[bool, list[str]]:
     if not args_cli.phase_state_gating:
         return True, []
     reasons: list[str] = []
+    active_groups = set(str(group) for group in phase.get("active_action_groups", []))
+    active_arm_sides = {
+        side for side in ("left", "right") if not active_groups or f"{side}_arm" in active_groups
+    }
     for side, action_slice in (("left", ACTION_SLICES.left_arm), ("right", ACTION_SLICES.right_arm)):
+        if side not in active_arm_sides:
+            continue
         arm_error = float(np.max(np.abs(commanded_action[action_slice] - actual_action[action_slice])))
         if arm_error > float(args_cli.phase_q_track_tolerance):
             reasons.append(f"{side}_arm={arm_error:.3f}")
@@ -671,6 +681,7 @@ def phase_transition_gate(
             {},
         )
     hands_cfg = scripted_cfg.get("hands", {})
+    home_cfg = scripted_cfg.get("home_poses", {})
     for side, action_slice in (("left", ACTION_SLICES.left_hand), ("right", ACTION_SLICES.right_hand)):
         hand_command = phase_cfg.get(f"{side}_hand")
         if not isinstance(hand_command, str) or hand_command not in {"open", "close"}:
@@ -695,6 +706,24 @@ def phase_transition_gate(
         if error > float(args_cli.phase_hand_tolerance):
             reasons.append(f"{side}_hand={error:.3f}")
 
+    for side, action_slice in (("left", ACTION_SLICES.left_arm), ("right", ACTION_SLICES.right_arm)):
+        if not phase_cfg.get(f"{side}_arm_home"):
+            continue
+        target = np.asarray(home_cfg.get(f"{side}_arm", []), dtype=np.float32)
+        if target.shape != (7,):
+            reasons.append(f"{side}_home_target=missing")
+            continue
+        error = float(np.max(np.abs(actual_action[action_slice] - target)))
+        tolerance = float(home_cfg.get("tolerance", 0.03))
+        if error > tolerance:
+            reasons.append(f"{side}_home={error:.3f}>{tolerance:.3f}")
+    if phase_cfg.get("left_arm_joint_target") is not None:
+        target = np.asarray(phase_cfg["left_arm_joint_target"], dtype=np.float32)
+        error = float(np.max(np.abs(actual_action[ACTION_SLICES.left_arm] - target)))
+        tolerance = float(phase_cfg.get("arm_joint_tolerance", home_cfg.get("tolerance", 0.03)))
+        if error > tolerance:
+            reasons.append(f"left_joint_target={error:.3f}>{tolerance:.3f}")
+
     if phase_cfg.get("drawer_open_min") is not None:
         minimum = float(phase_cfg["drawer_open_min"])
         if drawer_open < minimum:
@@ -707,6 +736,57 @@ def phase_transition_gate(
         close_limit = float(scripted_cfg.get("success", {}).get("drawer_open_abs_max", 0.04))
         if abs(drawer_open) >= close_limit:
             reasons.append(f"drawer_abs={abs(drawer_open):.3f}>={close_limit:.3f}")
+
+    object_position = (
+        None
+        if task_object_position_world is None
+        else np.asarray(task_object_position_world, dtype=np.float32)
+    )
+    object_bounds = phase_cfg.get("task_object_world_bounds", {}) or {}
+    if object_bounds:
+        if object_position is None or object_position.shape != (3,) or not np.all(np.isfinite(object_position)):
+            reasons.append("object_position=unavailable")
+        else:
+            for axis_index, axis in enumerate(("x", "y", "z")):
+                if axis not in object_bounds:
+                    continue
+                lower, upper = (float(value) for value in object_bounds[axis])
+                value = float(object_position[axis_index])
+                if value < lower or value > upper:
+                    reasons.append(f"object_{axis}={value:.3f} notin[{lower:.3f},{upper:.3f}]")
+    speed_limit = phase_cfg.get("task_object_max_speed_m_s")
+    if speed_limit is not None:
+        velocity = (
+            None
+            if task_object_linear_velocity_world is None
+            else np.asarray(task_object_linear_velocity_world, dtype=np.float32)
+        )
+        if velocity is None or velocity.shape != (3,) or not np.all(np.isfinite(velocity)):
+            reasons.append("object_speed=unavailable")
+        else:
+            speed = float(np.linalg.norm(velocity))
+            if speed > float(speed_limit):
+                reasons.append(f"object_speed={speed:.3f}>{float(speed_limit):.3f}")
+    displacement_limit = phase_cfg.get("task_object_max_displacement_from_start_m")
+    if displacement_limit is not None:
+        start = (
+            None
+            if task_object_start_position_world is None
+            else np.asarray(task_object_start_position_world, dtype=np.float32)
+        )
+        if (
+            object_position is None
+            or start is None
+            or object_position.shape != (3,)
+            or start.shape != (3,)
+        ):
+            reasons.append("object_displacement=unavailable")
+        else:
+            displacement = float(np.linalg.norm(object_position - start))
+            if displacement > float(displacement_limit):
+                reasons.append(
+                    f"object_displacement={displacement:.3f}>{float(displacement_limit):.3f}"
+                )
     return not reasons, reasons
 
 
@@ -747,7 +827,7 @@ def write_action_diagnostics(
         "chunk_count",
         "drawer_open_m",
     ]
-    vector_fields = ("raw", "ensemble", "command", "actual")
+    vector_fields = ("raw", "ensemble", "masked", "command", "actual")
     header = scalar_fields + [
         f"{prefix}.{joint_name}"
         for prefix in vector_fields
@@ -764,6 +844,7 @@ def write_action_diagnostics(
 
     raw = np.stack([np.asarray(row["raw"], dtype=np.float32) for row in rows])
     ensemble = np.stack([np.asarray(row["ensemble"], dtype=np.float32) for row in rows])
+    masked = np.stack([np.asarray(row["masked"], dtype=np.float32) for row in rows])
     command = np.stack([np.asarray(row["command"], dtype=np.float32) for row in rows])
     actual = np.stack([np.asarray(row["actual"], dtype=np.float32) for row in rows])
     groups = {
@@ -793,16 +874,18 @@ def write_action_diagnostics(
         import matplotlib.pyplot as plt
 
         x = np.asarray([int(row["policy_frame"]) for row in rows])
-        fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
+        fig, axes = plt.subplots(4, 1, figsize=(14, 11), sharex=True)
         for name, group_slice in groups.items():
             raw_jump = np.r_[0.0, np.max(np.abs(np.diff(raw[:, group_slice], axis=0)), axis=1)]
             axes[0].plot(x, raw_jump, label=name)
             axes[1].plot(x, np.max(np.abs(raw[:, group_slice] - ensemble[:, group_slice]), axis=1), label=name)
-            axes[2].plot(x, np.max(np.abs(command[:, group_slice] - actual[:, group_slice]), axis=1), label=name)
+            axes[2].plot(x, np.max(np.abs(ensemble[:, group_slice] - masked[:, group_slice]), axis=1), label=name)
+            axes[3].plot(x, np.max(np.abs(command[:, group_slice] - actual[:, group_slice]), axis=1), label=name)
         axes[0].set_ylabel("raw jump [rad]")
         axes[1].set_ylabel("smoothing correction [rad]")
-        axes[2].set_ylabel("tracking error [rad]")
-        axes[2].set_xlabel("policy frame (20 Hz)")
+        axes[2].set_ylabel("phase mask [rad]")
+        axes[3].set_ylabel("tracking error [rad]")
+        axes[3].set_xlabel("policy frame (20 Hz)")
         for axis in axes:
             axis.grid(True, alpha=0.3)
             axis.legend(ncol=4)
@@ -978,9 +1061,14 @@ def main() -> None:
             interpolation_start = commanded_action.copy()
             interpolation_goal = commanded_action.copy()
             transition_from_action = commanded_action.copy()
+            phase_hold_action = commanded_action.copy()
+            task_object_start_position_world = (
+                scene["named_objects"]["can"].data.root_pos_w[0].detach().cpu().numpy().copy()
+            )
             diagnostics: list[dict[str, object]] = []
             actual_steps = 0
             rollout_complete = False
+            rollout_failure_reason: str | None = None
             server.reset()
             start = time.monotonic()
             diagnostic_outputs = None
@@ -998,6 +1086,13 @@ def main() -> None:
                         drawer_open = drawer_sign * float(
                             scene["drawer"].data.joint_pos[0, drawer_joint_id].item()
                         )
+                        can_obj = scene["named_objects"]["can"]
+                        task_object_position_world = (
+                            can_obj.data.root_pos_w[0].detach().cpu().numpy().copy()
+                        )
+                        task_object_linear_velocity_world = (
+                            can_obj.data.root_lin_vel_w[0].detach().cpu().numpy().copy()
+                        )
                         if phase_frame >= schedule[phase_index]["frames"]:
                             gate_ready, gate_reasons = phase_transition_gate(
                                 schedule[phase_index],
@@ -1006,6 +1101,9 @@ def main() -> None:
                                 commanded_action,
                                 drawer_open,
                                 language_contract,
+                                task_object_position_world,
+                                task_object_linear_velocity_world,
+                                task_object_start_position_world,
                             )
                             extension_limit = rollout_phase_extension_frames(
                                 schedule[phase_index],
@@ -1016,6 +1114,17 @@ def main() -> None:
                             force_transition = phase_extension >= extension_limit
                             if gate_ready or force_transition:
                                 if not gate_ready:
+                                    timeout_behavior = str(
+                                        schedule[phase_index].get("rollout_timeout", "fail")
+                                    )
+                                    if timeout_behavior == "fail":
+                                        rollout_failure_reason = (
+                                            f"phase={schedule[phase_index].get('language_phase_id', phase_index)} "
+                                            f"gate timeout after {phase_extension} extension frames: "
+                                            f"{', '.join(gate_reasons)}"
+                                        )
+                                        print(f"[EVAL][GATE][FAIL] {rollout_failure_reason}")
+                                        break
                                     print(
                                         f"[EVAL][GATE] phase {phase_index + 1:02d} forced after "
                                         f"{phase_extension} extension frames: {', '.join(gate_reasons)}"
@@ -1024,6 +1133,7 @@ def main() -> None:
                                     rollout_complete = True
                                     break
                                 transition_from_action = commanded_action.copy()
+                                phase_hold_action = commanded_action.copy()
                                 phase_index += 1
                                 phase_frame = 0
                                 phase_extension = 0
@@ -1065,8 +1175,14 @@ def main() -> None:
                             blend = float(phase_frame + 1) / float(blend_frames)
                             ensemble_target = (1.0 - blend) * transition_from_action + blend * ensemble_target
 
+                        masked_target = apply_phase_action_mask(
+                            ensemble_target,
+                            phase_hold_action,
+                            phase.get("active_action_groups", []),
+                        )
+
                         interpolation_start = commanded_action.copy()
-                        goal_delta = ensemble_target - interpolation_start
+                        goal_delta = masked_target - interpolation_start
                         arm_limit = float(args_cli.max_joint_step) * policy_interval
                         hand_limit = float(args_cli.hand_max_joint_step) * policy_interval
                         for arm_slice in (ACTION_SLICES.left_arm, ACTION_SLICES.right_arm):
@@ -1085,6 +1201,7 @@ def main() -> None:
                                 "drawer_open_m": drawer_open,
                                 "raw": raw_action.copy(),
                                 "ensemble": ensemble_target.copy(),
+                                "masked": masked_target.copy(),
                                 "command": interpolation_goal.copy(),
                                 "actual": actual_action.copy(),
                             }
@@ -1163,6 +1280,7 @@ def main() -> None:
                 "seed": experiment_seed,
                 "complete": bool(rollout_complete),
                 "success": bool(success_info["success"]),
+                "failure_reason": rollout_failure_reason,
                 "drawer_ok": bool(success_info["drawer_ok"]),
                 "can_ok": bool(success_info["can_ok"]),
                 "drawer_open_m": float(success_info["drawer_open_m"]),

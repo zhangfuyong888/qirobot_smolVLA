@@ -76,6 +76,8 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["left_grasp_handle"]["tolerance"] == 0.020
     assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.30
     assert phases["left_grasp_handle"]["hold_seconds"] == 0.5
+    assert phases["left_hold_handle_pregrasp"]["hold_seconds"] == 0.5
+    assert phases["left_hold_handle_pregrasp"]["hold_current_left_pose"] is True
     assert phases["left_close_hand"]["tolerance"] == 0.020
     assert phases["left_close_hand"]["orientation_tolerance"] == 0.30
     assert phases["left_preload_handle"]["drawer_open_min"] == 0.003
@@ -88,6 +90,8 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["left_hold_drawer_open"]["tolerance"] == 0.025
     assert phases["initial_open_hands"]["hand_actual_tolerance"] == 0.10
     assert phases["right_pregrasp_can"]["tolerance"] == 0.010
+    assert phases["right_hold_can_pregrasp"]["hold_seconds"] == 0.5
+    assert phases["right_hold_can_pregrasp"]["hold_current_right_pose"] is True
     assert phases["right_grasp_can"]["tolerance"] == 0.028
     assert phases["right_pregrasp_can"]["task_object_max_displacement_from_start_m"] == 0.020
     assert phases["right_grasp_can"]["task_object_max_displacement_from_start_m"] == 0.020
@@ -109,7 +113,7 @@ def test_grasp_config_is_stationary_and_deterministic():
         "right_hold_grasp",
     ):
         assert phases[name]["tolerance"] == 0.010
-    assert phases["right_retreat_and_start_close"]["drawer_open_max"] == 0.020
+    assert phases["left_close_drawer"]["drawer_open_max"] == 0.020
     assert phases["right_open_hand"]["hold_seconds"] == 1.5
     assert phases["right_open_hand"]["hold_current_right_pose"] is True
     assert phases["right_open_hand"]["require_right_tcp_reached"] is False
@@ -119,8 +123,9 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["right_lift_can"]["task_object_world_bounds"]["z"] == [1.20, 1.35]
     assert phases["right_lift_clear_drawer"]["right_offset_from_current"] == [0.0, 0.0, 0.10]
     assert phases["right_retreat_clear_drawer"]["right_offset_from_current"] == [-0.10, -0.18, 0.02]
-    assert "right" not in phases["right_retreat_and_start_close"]
-    assert phases["right_retreat_and_start_close"]["right_arm_home"] is True
+    assert phases["right_home_after_retreat"]["right_arm_home"] is True
+    assert phases["right_home_after_retreat"]["drawer_open_min"] == 0.08
+    assert "right_arm_home" not in phases["left_close_drawer"]
     assert phases["left_open_hand"]["hold_current_left_pose"] is True
     assert phases["left_open_hand"]["hold_seconds"] == 1.0
     assert phases["left_open_hand"]["require_left_hand_actual_reached"] is False
@@ -449,7 +454,7 @@ def test_pregrasp_fails_fast_when_open_hand_pushes_can():
     assert "task object displaced" in controller.failure_reason
 
 
-def test_drawer_close_phase_returns_right_home_and_waits_for_both_conditions():
+def test_right_home_finishes_before_the_separate_drawer_close_phase():
     controller = DrawerInsertCloseController(
         _FakeTcpController(),
         initial_action=np.zeros(26, dtype=np.float32),
@@ -458,7 +463,7 @@ def test_drawer_close_phase_returns_right_home_and_waits_for_both_conditions():
     phase_index = next(
         index
         for index, phase in enumerate(controller.phases)
-        if phase.name == "right_retreat_and_start_close"
+        if phase.name == "right_home_after_retreat"
     )
     controller.phase_index = phase_index
     controller.phase_steps = 0
@@ -466,23 +471,45 @@ def test_drawer_close_phase_returns_right_home_and_waits_for_both_conditions():
     pose = (np.zeros(3, dtype=np.float32), np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32))
     current = np.zeros(14, dtype=np.float32)
     action, phase_name, _, done = controller.step(current, 1.0 / 120.0, pose, pose, drawer_open_m=0.118)
-    assert phase_name == "right_retreat_and_start_close"
+    assert phase_name == "right_home_after_retreat"
     assert done is False
     np.testing.assert_allclose(action[13:20], controller.home_targets["right"])
 
-    controller.phase_steps = controller.current_phase.min_steps
-    # A closed drawer alone is insufficient while the independently moving
-    # right arm has not yet reached Home.
+    controller.phase_steps = max(
+        controller.current_phase.min_steps,
+        int(np.ceil(controller.current_phase.hold_seconds * 120.0)),
+    )
+    hand_action = np.zeros(26, dtype=np.float32)
+    hand_action[20:26] = controller.current_phase.right_hand
+    # The open drawer must be held while the independently moving right arm
+    # returns Home.
     assert controller._advance_if_ready(
-        pose, pose, drawer_open_m=0.010, curr_joint_pos=current
+        pose,
+        pose,
+        drawer_open_m=0.118,
+        curr_joint_pos=current,
+        commanded_action=hand_action,
+        actual_action=hand_action,
     ) is False
     assert controller.phase_index == phase_index
     current[7:14] = controller.home_targets["right"]
-    # Likewise, the right arm reaching Home must not hide an open drawer.
+    # Closing prematurely is rejected during the right-home phase.
     assert controller._advance_if_ready(
-        pose, pose, drawer_open_m=0.118, curr_joint_pos=current
+        pose,
+        pose,
+        drawer_open_m=0.010,
+        curr_joint_pos=current,
+        commanded_action=hand_action,
+        actual_action=hand_action,
     ) is False
     assert controller._advance_if_ready(
-        pose, pose, drawer_open_m=0.010, curr_joint_pos=current
+        pose,
+        pose,
+        drawer_open_m=0.118,
+        curr_joint_pos=current,
+        commanded_action=hand_action,
+        actual_action=hand_action,
     ) is True
     assert controller.phase_index == phase_index + 1
+    assert controller.current_phase.name == "left_close_drawer"
+    assert controller.current_phase.right_arm_home is False

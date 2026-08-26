@@ -2,9 +2,9 @@
   "task_id": "drawer_insert_close",
   "schema_version": "s4_bimanual_v1",
   "dataset": {
-    "repo_id": "local/s4_drawer_insert_close_v3_10phase_safe_handle_clear",
-    "staging_root": "${S4_DATA_ROOT}/staging/s4_drawer_insert_close_v3_10phase_safe_handle_clear",
-    "root": "${S4_DATA_ROOT}/s4_drawer_insert_close_v3_10phase_safe_handle_clear",
+    "repo_id": "local/s4_drawer_insert_close_v4_12phase_serial_acquire",
+    "staging_root": "${S4_DATA_ROOT}/staging/s4_drawer_insert_close_v4_12phase_serial_acquire",
+    "root": "${S4_DATA_ROOT}/s4_drawer_insert_close_v4_12phase_serial_acquire",
     "lerobot_root": "${S4_DATA_ROOT}/lerobot_data",
     "fps": 20,
     "control_fps": 120,
@@ -61,7 +61,7 @@
     "env_name": "s4_drawer_insert_close",
     "policy_type": "smolvla",
     "pretrained_policy": "lerobot/smolvla_base",
-    "output_dir": "${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear",
+    "output_dir": "${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire",
     "target_episodes_first_pass": 20,
     "target_episodes_training_pass": 100
   }

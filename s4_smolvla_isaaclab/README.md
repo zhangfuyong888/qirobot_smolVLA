@@ -14,7 +14,7 @@ IsaacLab 专家策略
 → IsaacLab Rollout
 ```
 
-> 当前活动版本是 `drawer_10phase_v3_safe_handle_clear`。旧数据集或旧 checkpoint 不能仅凭 26D 维度相同就认为与当前版本兼容，必须通过 `dataset-check` 检查。
+> 当前活动版本是 `drawer_12phase_v4_serial_acquire`。预抓握、接触抓握和后续搬运动作使用清晰边界，左右臂主体运动串行执行。旧数据集或旧 checkpoint 不能仅凭 26D 维度相同就认为与当前版本兼容，必须通过 `dataset-check` 检查。
 
 ## 1. 当前技术契约
 
@@ -22,8 +22,8 @@ IsaacLab 专家策略
 |---|---|
 | 活跃任务 | `drawer_insert_close` |
 | Schema | `s4_bimanual_v1` |
-| 语言契约 | `drawer_10phase_v3_safe_handle_clear` |
-| 专家控制阶段 / 语言阶段 | 23 / 10 |
+| 语言契约 | `drawer_12phase_v4_serial_acquire` |
+| 专家控制阶段 / 语言阶段 | 26 / 12 |
 | State / Action | 26D / 26D |
 | Action 语义 | `absolute_joint_target` |
 | 关节顺序 | 左臂 7 + 左手 6 + 右臂 7 + 右手 6 |
@@ -33,7 +33,7 @@ IsaacLab 专家策略
 | 默认在线重规划 | 40 个策略帧 |
 | 抽屉初始开度 | 固定 `0.00 m` |
 | 主罐随机化 | 5×5 分层网格内连续随机 |
-| 当前数据集 | `s4_drawer_insert_close_v3_10phase_safe_handle_clear` |
+| 当前数据集 | `s4_drawer_insert_close_v4_12phase_serial_acquire` |
 
 契约来源是：
 
@@ -141,8 +141,8 @@ s4_smolvla_isaaclab/models/HuggingFaceTB/SmolVLM2-500M-Video-Instruct/
 如果要直接 Rollout，还需要收到彼此匹配的：
 
 ```text
-datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear/
-outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/
+datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire/
+outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/
 ```
 
 ### 3.5 配置本机路径
@@ -193,8 +193,8 @@ bash run.sh sim
 bash run.sh doctor --strict
 
 bash run.sh dataset-check \
-  datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model
+  datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model
 ```
 
 ### 3.7 启动 Rollout
@@ -204,8 +204,8 @@ bash run.sh dataset-check \
 ```bash
 bash run.sh rollout \
   --deterministic \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
-  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
   --chunk-replan-frames 40 \
   --chunk-overlap-blend-frames 5 \
   --phase-transition-blend-frames 8 \
@@ -219,8 +219,8 @@ bash run.sh rollout \
 ```bash
 bash run.sh rollout \
   --success-rate 20 \
-  --checkpoint outputs/train/smolvla_drawer_insert_close_v3_10phase_safe_handle_clear/checkpoints/<STEP>/pretrained_model \
-  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v3_10phase_safe_handle_clear \
+  --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
+  --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
   --chunk-replan-frames 40 \
   --chunk-overlap-blend-frames 5 \
   --phase-transition-blend-frames 8 \
