@@ -22,7 +22,7 @@
 | State/action | 26D / 26D absolute joint target |
 | Cameras | 胸前、左腕、右腕 RGB |
 | Dataset/control rate | 20 Hz / 120 Hz |
-| Expert/language phases | 26 / 12 |
+| Expert/language phases | 27 / 12 |
 | Drawer reset | 固定关闭，`0.00 m` |
 | Can sampling | 5×5 分层网格内连续随机 |
 

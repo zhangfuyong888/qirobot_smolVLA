@@ -71,9 +71,9 @@ drawer:
 hands:
   # Six policy controls: thumb yaw, thumb pitch, index, middle, ring, pinky.
   left_open: [0.9, 0.0, 0.05, 0.05, 0.05, 0.05]
-  # Keep the thumb geometry unchanged and reduce the four-finger closure so
-  # the fingers wrap the handle without over-curling into the drawer front.
-  left_close: [1.0, 0.22, 0.75, 0.75, 0.75, 0.75]
+  # Keep the thumb geometry unchanged and use a lighter four-finger closure so
+  # the fingers wrap the handle without squeezing or over-curling excessively.
+  left_close: [1.0, 0.22, 0.50, 0.50, 0.50, 0.50]
   # Fully extend the four fingers and spread the thumb farther before the
   # lateral approach. The close target remains intentionally unchanged.
   right_open: [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
@@ -119,49 +119,70 @@ targets:
     # Keep the open fingers safely above and behind the cabinet top during the
     # long Home-to-handle sweep: 40 mm farther toward the robot and 60 mm up
     # relative to the original transition path.
-    offset: [-0.1635, -0.0230, 0.168]
-    rpy: [-1.5, -0.05, 1.5]
-    orientation_weight: 0.20
+    offset: [-0.1235, -0.0230, 0.168]
+    # Keep the high approach neutral. The final approach progressively changes
+    # roll so the mounted hand enters the handle with a slight downward tilt.
+    rpy: [-1.25, 0.00, 1.5]
+    orientation_weight: 0.60
   left_handle_transition_2:
     anchor: drawer_handle_initial
     offset_frame: base_link
     # The terminal pre-grasp keeps the same enlarged clearance: 40 mm farther
     # and 60 mm higher than the original point. The final acquire phase, rather
     # than the initial sweep, performs the controlled descent onto the handle.
-    offset: [-0.1585, -0.0220, 0.1418]
-    rpy: [-1.5, -0.15, 1.5]
-    orientation_weight: 0.35
+    offset: [-0.1285, -0.0220, 0.1418]
+    # Approach at about 20 degrees downward before the final 30-degree grasp.
+    rpy: [-1.0117, 0.039, 1.5]
+    orientation_weight: 0.75
+  left_handle_above_grasp:
+    anchor: drawer_handle_initial
+    offset_frame: base_link
+    # Current user-tuned overhead staging pose. The closing approach below moves
+    # 30 mm along base_link -X and descends 50 mm from this point.
+    offset: [-0.0845, -0.0185, 0.0618]
+    rpy: [-0.9225, 0.057, 1.5]
+    orientation_weight: 1.00
   left_handle_transition_3:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    # Keep the validated grasp depth/height and shift the whole handle path
-    # 10 mm toward robot-right (-Y) so the palm centers on the handle.
-    offset: [-0.0975, -0.0285, 0.0368]
-    rpy: [-1.5, -0.20, 1.5]
-    orientation_weight: 0.60
+    # Move 30 mm along base_link -X and descend 50 mm while the four fingers
+    # begin curling around the handle.
+    offset: [-0.1145, -0.0185, 0.0418]
+    # The hand is mounted to the controlled wrist with rpy=(pi, 0, pi/2).
+    # Increase from the 30-degree overhead pose to an attainable 36-degree
+    # downward grasp. A small pitch compensates the physical pinky/index length
+    # difference and keeps their root heights nearly identical.
+    rpy: [-0.9076, 0.035, 1.5]
+    orientation_weight: 1.00
+  left_handle_wrap:
+    anchor: drawer_handle_initial
+    offset_frame: base_link
+    # Move another 10 mm along base_link -X at the same height while the fingers
+    # finish closing and the wrist completes its small rotation.
+    offset: [-0.1245, -0.0185, 0.0318]
+    rpy: [-0.9076, 0.045, 1.5]
+    orientation_weight: 1.00
   left_handle_preload:
     anchor: drawer_handle_closed
     offset_frame: base_link
-    # Pull 8 mm from the final grasp pose. Requiring corresponding drawer
-    # motion verifies that the closed hand is mechanically coupled to the
-    # handle before the full pull begins.
-    offset: [-0.1055, -0.0285, 0.0368]
-    # Start pitching the wrist down during the short preload so the fingers
-    # stay wrapped around the handle before the long pull.
-    rpy: [-1.5, -0.26, 1.5]
-    orientation_weight: 0.70
+    # After closure, retreat 8 mm and lift 3 mm from the wrap pose while
+    # maintaining the approximately 38-degree downward wrist angle.
+    # Measured drawer motion verifies coupling before the full pull begins.
+    offset: [-0.1325, -0.0185, 0.0348]
+    rpy: [-0.9076, 0.055, 1.5]
+    # Prioritize the remaining preload translation over the wrist rotation.
+    orientation_weight: 1.00
   left_drawer_open:
     anchor: drawer_handle_open
     offset_frame: base_link
-    # Preserve the final grasp's handle-relative transform throughout the full
-    # pull. target_open_m alone supplies the drawer travel, avoiding a wrist
-    # shift immediately after the preload succeeds.
-    offset: [-0.0975, -0.0285, 0.0368]
-    # Maintain a modest downward wrist pitch throughout the pull. This avoids
-    # the upward wrist flare observed in rollout that can unload the fingers
-    # and let the handle escape.
-    rpy: [-1.5, -0.32, 1.5]
-    orientation_weight: 0.75
+    # Finish 40 mm above the grasp TCP at about 45 degrees downward tilt. The
+    # added lift keeps the finger roots slightly above their grasping height,
+    # avoiding a net downward load on the rigid handle during the pull.
+    offset: [-0.1245, -0.0185, 0.0518]
+    rpy: [-0.7854, 0.081, 1.5]
+    # Keep the 45-degree pose as a soft guide while drawer translation remains
+    # the primary IK objective under rigid handle contact.
+    orientation_weight: 0.85
   left_drawer_closed:
     # Fallback TCP pose and orientation weight for close/release phases. During
     # left_close_drawer, the live TCP position is replaced by a
@@ -218,7 +239,7 @@ language_phases:
     rollout_extension: drawer
   - id: left_acquire_handle
     task: "Approach the drawer handle and close the left hand around it securely."
-    source_phases: [left_grasp_handle, left_close_hand, left_preload_handle]
+    source_phases: [left_move_above_handle_grasp, left_grasp_handle, left_close_hand, left_preload_handle]
     rollout_gate_phase: left_preload_handle
     active_action_groups: [left_arm, left_hand]
     rollout_timeout: advance
@@ -327,29 +348,62 @@ phases:
     hold_seconds: 0.5
     max_steps: 1000
 
+  - name: left_move_above_handle_grasp
+    task: "Move the open left hand to the retracted safe point above the drawer handle."
+    left: {target: left_handle_above_grasp}
+    left_hand: open
+    tolerance: 0.030
+    orientation_tolerance: 0.65
+    min_steps: 20
+    max_steps: 1000
+
   - name: left_grasp_handle
-    task: "Move the left hand onto the drawer handle."
+    task: "Close the left fingers while moving back 3 cm and down 5 cm around the drawer handle."
     left: {target: left_handle_transition_3}
-    tolerance: 0.020
-    orientation_tolerance: 0.30
-    hold_seconds: 0.5
+    left_hand: close
+    # Start finger closure at the overhead point, but let the spatial trajectory
+    # complete on its fixed schedule instead of waiting for the command vector
+    # to reach the final hand angle in this same phase.
+    require_left_hand_command_reached: false
+    # Execute the complete timed closing approach without waiting for TCP
+    # position/orientation convergence under contact.
+    require_left_tcp_reached: false
+    # Retain these values for diagnostics; they do not gate this phase while
+    # require_left_tcp_reached is false.
+    tolerance: 0.040
+    orientation_tolerance: 0.75
+    target_alpha: 0.12
+    max_joint_step: 0.015
+    min_steps: 30
+    hold_seconds: 0.0
     max_steps: 1000
 
   - name: left_close_hand
-    task: "Close the left hand around the drawer handle and wait."
-    left: {target: left_handle_transition_3}
+    task: "Finish closing the left fingers around the drawer handle."
+    left: {target: left_handle_wrap}
     left_hand: close
-    tolerance: 0.020
-    orientation_tolerance: 0.30
-    hold_seconds: 2.0
+    # Do not gate on the rigid-contact TCP pose. During this phase the IK target
+    # and the absolute finger targets are smoothed and executed together.
+    require_left_tcp_reached: false
+    tolerance: 0.030
+    orientation_tolerance: 0.65
+    # Finish the remaining finger closure and the last small wrist rotation at
+    # the contact position, then continue directly into preload.
+    target_alpha: 0.12
+    max_joint_step: 0.015
+    min_steps: 15
+    # No fixed pause: continue directly into the remaining preload motion.
+    hold_seconds: 0.0
     max_steps: 1000
 
   - name: left_preload_handle
     task: "Apply a small pull to verify the left-hand grasp on the drawer handle."
     left: {target: left_handle_preload}
     left_hand: close
-    tolerance: 0.020
-    orientation_tolerance: 0.30
+    tolerance: 0.030
+    # Orientation is a soft objective here (weight 0.40); allow contact-driven
+    # wrist lag while the measured drawer response remains the grasp-quality gate.
+    orientation_tolerance: 0.65
     min_steps: 20
     hold_seconds: 0.5
     # A 3 mm measured response to the 8 mm preload is sufficient evidence that
@@ -360,8 +414,8 @@ phases:
   - name: pull_drawer
     task: "Pull the drawer open with the left hand."
     left: {target: left_drawer_open}
-    tolerance: 0.025
-    orientation_tolerance: 0.35
+    tolerance: 0.035
+    orientation_tolerance: 0.65
     min_steps: 30
     max_steps: 1000
     # The commanded anchor is 0.18 m open. Require at least 0.08 m of measured
@@ -372,8 +426,12 @@ phases:
     task: "Hold the opened drawer steady with the left hand."
     left: {target: left_drawer_open}
     left_hand: close
-    tolerance: 0.025
-    orientation_tolerance: 0.35
+    # The preceding pull phase already enforces the physical opening. During
+    # this settling phase, do not block on rigid-contact TCP or hand tracking.
+    require_left_tcp_reached: false
+    require_left_hand_command_reached: false
+    tolerance: 0.035
+    orientation_tolerance: 0.65
     hold_seconds: 0.5
     drawer_open_min: 0.08
     max_steps: 1000

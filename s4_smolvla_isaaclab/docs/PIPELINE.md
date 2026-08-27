@@ -6,7 +6,7 @@
 
 ```mermaid
 flowchart LR
-    A[scripted.yaml<br/>26 个专家阶段] --> B[IsaacLab 120 Hz]
+    A[scripted.yaml<br/>27 个专家阶段] --> B[IsaacLab 120 Hz]
     B -->|每 6 步记录| C[HDF5 20 Hz]
     C --> D[dataset-check]
     D --> E[LeRobotDataset<br/>12 个语言阶段]
@@ -33,7 +33,7 @@ flowchart LR
 | 相机 | `chest_front_rgb`、`left_wrist_rgb`、`right_wrist_rgb` |
 | 图像 | RGB，480×680 |
 | 控制 / 数据频率 | 120 / 20 Hz |
-| 专家 / 语言阶段 | 26 / 12 |
+| 专家 / 语言阶段 | 27 / 12 |
 | Action Chunk | 50 帧 |
 | 训练 padding 上限 | state 50D、action 32D |
 | 主罐随机 | 5×5 分层网格内连续随机 |
@@ -74,7 +74,7 @@ flowchart LR
 11. `Close the drawer with the left hand.`
 12. `Release the drawer handle, move clear, and return the left arm home.`
 
-26 个专家阶段通过稳定 ID 映射到这 12 个语言宏阶段。预抓握先单独稳定，随后精确接近与手指闭合在同一语言段内连续执行；右臂先回 Home，左臂再关闭抽屉。转换后的 task 顺序不是依赖 metadata 的首次出现顺序，而是由当前语言契约校验和重建。
+27 个专家阶段通过稳定 ID 映射到这 12 个语言宏阶段。左手先到把手上方点，然后从该点开始闭合四指，同时保持 X/Y、下降 3 cm并增加腕部下倾；这些细分动作仍属于同一个语言宏阶段。右臂先回 Home，左臂再关闭抽屉。转换后的 task 顺序不是依赖 metadata 的首次出现顺序，而是由当前语言契约校验和重建。
 
 ## 3. 采集前检查
 

@@ -26,9 +26,9 @@
 
 如果专家本身经常碰倒罐子、在闭手过程中移动手臂或放置后过早退出，模型会把这些行为当成正确目标。因此，先提高专家成功率通常比先增加训练步数更重要。
 
-### 2.1.2 当前 26 阶段状态机
+### 2.1.2 当前 27 阶段状态机
 
-当前 YAML 中实际有 26 个专家控制阶段，并映射为 12 个语言宏阶段。预抓握先在无接触区域稳定，精确接近和闭手随后在同一语言段内连续执行。
+当前 YAML 中实际有 27 个专家控制阶段，并映射为 12 个语言宏阶段。预抓握先在无接触区域稳定，左手随后到达抓握点正上方，再沿 Z 下降并连续闭手；这些细分动作仍属于同一语言宏阶段。
 
 | # | 阶段 | 主要目标 | 关键门控 |
 |---:|---|---|---|
@@ -36,35 +36,37 @@
 | 2 | `left_approach_handle` | 左手粗接近 | 左 TCP |
 | 3 | `left_approach_handle_fine` | 中间过渡 | 左 TCP |
 | 4 | `left_hold_handle_pregrasp` | 张开的左手在预抓握点稳定 | 左手实际张开、0.5 s |
-| 5 | `left_grasp_handle` | 从预抓握点精确到达把手 | 左 TCP |
-| 6 | `left_close_hand` | 闭合抓把手 | 时间保持 |
-| 7 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
-| 8 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
-| 9 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 左 TCP、抽屉开度、0.5 s |
-| 10 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
-| 11 | `right_hold_can_pregrasp` | 张开的右手在预抓握点稳定 | 手实际张开、罐位移、0.5 s |
-| 12 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
-| 13 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
-| 14 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
-| 15 | `right_hold_grasp` | 保持抓握 | 0.5 s |
-| 16 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
-| 17 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
-| 18 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
-| 19 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
-| 20 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 手张开、物体边界/速度 |
-| 21 | `right_home_after_retreat` | 左手保持抽屉，右臂单独回 Home | 右 Home、抽屉保持打开 |
-| 22 | `left_close_drawer` | 右臂保持 Home，左手单独关抽屉 | 抽屉开度 <0.020 m |
-| 23 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s |
-| 24 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
-| 25 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
-| 26 | `left_home` | 左臂回 Home | Home、手、抽屉门控 |
+| 5 | `left_move_above_handle_grasp` | 到达当前上方对齐点 | 左 TCP、左手张开 |
+| 6 | `left_grasp_handle` | 闭指并沿 -X 后移 3 cm、下降 5 cm | 固定执行至少 30 个仿真步，不做 TCP 门控 |
+| 7 | `left_close_hand` | 在接触位置完成闭指和小幅腕部旋转 | 15 个仿真步、连续进入预拉 |
+| 8 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
+| 9 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
+| 10 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 不做 TCP/手指门控，保留抽屉开度与 0.5 s |
+| 11 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
+| 12 | `right_hold_can_pregrasp` | 张开的右手在预抓握点稳定 | 手实际张开、罐位移、0.5 s |
+| 13 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
+| 14 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
+| 15 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
+| 16 | `right_hold_grasp` | 保持抓握 | 0.5 s |
+| 17 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
+| 18 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
+| 19 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
+| 20 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
+| 21 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 手张开、物体边界/速度 |
+| 22 | `right_home_after_retreat` | 左手保持抽屉，右臂单独回 Home | 右 Home、抽屉保持打开 |
+| 23 | `left_close_drawer` | 右臂保持 Home，左手单独关抽屉 | 抽屉开度 <0.020 m |
+| 24 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s |
+| 25 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
+| 26 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
+| 27 | `left_home` | 左臂回 Home | Home、手、抽屉门控 |
 
 ```mermaid
 stateDiagram-v2
     [*] --> OpenHands
     OpenHands --> LeftApproach
     LeftApproach --> HoldLeftPregrasp
-    HoldLeftPregrasp --> LeftGrasp
+    HoldLeftPregrasp --> AboveLeftGrasp
+    AboveLeftGrasp --> LeftGrasp
     LeftGrasp --> PreloadHandle
     PreloadHandle --> PullDrawer
     PullDrawer --> HoldDrawerOpen
@@ -90,15 +92,21 @@ stateDiagram-v2
 
 状态图将若干细分接近阶段合并为逻辑块，表格保留了真实阶段名。
 
-左手把手路径当前把两个预抓取过渡点相对原始配置均向机器人方向后移 40 mm、向上抬高
-60 mm，使张开的手指在 Home 到预抓取的长距离运动中保持更充足的柜面间隙。最终抓握姿态仍保持
-原值；闭手后的预拉阶段将腕部俯角从 -0.20 rad 平滑增加到 -0.26 rad，完整拉开与保持阶段
-进一步采用 -0.32 rad，并提高姿态约束权重。这样既不改变已经可用的入把手姿态，又让拉取
-示范持续给出“腕部略向下压住把手”的动作趋势。按照 `base_link` 的 `+Y` 向左约定，整条
-接近、抓握、预拉和拉开轨迹还统一向 `-Y`（机器人右侧）平移 10 mm，使手掌更接近把手中部，
-并避免抓住后因不同阶段横向目标不一致而扭动。
+IK 控制目标是 `left_wrist_yaw_link`，灵巧手通过固定的 `rpy=(pi, 0, pi/2)` 安装变换连接在腕部，
+因此配置中的腕部 RPY 不能直接解释为掌面欧拉角。当前用户调参后的上方点为
+`[-0.0845,-0.0185,0.0618]`，抓握点为 `[-0.1145,-0.0185,0.0118]`：四指开始闭合时，TCP 沿
+`base_link -X` 后移 30 mm并下降 50 mm。wrap 阶段再沿 `-X` 后移 10 mm并保持高度，预拉随后
+后移 8 mm、上抬 3 mm。左手拇指目标保持不变，四指闭合目标为 0.50 rad；抓握、wrap 和预拉
+的 RPY 分别为 `[-0.9076,0.035,1.5]`、`[-0.9076,0.045,1.5]` 和
+`[-0.9076,0.055,1.5]`。
 
-这些 26 个阶段是**专家控制阶段**，其中包括预抓握稳定、抓把手后的轻微预拉确认、拉开后的
+抓握阶段至少执行 30 个 120 Hz 仿真步，不再使用 TCP 位置或姿态作为完成门控；配置中的
+0.040 m / 0.75 rad仅保留为诊断信息。wrap 阶段同样不要求 TCP 到位，只继续完成手指命令；预拉恢复 0.030 m / 0.65 rad 的 TCP 门控，
+并要求抽屉实测移动至少 3 mm。拉开和保持阶段使用 0.035 m / 0.65 rad，并要求抽屉开度至少
+0.08 m。保持抽屉阶段也不检查 TCP 或手指跟踪，只保持 0.5 s并确认抽屉仍达到 0.08 m。姿态容差只决定启用相应 TCP 门控的阶段是否切换，不产生额外物理保持力；真正的抓握质量仍由预拉造成的
+抽屉实测位移验证。
+
+这些 27 个阶段是**专家控制阶段**，其中包括抓握上方对齐、预抓握稳定、抓把手后的轻微预拉确认、拉开后的
 稳定保持，以及关门松手后的后上方脱离；它们不再逐个作为模型语言。当前
 `drawer_12phase_v4_serial_acquire` 将相邻控制阶段归并为 12 个语言宏阶段；采集仍执行上述全部
 控制动作，并避免在接触点把“精确接近”和“闭手”拆成两个语言段。稳定映射见
@@ -901,7 +909,7 @@ sequenceDiagram
     World-->>Obs: 新状态与新图像
 ```
 
-每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 12 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`，同时携带活动 action group 和门控超时策略。它不是在 Rollout 时直接读取 26 个专家阶段的时长。
+每个 episode 开始时 Policy Server `reset()`，清空模型动作队列。服务端还从转换后数据集的 `tasks.parquet` 和 frame Parquet 恢复最常见的 12 阶段语言顺序，并用匹配 episode 的中位阶段长度建立 Rollout schedule；`meta/s4_contract.json` 把 prompt 恢复为稳定 `language_phase_id`，同时携带活动 action group 和门控超时策略。它不是在 Rollout 时直接读取 27 个专家阶段的时长。
 
 ### 2.5.2 当前 Rollout 参数
 

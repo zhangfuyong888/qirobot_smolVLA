@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from s4_pipeline.drawer_distractors import (
@@ -8,6 +10,7 @@ from s4_pipeline.drawer_distractors import (
     LEGACY_GRASP_CAN_SCALE,
     scene_grasp_can_scale,
 )
+from s4_robot.pink_bimanual_ik import quat_wxyz_from_rpy, quat_wxyz_to_matrix
 from tasks.drawer_insert_close_controller import DrawerInsertCloseController, load_scripted_config
 
 
@@ -57,19 +60,67 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert "drawer_initial_open" not in cfg["randomization"]
     assert cfg["drawer"]["initial_open_m"] == 0.0
     assert cfg["drawer"]["target_open_m"] == 0.18
-    assert cfg["hands"]["left_close"] == [1.0, 0.22, 0.75, 0.75, 0.75, 0.75]
+    assert cfg["hands"]["left_close"] == [1.0, 0.22, 0.50, 0.50, 0.50, 0.50]
     assert cfg["targets"]["left_handle_transition_1"]["offset"] == [-0.1635, -0.0230, 0.168]
-    assert cfg["targets"]["left_handle_transition_1"]["rpy"] == [-1.5, -0.05, 1.5]
-    assert cfg["targets"]["left_handle_transition_2"]["offset"] == [-0.1585, -0.0220, 0.1418]
-    assert cfg["targets"]["left_handle_transition_2"]["rpy"] == [-1.5, -0.15, 1.5]
-    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.0975, -0.0285, 0.0368]
-    assert cfg["targets"]["left_handle_transition_3"]["rpy"] == [-1.5, -0.20, 1.5]
-    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1055, -0.0285, 0.0368]
-    assert cfg["targets"]["left_handle_preload"]["rpy"] == [-1.5, -0.26, 1.5]
-    assert cfg["targets"]["left_handle_preload"]["orientation_weight"] == 0.70
-    assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.0975, -0.0285, 0.0368]
-    assert cfg["targets"]["left_drawer_open"]["rpy"] == [-1.5, -0.32, 1.5]
-    assert cfg["targets"]["left_drawer_open"]["orientation_weight"] == 0.75
+    assert cfg["targets"]["left_handle_transition_1"]["rpy"] == [-1.25, 0.00, 1.5]
+    assert cfg["targets"]["left_handle_transition_2"]["offset"] == [-0.1285, -0.0220, 0.1418]
+    assert cfg["targets"]["left_handle_transition_2"]["rpy"] == [-1.0117, 0.039, 1.5]
+    assert cfg["targets"]["left_handle_above_grasp"]["offset"] == [-0.0845, -0.0185, 0.0618]
+    assert cfg["targets"]["left_handle_above_grasp"]["rpy"] == [-0.9225, 0.057, 1.5]
+    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.1145, -0.0185, 0.0118]
+    assert cfg["targets"]["left_handle_transition_3"]["rpy"] == [-0.9076, 0.035, 1.5]
+    assert cfg["targets"]["left_handle_transition_3"]["orientation_weight"] == 0.85
+    assert cfg["targets"]["left_handle_wrap"]["offset"] == [-0.1245, -0.0185, 0.0118]
+    assert cfg["targets"]["left_handle_wrap"]["rpy"] == [-0.9076, 0.045, 1.5]
+    assert cfg["targets"]["left_handle_wrap"]["orientation_weight"] == 0.55
+    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1325, -0.0185, 0.0148]
+    assert cfg["targets"]["left_handle_preload"]["rpy"] == [-0.9076, 0.055, 1.5]
+    assert cfg["targets"]["left_handle_preload"]["orientation_weight"] == 0.40
+    assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.1245, -0.0185, 0.0518]
+    assert cfg["targets"]["left_drawer_open"]["rpy"] == [-0.7854, 0.081, 1.5]
+    assert cfg["targets"]["left_drawer_open"]["orientation_weight"] == 0.35
+
+    # The IK target is left_wrist_yaw_link, not lh_hand_base_link. Include the
+    # fixed URDF hand mount before checking the real palm/finger orientation.
+    hand_mount_rotation = quat_wxyz_to_matrix(
+        quat_wxyz_from_rpy(math.pi, 0.0, math.pi / 2.0)
+    )
+    index_mcp = np.asarray([0.0024758, -0.02419, 0.098779])
+    pinky_mcp = np.asarray([0.0024758, 0.028372, 0.092741])
+    expected_axes_z = {
+        "left_handle_transition_3": (-0.78, -0.61),
+        "left_handle_wrap": (-0.78, -0.61),
+        "left_handle_preload": (-0.78, -0.61),
+        "left_drawer_open": (-0.70, -0.70),
+    }
+    for name, (maximum_palm_z, maximum_finger_z) in expected_axes_z.items():
+        rpy = cfg["targets"][name]["rpy"]
+        wrist_rotation = quat_wxyz_to_matrix(quat_wxyz_from_rpy(*rpy))
+        hand_rotation = wrist_rotation @ hand_mount_rotation
+        assert hand_rotation[2, 0] < maximum_palm_z
+        assert hand_rotation[2, 2] < maximum_finger_z
+        index_z = float((hand_rotation @ index_mcp)[2])
+        pinky_z = float((hand_rotation @ pinky_mcp)[2])
+        assert abs(index_z - pinky_z) < 0.002  # user-tuned outer roots remain within 2 mm
+
+    grasp_x = cfg["targets"]["left_handle_transition_3"]["offset"][0]
+    preload_x = cfg["targets"]["left_handle_preload"]["offset"][0]
+    assert np.isclose(grasp_x - preload_x, 0.018)
+    grasp_z = cfg["targets"]["left_handle_transition_3"]["offset"][2]
+    preload_z = cfg["targets"]["left_handle_preload"]["offset"][2]
+    open_z = cfg["targets"]["left_drawer_open"]["offset"][2]
+    assert np.isclose(preload_z - grasp_z, 0.003)
+    assert np.isclose(open_z - grasp_z, 0.040)
+    wrap = np.asarray(cfg["targets"]["left_handle_wrap"]["offset"])
+    assert np.isclose(grasp_x - wrap[0], 0.010)
+    assert np.isclose(wrap[2], grasp_z)
+    assert np.isclose(wrap[0] - preload_x, 0.008)
+    assert np.isclose(preload_z - wrap[2], 0.003)
+    above = np.asarray(cfg["targets"]["left_handle_above_grasp"]["offset"])
+    grasp = np.asarray(cfg["targets"]["left_handle_transition_3"]["offset"])
+    assert np.isclose(grasp[0] - above[0], -0.030)
+    assert np.isclose(grasp[1], above[1])
+    assert np.isclose(above[2] - grasp[2], 0.050)
     assert cfg["hands"]["right_open"] == [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert cfg["hands"]["right_close"] == [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
     assert cfg["targets"]["right_can_grasp"]["offset"] == [-0.050, -0.038, 0.030]
@@ -78,21 +129,42 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["targets"]["right_can_grasp"]["rpy"] == [0.0, -1.4, 0.0]
 
     phases = {phase["name"]: phase for phase in cfg["phases"]}
-    assert phases["left_grasp_handle"]["tolerance"] == 0.020
-    assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.30
-    assert phases["left_grasp_handle"]["hold_seconds"] == 0.5
+    assert phases["left_grasp_handle"]["tolerance"] == 0.040
+    assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.75
+    assert phases["left_preload_handle"]["orientation_tolerance"] == 0.65
+    assert phases["pull_drawer"]["orientation_tolerance"] == 0.65
+    assert phases["left_hold_drawer_open"]["orientation_tolerance"] == 0.65
+    assert len(cfg["phases"]) == 27
+    assert phases["left_move_above_handle_grasp"]["left"] == {
+        "target": "left_handle_above_grasp"
+    }
+    assert phases["left_move_above_handle_grasp"]["left_hand"] == "open"
+    assert phases["left_grasp_handle"]["hold_seconds"] == 0.0
+    assert phases["left_grasp_handle"]["min_steps"] == 30
+    assert phases["left_grasp_handle"]["left_hand"] == "close"
+    assert phases["left_grasp_handle"]["require_left_hand_command_reached"] is False
+    assert phases["left_grasp_handle"]["require_left_tcp_reached"] is False
+    assert phases["left_grasp_handle"]["target_alpha"] == 0.12
+    assert phases["left_grasp_handle"]["max_joint_step"] == 0.015
     assert phases["left_hold_handle_pregrasp"]["hold_seconds"] == 0.5
     assert phases["left_hold_handle_pregrasp"]["hold_current_left_pose"] is True
-    assert phases["left_close_hand"]["tolerance"] == 0.020
-    assert phases["left_close_hand"]["orientation_tolerance"] == 0.30
+    assert phases["left_close_hand"]["tolerance"] == 0.030
+    assert phases["left_close_hand"]["orientation_tolerance"] == 0.65
+    assert phases["left_close_hand"]["require_left_tcp_reached"] is False
+    assert phases["left_close_hand"]["left"] == {"target": "left_handle_wrap"}
+    assert phases["left_close_hand"]["target_alpha"] == 0.12
+    assert phases["left_close_hand"]["max_joint_step"] == 0.015
+    assert phases["left_close_hand"]["min_steps"] == 15
+    assert phases["left_close_hand"]["hold_seconds"] == 0.0
     assert phases["left_preload_handle"]["drawer_open_min"] == 0.003
     assert phases["left_preload_handle"]["hold_seconds"] == 0.5
-    assert phases["left_preload_handle"]["tolerance"] == 0.020
-    assert phases["pull_drawer"]["tolerance"] == 0.025
-    assert phases["pull_drawer"]["orientation_tolerance"] == 0.35
+    assert phases["left_preload_handle"]["tolerance"] == 0.030
+    assert phases["pull_drawer"]["tolerance"] == 0.035
     assert phases["left_hold_drawer_open"]["hold_seconds"] == 0.5
     assert phases["left_hold_drawer_open"]["drawer_open_min"] == 0.08
-    assert phases["left_hold_drawer_open"]["tolerance"] == 0.025
+    assert phases["left_hold_drawer_open"]["tolerance"] == 0.035
+    assert phases["left_hold_drawer_open"]["require_left_tcp_reached"] is False
+    assert phases["left_hold_drawer_open"]["require_left_hand_command_reached"] is False
     assert phases["initial_open_hands"]["hand_actual_tolerance"] == 0.10
     assert phases["right_pregrasp_can"]["tolerance"] == 0.010
     assert phases["right_hold_can_pregrasp"]["hold_seconds"] == 0.5
@@ -349,6 +421,49 @@ def test_left_preload_requires_measured_drawer_response_before_full_pull():
         actual_action=commanded,
     ) is True
     assert controller.current_phase.name == "pull_drawer"
+
+
+def test_left_close_hand_moves_toward_wrap_pose_while_closing():
+    controller = DrawerInsertCloseController(
+        _FakeTcpController(),
+        initial_action=np.zeros(26, dtype=np.float32),
+        anchors=_anchors(),
+    )
+    phase_index = next(
+        index for index, phase in enumerate(controller.phases) if phase.name == "left_close_hand"
+    )
+    controller.phase_index = phase_index
+    entry_pose = (
+        np.asarray([0.36, 0.35, 0.10], dtype=np.float32),
+        np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+    )
+    controller._prepare_current_phase(entry_pose, None, drawer_open_m=0.0)
+    phase = controller.current_phase
+    expected_wrap_pos = _anchors()["drawer_handle_initial"][0] + np.asarray(
+        [-0.1245, -0.0185, 0.0118], dtype=np.float32
+    )
+    assert np.allclose(phase.left.pos, expected_wrap_pos)
+    assert not np.allclose(phase.left.pos, entry_pose[0])
+    assert phase.require_left_tcp_reached is False
+    assert phase.min_steps == 15
+
+    controller._dt = 1.0 / 120.0
+    controller.phase_steps = phase.min_steps
+    commanded = np.zeros(26, dtype=np.float32)
+    commanded[7:13] = phase.left_hand
+    contact_deflected_pose = (
+        entry_pose[0] + np.asarray([0.0, 0.0, 0.10], dtype=np.float32),
+        np.asarray([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+    )
+    assert controller._advance_if_ready(
+        contact_deflected_pose,
+        None,
+        drawer_open_m=0.0,
+        curr_joint_pos=np.zeros(14, dtype=np.float32),
+        commanded_action=commanded,
+        actual_action=commanded,
+    ) is True
+    assert controller.current_phase.name == "left_preload_handle"
 
 
 def test_release_waits_for_actual_open_hand_and_can_inside_drawer():

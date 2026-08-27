@@ -58,6 +58,7 @@ def test_drawer_language_contract_maps_expert_name_legacy_text_and_prompt():
     expert_by_name = {item["name"]: item for item in scripted["phases"]}
 
     assert contract.for_expert_phase("left_approach_handle").id == "left_pregrasp_handle"
+    assert contract.for_expert_phase("left_move_above_handle_grasp").id == "left_acquire_handle"
     assert contract.for_expert_phase("left_grasp_handle").id == "left_acquire_handle"
     assert contract.for_expert_phase("left_preload_handle").id == "left_acquire_handle"
     assert contract.for_expert_phase("left_hold_drawer_open").id == "left_pull_drawer"

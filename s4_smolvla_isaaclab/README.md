@@ -23,7 +23,7 @@ IsaacLab 专家策略
 | 活跃任务 | `drawer_insert_close` |
 | Schema | `s4_bimanual_v1` |
 | 语言契约 | `drawer_12phase_v4_serial_acquire` |
-| 专家控制阶段 / 语言阶段 | 26 / 12 |
+| 专家控制阶段 / 语言阶段 | 27 / 12 |
 | State / Action | 26D / 26D |
 | Action 语义 | `absolute_joint_target` |
 | 关节顺序 | 左臂 7 + 左手 6 + 右臂 7 + 右手 6 |
