@@ -322,13 +322,15 @@ bash run.sh dataset-check \
 ### 3.9.7 离线检查与在线 Rollout
 
 ```bash
-bash run.sh preview \
+PYTHONPATH="$PWD" bash run.sh preview \
   --checkpoint outputs/train/<run>/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
 
 当前 `preview` 只传入 checkpoint 声明的第一路视觉 feature，适合作为轻量接口和动作误差检查，不等价于三相机在线输入。
+命令必须从项目根目录运行；当前 preview 脚本不会自行把项目根目录加入 Python 搜索路径，
+所以需要保留 `PYTHONPATH="$PWD"`。
 
 固定场景回归：
 

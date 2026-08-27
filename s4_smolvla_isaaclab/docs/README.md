@@ -50,6 +50,10 @@ bash run.sh train --help
 
 当前在线 Rollout 也需要两个环境：`env_isaaclab` 运行仿真，`smolvla` 运行本机 Policy Server。它不是只安装 IsaacLab 就能运行的单环境入口。
 
+当前离线 `preview` 入口存在一个已确认的路径限制：必须从项目根目录使用
+`PYTHONPATH="$PWD" bash run.sh preview ...`。其他统一入口不需要这个前缀；详情见
+[PIPELINE.md](PIPELINE.md#10-离线预览)。
+
 ## 文档维护规则
 
 更新项目时只维护：

@@ -239,6 +239,33 @@ bash run.sh rollout \
 bash run.sh record --episodes 5
 ```
 
+确认动作和画面正常后，可以使用一体化入口完成“采集 → HDF5 检查 → 转换 →
+LeRobotDataset 检查”。有渲染窗口时不要传 `--headless`：
+
+```bash
+bash run.sh collect-convert \
+  --episodes 200 \
+  --random-seed 42 \
+  --episode-timeout-s 300 \
+  --reset-settle-s 2.0 \
+  --record-every-n 6 \
+  --max-failed-attempts 10
+```
+
+`collect-convert` 不接受末尾附加的数据集路径或 `--expected-episodes`；它会从活动任务配置
+解析目标数据集，并在转换前后自动使用期望成功数检查。如果目标 LeRobotDataset 已存在，
+只有在明确接受替换时才额外加入 `--overwrite`。无界面正式采集只需额外加入
+`--headless`。
+
+采集中的普通任务失败不会写入 `demo_*`，而是丢弃当前内存 episode、记录失败并重置：
+
+- 抓罐相关失败先在同一精确点额外重试 3 次；
+- 仍失败后在当前 5×5 网格单元内部重新随机点位；
+- 非抓取阶段失败直接在当前格内重新采样；
+- 当前格只有接受成功 episode 后才推进；
+- `--max-failed-attempts 10` 允许累计 10 次失败，第 11 次失败才中断；已经提交的成功
+  HDF5 episode 和失败日志仍会保留，但本次一体化命令不会继续转换。
+
 完整的安全顺序是：
 
 ```text
@@ -268,6 +295,7 @@ bash run.sh record --episodes 5
 
 - `--episodes N` 表示目标成功 episode 总数，不是总尝试数。
 - 失败尝试写入失败日志，不进入最终训练数据。
+- `--max-failed-attempts N` 是全局失败安全预算，不决定网格点如何选择；超过预算才中断。
 - Resume 必须使用同一个 HDF5，并保持采集契约不变。
 - `--overwrite` 只应在明确接受替换目标时使用。
 - State/action 顺序、相机 key、FPS、Action 语义或语言契约变化后，需要重新转换、重新训练并重新 Rollout。

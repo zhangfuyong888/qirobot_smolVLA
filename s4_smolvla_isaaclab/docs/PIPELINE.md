@@ -74,7 +74,10 @@ flowchart LR
 11. `Close the drawer with the left hand.`
 12. `Release the drawer handle, move clear, and return the left arm home.`
 
-27 个专家阶段通过稳定 ID 映射到这 12 个语言宏阶段。左手先到把手上方点，然后从该点开始闭合四指，同时保持 X/Y、下降 3 cm并增加腕部下倾；这些细分动作仍属于同一个语言宏阶段。右臂先回 Home，左臂再关闭抽屉。转换后的 task 顺序不是依赖 metadata 的首次出现顺序，而是由当前语言契约校验和重建。
+27 个专家阶段通过稳定 ID 映射到这 12 个语言宏阶段。左手先到把手上方点，然后从该点开始
+闭合四指，同时沿 `base_link -X` 后移 3 cm、下降 2 cm并增加腕部下倾；这些细分动作仍属于
+同一个语言宏阶段。右臂先回 Home，左臂再关闭抽屉。转换后的 task 顺序不是依赖 metadata
+的首次出现顺序，而是由当前语言契约校验和重建。
 
 ## 3. 采集前检查
 
@@ -153,6 +156,10 @@ bash run.sh record \
 - `--episodes 200` 是最终成功 episode 总数；
 - 失败或超时 episode 不提交到 HDF5 成功组；
 - 失败原因、阶段和物体位置写入独立日志；
+- `--max-failed-attempts N` 只限制全局累计失败数，不改变点位重试策略；允许 N 次失败，
+  第 N+1 次失败才中断；
+- 抓罐相关失败在同一精确位置额外重试 3 次，耗尽后在当前网格单元内重新采样；
+  非抓取阶段失败直接在当前格内重新采样，只有接受成功 episode 才推进网格；
 - 偶发物理失败需要持续采集时，`collect-convert` 可使用 `--continue-on-failure`。它只取消累计失败次数上限；失败 episode 仍被丢弃并记录，程序异常、契约检查失败和最终成功数不足仍会终止流水线；
 - Headless 只隐藏窗口，相机仍然渲染；
 - 最终数据只接受满足抽屉与罐子成功条件的 episode。
@@ -305,7 +312,7 @@ bash run.sh dataset-check \
 ## 10. 离线预览
 
 ```bash
-bash run.sh preview \
+PYTHONPATH="$PWD" bash run.sh preview \
   --checkpoint "${CHECKPOINT}" \
   --dataset-root datasets/lerobot_data \
   --repo-id "${DATASET_NAME}" \
@@ -314,6 +321,9 @@ bash run.sh preview \
 ```
 
 离线误差用于发现明显的输入、归一化和动作接口错误，不等价于闭环成功率。
+当前 `scripts/preview_policy.py` 在导入项目模块前没有自行加入项目根目录，因此必须从项目
+根目录执行并显式设置上述 `PYTHONPATH`。这是离线 preview 入口的已知限制，不影响
+`record`、`train` 或 `rollout`。
 
 ## 11. 在线 Rollout
 
@@ -403,7 +413,7 @@ bash run.sh diagnose outputs/eval/<run>/ep001_actions.csv
 |---|---:|---:|---:|---:|
 | 专家 TCP、手指、门控、阶段路径 | 是 | 是 | 是 | 是 |
 | 随机区域或场景视觉分布 | 通常是 | 是 | 是 | 是 |
-| 语言阶段或 prompt 映射 | 原始 HDF5 可映射时不一定 | 是 | 是 | 是 |
+| 语言阶段或 prompt 映射 | 仅当原始逐帧 ID/专家文本能被当前转换器无歧义识别时不一定 | 是 | 是 | 是 |
 | State/action 顺序、维度、语义 | 是 | 是 | 是 | 是 |
 | 相机 key、视角、分辨率 | 是 | 是 | 是 | 是 |
 | 训练学习率、batch、steps | 否 | 否 | 是 | 是 |

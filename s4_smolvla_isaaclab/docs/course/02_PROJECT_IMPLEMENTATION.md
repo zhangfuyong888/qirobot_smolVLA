@@ -37,7 +37,7 @@
 | 3 | `left_approach_handle_fine` | 中间过渡 | 左 TCP |
 | 4 | `left_hold_handle_pregrasp` | 张开的左手在预抓握点稳定 | 左手实际张开、0.5 s |
 | 5 | `left_move_above_handle_grasp` | 到达当前上方对齐点 | 左 TCP、左手张开 |
-| 6 | `left_grasp_handle` | 闭指并沿 -X 后移 3 cm、下降 5 cm | 固定执行至少 30 个仿真步，不做 TCP 门控 |
+| 6 | `left_grasp_handle` | 闭指并沿 -X 后移 3 cm、下降 2 cm | 固定执行至少 30 个仿真步，不做 TCP 门控 |
 | 7 | `left_close_hand` | 在接触位置完成闭指和小幅腕部旋转 | 15 个仿真步、连续进入预拉 |
 | 8 | `left_preload_handle` | 轻微预拉验证抓握耦合 | 抽屉开度 ≥0.003 m |
 | 9 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
@@ -109,8 +109,9 @@ IK 控制目标是 `left_wrist_yaw_link`，灵巧手通过固定的 `rpy=(pi, 0,
 这些 27 个阶段是**专家控制阶段**，其中包括抓握上方对齐、预抓握稳定、抓把手后的轻微预拉确认、拉开后的
 稳定保持，以及关门松手后的后上方脱离；它们不再逐个作为模型语言。当前
 `drawer_12phase_v4_serial_acquire` 将相邻控制阶段归并为 12 个语言宏阶段；采集仍执行上述全部
-控制动作，并避免在接触点把“精确接近”和“闭手”拆成两个语言段。稳定映射见
-工程入口与当前语言契约摘要集中在 `docs/PIPELINE.md`，不能用 prompt 字符串代替阶段 ID 充当程序契约。
+控制动作，并避免在接触点把“精确接近”和“闭手”拆成两个语言段。稳定映射以
+`configs/tasks/drawer_insert_close.scripted.yaml` 为准；工程入口与当前语言契约摘要集中在
+`docs/PIPELINE.md`。程序内部使用稳定阶段 ID，不能把可能修改的 prompt 字符串当作唯一契约。
 
 ### 2.1.3 Anchor 与相对目标
 
@@ -249,7 +250,10 @@ z\in[1.00,1.04]\ \mathrm{m}
 
 右手松开后不会直接向外抽离，而是先垂直抬升 0.10 m，再向机器人侧和远离抽屉方向移动 `[-0.10,-0.18,+0.02] m`。这降低了张开手指扫到罐子或抽屉边缘的风险。
 
-右手清空抽屉后可立即回 Home，同时左手关闭抽屉。抽屉关闭后，左手先在原位持续发出 1.0 秒张开命令。由于手掌仍包裹实体把手，此时不要求手指达到无接触时的完整张开角；否则接触约束会让状态机一直等待。随后使用显式关节过渡：
+右手清空抽屉后先单独回 Home；确认右臂回到 Home 且抽屉仍保持打开后，左臂才开始关闭
+抽屉，两条手臂的主体空间运动不会在这两个阶段并发。抽屉关闭后，左手先在原位持续发出
+1.0 秒张开命令。由于手掌仍包裹实体把手，此时不要求手指达到无接触时的完整张开角；
+否则接触约束会让状态机一直等待。随后使用显式关节过渡：
 
 ```yaml
 left_arm_joint_target:
@@ -313,7 +317,7 @@ f_{data}=\frac{f_{control}}{N}=\frac{120}{6}=20\ \mathrm{Hz}
 | `obs/right_wrist_rgb` | 右腕相机 | 训练视觉 |
 | `obs/task_description` | 当前阶段任务文本 | 语言条件 |
 | `obs/language_phase_id` | 12 阶段稳定 ID | 转换与 Rollout 契约 |
-| `obs/expert_phase_name` | 23 阶段真实控制名 | 失败诊断 |
+| `obs/expert_phase_name` | 27 阶段真实控制名 | 失败诊断 |
 | EEF pose | 左/右 TCP | 工程诊断 |
 | drawer object pose | 主罐位姿 | 任务诊断 |
 
@@ -476,7 +480,12 @@ bash run.sh collect-convert \
 
 ### 2.3.1 为什么不直接用 HDF5 训练
 
-HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeRobotDataset 则提供统一的多模态 feature、Parquet 帧索引、任务表、视频、统计量和 episode-aware 采样接口。转换不会改变图像、状态或动作；语言属于显式迁移：旧 HDF5 的 20 段文本按配置映射为 10 个宏阶段，新 HDF5 则用稳定 ID 并交叉校验文本和专家阶段。
+HDF5 适合仿真端按 episode 原子写入，并保存工程诊断字段。LeRobotDataset 则提供统一的
+多模态 feature、Parquet 帧索引、任务表、视频、统计量和 episode-aware 采样接口。转换不会
+重新渲染图像，也不会改变已记录的状态或动作；语言会被规范化为当前 12 个宏阶段。新 HDF5
+同时携带稳定 ID、宏文本和 27 阶段专家名，转换器会交叉校验三者。历史 HDF5 只有在其逐帧
+专家文本能被当前配置明确识别时才能迁移；转换器不会把任意旧版 20 阶段或 10 阶段契约自动
+猜测成当前契约。
 
 ### 2.3.2 字段映射
 
@@ -860,13 +869,15 @@ Flow Matching loss 衡量模型预测速度场与目标速度的差异。下降�
 #### 离线评估命令
 
 ```bash
-bash run.sh preview \
+PYTHONPATH="$PWD" bash run.sh preview \
   --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<step>/pretrained_model \
   --num-frames 20 \
   --device cuda
 ```
 
-这属于 teacher-forced 评估：每次输入来自专家数据，而不是模型上一步动作造成的新状态。因此低误差不能覆盖闭环分布偏移。
+当前入口需要从项目根目录显式提供 `PYTHONPATH="$PWD"`，否则
+`scripts/preview_policy.py` 无法导入项目内的 `s4_pipeline`。这属于 teacher-forced 评估：
+每次输入来自专家数据，而不是模型上一步动作造成的新状态。因此低误差不能覆盖闭环分布偏移。
 
 ### 2.4.9 训练前后检查矩阵
 
@@ -922,14 +933,16 @@ sequenceDiagram
 | `phase_max_extension_frames` | 20 | 普通宏阶段门控不满足时最多延长 |
 | `drawer_phase_max_extension_frames` | 80 | 接近把手和拉抽屉宏阶段最多延长 |
 | `action_clip` | dataset min/max | 限制超出训练动作范围 |
-| `max_joint_step` | 0.050 rad/策略帧 | 机械臂目标变化限制 |
-| `hand_max_joint_step` | 0.015 rad/策略帧 | 灵巧手目标变化限制 |
+| `max_joint_step` | 0.050 rad/120 Hz 基础步 | 机械臂 endpoint 变化基准 |
+| `hand_max_joint_step` | 0.015 rad/120 Hz 基础步 | 灵巧手 endpoint 变化基准 |
 | 策略频率 | 20 Hz | 与数据集一致 |
 | 物理频率 | 120 Hz | 每策略帧 6 个物理步 |
 | 重力补偿 | 开启，scale 1.0 | 补偿手臂重力 |
 | seed | 42 | 可复现实验 |
 
-注意源码在应用步长限制时按策略 interval 换算允许变化量；表中的命令行值是每策略帧基准，不应误解为每个 120 Hz 物理步都允许同样跳变。
+源码在每个 20 Hz 策略边界把上述值乘以 `policy_interval=6`，所以默认 endpoint 限幅分别为
+0.300 rad 和 0.090 rad；endpoint 之间再通过 6 个 120 Hz 物理步线性插值。命令行参数与
+最终策略帧 endpoint 限幅不能混为同一个数值。
 
 ### 2.5.3 Chunk 重规划与融合
 
