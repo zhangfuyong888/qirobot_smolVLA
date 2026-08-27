@@ -2288,14 +2288,9 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "cyan",
         )
 
-    def log_current_phase(controller) -> None:
+    def capture_current_phase_state(controller) -> None:
+        """Keep detailed phase snapshots for failure files without flashing terminal output."""
         phase = controller.current_phase
-        log_collection_event(
-            "PHASE",
-            f"EP{recorded_episodes + 1:03d}/{max_record_episodes:03d} TRY{record_attempt:02d} | "
-            f"PHASE {controller.phase_index + 1:02d}/{len(controller.phases):02d} {phase.name}",
-            "blue",
-        )
         can_obj = scene.get("named_objects", {}).get("can")
         can_pos = None if can_obj is None else can_obj.data.root_pos_w[0].detach().cpu().numpy()
         right_pose_w = estimate_right_hand_tcp_pose_from_robot(robot)
@@ -2313,8 +2308,6 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             if can_pos is None or start_pos is None
             else float(np.linalg.norm(np.asarray(can_pos) - np.asarray(start_pos)))
         )
-        can_shift_text = "n/a" if not np.isfinite(can_displacement) else f"{can_displacement:.4f}m"
-        right_error_text = "n/a" if not np.isfinite(right_error) else f"{right_error:.4f}m"
         actual_action = control_action_from_sim(robot)
         fingertip_positions: dict[str, list[float]] = {}
         for body_name in (
@@ -2343,6 +2336,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "can_shift_m": None if not np.isfinite(can_displacement) else float(can_displacement),
             "right_tcp_world_m": None if right_pose_w is None else [float(value) for value in right_pose_w[0]],
             "right_tcp_base_m": None if right_pose_b is None else [float(value) for value in right_pose_b[0]],
+            "right_tcp_error_m": None if not np.isfinite(right_error) else float(right_error),
             "left_tcp_world_m": (
                 None
                 if (left_pose_w := estimate_left_hand_tcp_pose_from_robot(robot)) is None
@@ -2369,17 +2363,6 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
             "right_hand_actual_rad": [float(value) for value in actual_action[ACTION_SLICES.right_hand]],
         }
         phase_state_history.append(phase_snapshot)
-        finger_center_delta = phase_snapshot["can_minus_right_fingertip_centroid_world_m"]
-        log_collection_event(
-            "PHASE-STATE",
-            f"phase={phase.name} | can_world={None if can_pos is None else np.round(can_pos, 4).tolist()} "
-            f"can_shift={can_shift_text} | "
-            f"right_target_base={None if right_target is None else np.round(right_target, 4).tolist()} "
-            f"right_tcp_error={right_error_text} | "
-            f"can_minus_fingertip_center="
-            f"{None if finger_center_delta is None else np.round(finger_center_delta, 4).tolist()}",
-            "blue",
-        )
 
     def record_attempt_failure(failure_type: str, reason: str, controller, wall_elapsed_s: float) -> None:
         """Persist enough state to diagnose exactly where and where-in-space an attempt failed."""
@@ -2636,7 +2619,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         )
         if writer is not None:
             log_attempt_start(drawer_controller)
-            log_current_phase(drawer_controller)
+            capture_current_phase_state(drawer_controller)
             last_logged_phase_index = drawer_controller.phase_index
     try:
         while simulation_app.is_running():
@@ -2738,7 +2721,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                             last_logged_phase_index = -1
                             if writer is not None:
                                 log_attempt_start(drawer_controller)
-                                log_current_phase(drawer_controller)
+                                capture_current_phase_state(drawer_controller)
                                 last_logged_phase_index = drawer_controller.phase_index
                         arm_control_active = False
                         tcp_pose_active = False
@@ -2785,7 +2768,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         task_object_linear_velocity_world=can_linear_velocity_w,
                     )
                     if drawer_controller.phase_index != last_logged_phase_index and not drawer_controller.failed:
-                        log_current_phase(drawer_controller)
+                        capture_current_phase_state(drawer_controller)
                         last_logged_phase_index = drawer_controller.phase_index
                     active_phase = drawer_controller.current_phase
                     phase_alpha = float(
@@ -2904,7 +2887,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     last_logged_phase_index = -1
                     log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                     log_attempt_start(drawer_controller)
-                    log_current_phase(drawer_controller)
+                    capture_current_phase_state(drawer_controller)
                     last_logged_phase_index = drawer_controller.phase_index
                     continue
                 if record_step % record_every_n == 0:
@@ -2951,7 +2934,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         last_logged_phase_index = -1
                         log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                         log_attempt_start(drawer_controller)
-                        log_current_phase(drawer_controller)
+                        capture_current_phase_state(drawer_controller)
                         last_logged_phase_index = drawer_controller.phase_index
                         continue
                     task_success, success_details = evaluate_drawer_task_success()
@@ -2997,7 +2980,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                         last_logged_phase_index = -1
                         log_collection_event("RETRY", "scene reset; trying the selected grid point", "yellow")
                         log_attempt_start(drawer_controller)
-                        log_current_phase(drawer_controller)
+                        capture_current_phase_state(drawer_controller)
                         last_logged_phase_index = drawer_controller.phase_index
                         continue
                     recording_episode.metadata["final_success"] = success_details
@@ -3037,7 +3020,7 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     record_attempt = 1
                     last_logged_phase_index = -1
                     log_attempt_start(drawer_controller)
-                    log_current_phase(drawer_controller)
+                    capture_current_phase_state(drawer_controller)
                     last_logged_phase_index = drawer_controller.phase_index
             if tcp_visualizer is not None:
                 tcp_visualizer.visualize_task_frames(
@@ -3100,23 +3083,24 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                                 left_rot=errors["left_rot"],
                                 right_pos=errors["right_pos"],
                                 right_rot=errors["right_rot"],
-                                left_pos_limit=max(float(
-                                    drawer_dashboard_cfg.get("left_position_tolerance_m", 0.050)
-                                ), 1.0e-6),
-                                left_rot_limit=max(float(
-                                    drawer_dashboard_cfg.get("left_rotation_tolerance_rad", 0.500)
-                                ), 1.0e-6),
-                                right_pos_limit=max(float(
-                                    drawer_dashboard_cfg.get("right_position_tolerance_m", 0.050)
-                                ), 1.0e-6),
-                                right_rot_limit=max(float(
-                                    drawer_dashboard_cfg.get("right_rotation_tolerance_rad", 0.500)
-                                ), 1.0e-6),
-                                left_tcp_gate=phase.require_left_tcp_reached,
-                                right_tcp_gate=phase.require_right_tcp_reached,
+                                left_pos_limit=phase.tolerance,
+                                left_rot_limit=phase.orientation_tolerance,
+                                right_pos_limit=phase.tolerance,
+                                right_rot_limit=phase.orientation_tolerance,
+                                left_tcp_gate=(
+                                    phase.require_left_tcp_reached and phase.left is not None
+                                ),
+                                right_tcp_gate=(
+                                    phase.require_right_tcp_reached and phase.right is not None
+                                ),
                                 drawer_open_m=(
                                     float(dashboard_drawer_open)
                                     if dashboard_drawer_open is not None
+                                    else float("nan")
+                                ),
+                                drawer_open_min_m=(
+                                    float(phase.drawer_open_min)
+                                    if phase.drawer_open_min is not None
                                     else float("nan")
                                 ),
                                 drawer_open_limit_m=(

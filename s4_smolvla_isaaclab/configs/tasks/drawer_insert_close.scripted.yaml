@@ -85,7 +85,7 @@ hands:
 home_poses:
   left_arm: [0.7,0.2,0.0,-1.6,0.0,0.0,0.0]
   right_arm: [0.7,-0.2,0.0,-1.6,0.0,0.0,0.0]
-  tolerance: 0.03
+  tolerance: 0.10
 
 # Final dataset acceptance is evaluated from live simulation state before an
 # episode is written. The can check uses its root height in world coordinates.
@@ -103,12 +103,6 @@ logging:
     refresh_seconds: 0.5
     width: 78
     bar_width: 24
-    # Display thresholds only. Phase completion tolerances remain configured
-    # under controller defaults or individual phases.
-    left_position_tolerance_m: 0.050
-    left_rotation_tolerance_rad: 0.500
-    right_position_tolerance_m: 0.050
-    right_rotation_tolerance_rad: 0.500
 
 # These are the main task-tuning parameters. The can and handle anchors are
 # measured from the current simulation state at the beginning of each episode.
@@ -138,14 +132,14 @@ targets:
     anchor: drawer_handle_initial
     offset_frame: base_link
     # Current user-tuned overhead staging pose. The closing approach below moves
-    # 30 mm along base_link -X and descends 50 mm from this point.
+    # 30 mm along base_link -X and descends 20 mm from this point.
     offset: [-0.0845, -0.0185, 0.0618]
     rpy: [-0.9225, 0.057, 1.5]
     orientation_weight: 1.00
   left_handle_transition_3:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    # Move 30 mm along base_link -X and descend 50 mm while the four fingers
+    # Move 30 mm along base_link -X and descend 20 mm while the four fingers
     # begin curling around the handle.
     offset: [-0.1145, -0.0185, 0.0418]
     # The hand is mounted to the controlled wrist with rpy=(pi, 0, pi/2).
@@ -157,7 +151,7 @@ targets:
   left_handle_wrap:
     anchor: drawer_handle_initial
     offset_frame: base_link
-    # Move another 10 mm along base_link -X at the same height while the fingers
+    # Move another 10 mm along base_link -X and down 10 mm while the fingers
     # finish closing and the wrist completes its small rotation.
     offset: [-0.1245, -0.0185, 0.0318]
     rpy: [-0.9076, 0.045, 1.5]
@@ -175,7 +169,7 @@ targets:
   left_drawer_open:
     anchor: drawer_handle_open
     offset_frame: base_link
-    # Finish 40 mm above the grasp TCP at about 45 degrees downward tilt. The
+    # Finish 10 mm above the grasp TCP at about 45 degrees downward tilt. The
     # added lift keeps the finger roots slightly above their grasping height,
     # avoiding a net downward load on the rigid handle during the pull.
     offset: [-0.1245, -0.0185, 0.0518]
@@ -414,6 +408,10 @@ phases:
   - name: pull_drawer
     task: "Pull the drawer open with the left hand."
     left: {target: left_drawer_open}
+    # Slow only the rigid-contact drawer pull to reduce finger slip and wrist
+    # tracking lag. Other Cartesian phases keep their existing local/defaults.
+    target_alpha: 0.20
+    max_joint_step: 0.025
     tolerance: 0.035
     orientation_tolerance: 0.65
     min_steps: 30
@@ -463,7 +461,7 @@ phases:
     hand_actual_tolerance: 0.05
     tolerance: 0.010
     task_object_max_displacement_from_start_m: 0.020
-    hold_seconds: 0.5
+    hold_seconds: 0.2
     max_steps: 1000
     keep_ik_posture_reference: true
 
@@ -475,7 +473,7 @@ phases:
     # TCP is a wrist-frame virtual point, not a fingertip. Physical tests show
     # first stable open-hand contact at 25--27 mm TCP error; forcing 10 mm makes
     # the still-open hand push the can. Stop at contact, then the next phase
-    # holds the arm stationary for one second before closing the fingers.
+    # briefly holds the arm stationary for 0.3 seconds before closing the fingers.
     tolerance: 0.028
     task_object_max_displacement_from_start_m: 0.020
     target_alpha: 0.18
@@ -494,7 +492,7 @@ phases:
     hold_current_right_pose: true
     require_left_tcp_reached: false
     tolerance: 0.010
-    hold_seconds: 1.0
+    hold_seconds: 0.3
     max_steps: 1000
     keep_ik_posture_reference: true
     require_right_hand_actual_reached: true
@@ -572,6 +570,10 @@ phases:
     right_hand: open
     require_left_tcp_reached: false
     require_right_hand_actual_reached: true
+    # Speed up only this post-release Cartesian clearance segment. The
+    # following joint-space Home phase keeps the global smoothing defaults.
+    target_alpha: 0.85
+    max_joint_step: 0.200
     min_steps: 20
     max_steps: 1000
 
@@ -583,6 +585,9 @@ phases:
     right_hand: open
     require_left_tcp_reached: false
     require_right_hand_actual_reached: true
+    # Continue the faster Cartesian retreat without changing right-arm Home.
+    target_alpha: 0.85
+    max_joint_step: 0.200
     task_object_world_bounds:
       x: [0.34, 0.46]
       y: [0.05, 0.23]
@@ -670,9 +675,11 @@ phases:
     require_left_hand_actual_reached: true
     hand_actual_tolerance: 0.05
     drawer_open_max: 0.040
-    arm_joint_tolerance: 0.040
-    target_alpha: 0.12
-    max_joint_step: 0.015
+    # This is a shaping waypoint rather than a final task state. Continue to
+    # Home once the arm is approximately on the safe tucked branch.
+    arm_joint_tolerance: 0.150
+    target_alpha: 0.5
+    max_joint_step: 0.2
     min_steps: 150
     max_steps: 1000
 

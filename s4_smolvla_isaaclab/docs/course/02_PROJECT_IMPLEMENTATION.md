@@ -43,21 +43,21 @@
 | 9 | `pull_drawer` | 拉开抽屉 | 抽屉开度 ≥0.08 m |
 | 10 | `left_hold_drawer_open` | 稳定保持已拉开的抽屉 | 不做 TCP/手指门控，保留抽屉开度与 0.5 s |
 | 11 | `right_pregrasp_can` | 从安全方向到预抓取 | 右 TCP 10 mm、罐位移 ≤20 mm |
-| 12 | `right_hold_can_pregrasp` | 张开的右手在预抓握点稳定 | 手实际张开、罐位移、0.5 s |
+| 12 | `right_hold_can_pregrasp` | 张开的右手在预抓握点短暂稳定 | 手实际张开、罐位移、0.2 s |
 | 13 | `right_grasp_can` | 精确靠近罐子 | 右 TCP 28 mm、罐位移 ≤20 mm |
-| 14 | `right_settle_before_close` | 开手静止 | 1.0 s、手实际到位 |
+| 14 | `right_settle_before_close` | 闭手前短暂静止 | 0.3 s、手实际到位 |
 | 15 | `right_close_hand` | 闭手包裹罐子 | 1.0 s |
 | 16 | `right_hold_grasp` | 保持抓握 | 0.5 s |
 | 17 | `right_lift_can` | 抬起罐子 | 物体 Z∈[1.20,1.35] m |
 | 18 | `right_place_in_drawer` | 移入抽屉 | 右 TCP |
 | 19 | `right_open_hand` | 松手并等待稳定 | 手到位、物体边界/速度 |
-| 20 | `right_lift_clear_drawer` | 垂直抬手 0.10 m | 右手实际张开 |
-| 21 | `right_retreat_clear_drawer` | 向机器人侧和外侧退出 | 手张开、物体边界/速度 |
+| 20 | `right_lift_clear_drawer` | 以局部加速参数垂直抬手 0.10 m | 右手实际张开 |
+| 21 | `right_retreat_clear_drawer` | 以局部加速参数向机器人侧和外侧退出 | 手张开、物体边界/速度 |
 | 22 | `right_home_after_retreat` | 左手保持抽屉，右臂单独回 Home | 右 Home、抽屉保持打开 |
 | 23 | `left_close_drawer` | 右臂保持 Home，左手单独关抽屉 | 抽屉开度 <0.020 m |
 | 24 | `left_open_hand` | 原位持续发出左手张开命令 | 保持 1.0 s |
 | 25 | `left_clear_handle_after_release` | 左手先向后 4 cm、向上 5 cm 脱离把手 | TCP、实际张开、抽屉关闭 |
-| 26 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差、抽屉关闭 |
+| 26 | `left_joint_transition_after_release` | 左臂进入肘部后收关节过渡 | 实际张开、关节误差≤0.15 rad、抽屉关闭 |
 | 27 | `left_home` | 左臂回 Home | Home、手、抽屉门控 |
 
 ```mermaid
@@ -94,8 +94,8 @@ stateDiagram-v2
 
 IK 控制目标是 `left_wrist_yaw_link`，灵巧手通过固定的 `rpy=(pi, 0, pi/2)` 安装变换连接在腕部，
 因此配置中的腕部 RPY 不能直接解释为掌面欧拉角。当前用户调参后的上方点为
-`[-0.0845,-0.0185,0.0618]`，抓握点为 `[-0.1145,-0.0185,0.0118]`：四指开始闭合时，TCP 沿
-`base_link -X` 后移 30 mm并下降 50 mm。wrap 阶段再沿 `-X` 后移 10 mm并保持高度，预拉随后
+`[-0.0845,-0.0185,0.0618]`，抓握点为 `[-0.1145,-0.0185,0.0418]`：四指开始闭合时，TCP 沿
+`base_link -X` 后移 30 mm并下降 20 mm。wrap 阶段再沿 `-X` 后移 10 mm并下降 10 mm，预拉随后
 后移 8 mm、上抬 3 mm。左手拇指目标保持不变，四指闭合目标为 0.50 rad；抓握、wrap 和预拉
 的 RPY 分别为 `[-0.9076,0.035,1.5]`、`[-0.9076,0.045,1.5]` 和
 `[-0.9076,0.055,1.5]`。
@@ -186,7 +186,7 @@ sequenceDiagram
     participant Can as 罐子
     Arm->>Arm: 到达预抓取
     Arm->>Arm: 慢速到接触附近
-    Arm->>Arm: 保持当前 TCP 1.0 s
+    Arm->>Arm: 保持当前 TCP 0.3 s
     Hand->>Hand: 闭合 1.0 s
     Hand->>Can: 形成包裹与摩擦接触
     Arm->>Arm: 再保持 0.5 s
@@ -197,7 +197,7 @@ sequenceDiagram
 
 ```python
 if tcp_reached and object_displacement <= 0.020:
-    hold_arm_pose(seconds=1.0)
+    hold_arm_pose(seconds=0.3)
     close_hand(seconds=1.0)
     hold_grasp(seconds=0.5)
     lift_arm()

@@ -36,6 +36,7 @@ class DashboardSnapshot:
     left_tcp_gate: bool
     right_tcp_gate: bool
     drawer_open_m: float
+    drawer_open_min_m: float
     drawer_open_limit_m: float
 
 
@@ -66,8 +67,9 @@ def _indicator(value: float, limit: float) -> str:
     return "🟢" if math.isfinite(value) and value <= limit else "🔴"
 
 
-def _metric(label: str, value: float, limit: float, unit: str) -> str:
-    return f"{label:<6} {value:6.3f} / {limit:6.3f} {unit:<3} {_indicator(value, limit)}"
+def _metric(label: str, value: float, limit: float, unit: str, *, active: bool = True) -> str:
+    indicator = _indicator(value, limit) if active else "—"
+    return f"{label:<6} {value:6.3f} / {limit:6.3f} {unit:<3} {indicator}"
 
 
 def _phase_progress(snapshot: DashboardSnapshot) -> float:
@@ -134,10 +136,18 @@ def format_dashboard(
         else float("nan")
     )
     attempt_total = completed_attempts + 1
-    left_pos_metric = _metric("L-Pos", snapshot.left_pos, snapshot.left_pos_limit, "m")
-    left_rot_metric = _metric("L-Rot", snapshot.left_rot, snapshot.left_rot_limit, "rad")
-    right_pos_metric = _metric("R-Pos", snapshot.right_pos, snapshot.right_pos_limit, "m")
-    right_rot_metric = _metric("R-Rot", snapshot.right_rot, snapshot.right_rot_limit, "rad")
+    left_pos_metric = _metric(
+        "L-Pos", snapshot.left_pos, snapshot.left_pos_limit, "m", active=snapshot.left_tcp_gate
+    )
+    left_rot_metric = _metric(
+        "L-Rot", snapshot.left_rot, snapshot.left_rot_limit, "rad", active=snapshot.left_tcp_gate
+    )
+    right_pos_metric = _metric(
+        "R-Pos", snapshot.right_pos, snapshot.right_pos_limit, "m", active=snapshot.right_tcp_gate
+    )
+    right_rot_metric = _metric(
+        "R-Rot", snapshot.right_rot, snapshot.right_rot_limit, "rad", active=snapshot.right_tcp_gate
+    )
 
     def border(left: str, fill: str, right: str) -> str:
         return _paint(left + fill * inner + right, "gray", color)
@@ -161,15 +171,27 @@ def format_dashboard(
         f" SUCCESS {snapshot.success_count:03d}   FAIL {snapshot.failure_count:03d}   "
         f"ATTEMPTS {attempt_total:03d}   RATE {success_rate * 100:5.1f}%"
     )
-    drawer_gate_active = math.isfinite(snapshot.drawer_open_limit_m)
-    drawer_gate_ok = (
-        drawer_gate_active
-        and math.isfinite(snapshot.drawer_open_m)
-        and snapshot.drawer_open_m <= snapshot.drawer_open_limit_m
-    )
+    drawer_min_active = math.isfinite(snapshot.drawer_open_min_m)
+    drawer_max_active = math.isfinite(snapshot.drawer_open_limit_m)
+    drawer_gate_active = drawer_min_active or drawer_max_active
+    drawer_gate_ok = math.isfinite(snapshot.drawer_open_m)
+    if drawer_min_active:
+        drawer_gate_ok = drawer_gate_ok and snapshot.drawer_open_m >= snapshot.drawer_open_min_m
+    if drawer_max_active:
+        drawer_gate_ok = drawer_gate_ok and snapshot.drawer_open_m <= snapshot.drawer_open_limit_m
+    if drawer_min_active and drawer_max_active:
+        drawer_requirement = (
+            f"[{snapshot.drawer_open_min_m:6.3f}, {snapshot.drawer_open_limit_m:6.3f}]"
+        )
+    elif drawer_min_active:
+        drawer_requirement = f">={snapshot.drawer_open_min_m:6.3f}"
+    elif drawer_max_active:
+        drawer_requirement = f"<={snapshot.drawer_open_limit_m:6.3f}"
+    else:
+        drawer_requirement = "monitor"
     drawer_text = (
-        f"DRAWER {snapshot.drawer_open_m:6.3f} / {snapshot.drawer_open_limit_m:6.3f} m "
-        f"{_indicator(snapshot.drawer_open_m, snapshot.drawer_open_limit_m)}"
+        f"DRAWER {snapshot.drawer_open_m:6.3f} {drawer_requirement} m "
+        f"{'🟢' if drawer_gate_ok else '🔴'}"
         if drawer_gate_active
         else f"DRAWER {snapshot.drawer_open_m:6.3f} m (monitor)"
     )
@@ -196,13 +218,21 @@ def format_dashboard(
         border("╠", "═", "╣"),
         row(
             " " + left_pos_metric + "   " + left_rot_metric,
-            ((left_pos_metric, "green" if snapshot.left_pos <= snapshot.left_pos_limit else "red"),
-             (left_rot_metric, "green" if snapshot.left_rot <= snapshot.left_rot_limit else "red")),
+            ((left_pos_metric, "gray" if not snapshot.left_tcp_gate else (
+                "green" if snapshot.left_pos <= snapshot.left_pos_limit else "red"
+            )),
+             (left_rot_metric, "gray" if not snapshot.left_tcp_gate else (
+                 "green" if snapshot.left_rot <= snapshot.left_rot_limit else "red"
+             ))),
         ),
         row(
             " " + right_pos_metric + "   " + right_rot_metric,
-            ((right_pos_metric, "green" if snapshot.right_pos <= snapshot.right_pos_limit else "red"),
-             (right_rot_metric, "green" if snapshot.right_rot <= snapshot.right_rot_limit else "red")),
+            ((right_pos_metric, "gray" if not snapshot.right_tcp_gate else (
+                "green" if snapshot.right_pos <= snapshot.right_pos_limit else "red"
+            )),
+             (right_rot_metric, "gray" if not snapshot.right_tcp_gate else (
+                 "green" if snapshot.right_rot <= snapshot.right_rot_limit else "red"
+             ))),
         ),
         row(
             gates_text,
@@ -243,10 +273,10 @@ def format_compact(snapshot: DashboardSnapshot, *, bar_width: int = 16) -> str:
     phase_bar = _bar(phase_progress, bar_width)
     episode_bar = _bar(episode_progress, bar_width)
     metrics = (
-        _metric("L-Pos", snapshot.left_pos, snapshot.left_pos_limit, "m"),
-        _metric("L-Rot", snapshot.left_rot, snapshot.left_rot_limit, "rad"),
-        _metric("R-Pos", snapshot.right_pos, snapshot.right_pos_limit, "m"),
-        _metric("R-Rot", snapshot.right_rot, snapshot.right_rot_limit, "rad"),
+        _metric("L-Pos", snapshot.left_pos, snapshot.left_pos_limit, "m", active=snapshot.left_tcp_gate),
+        _metric("L-Rot", snapshot.left_rot, snapshot.left_rot_limit, "rad", active=snapshot.left_tcp_gate),
+        _metric("R-Pos", snapshot.right_pos, snapshot.right_pos_limit, "m", active=snapshot.right_tcp_gate),
+        _metric("R-Rot", snapshot.right_rot, snapshot.right_rot_limit, "rad", active=snapshot.right_tcp_gate),
     )
     return (
         f"TIME {snapshot.clock_time} | "
@@ -261,8 +291,15 @@ def format_compact(snapshot: DashboardSnapshot, *, bar_width: int = 16) -> str:
         + f" TOTAL {_duration(snapshot.collection_elapsed_s)}"
         + f" | GATES L={int(snapshot.left_tcp_gate)} R={int(snapshot.right_tcp_gate)}"
         + (
-            f" DRAWER {snapshot.drawer_open_m:.3f}<={snapshot.drawer_open_limit_m:.3f}m"
+            f" DRAWER {snapshot.drawer_open_m:.3f}>={snapshot.drawer_open_min_m:.3f}m"
+            if math.isfinite(snapshot.drawer_open_min_m)
+            and not math.isfinite(snapshot.drawer_open_limit_m)
+            else f" DRAWER {snapshot.drawer_open_m:.3f}<={snapshot.drawer_open_limit_m:.3f}m"
             if math.isfinite(snapshot.drawer_open_limit_m)
+            and not math.isfinite(snapshot.drawer_open_min_m)
+            else f" DRAWER {snapshot.drawer_open_min_m:.3f}<={snapshot.drawer_open_m:.3f}<={snapshot.drawer_open_limit_m:.3f}m"
+            if math.isfinite(snapshot.drawer_open_min_m)
+            and math.isfinite(snapshot.drawer_open_limit_m)
             else f" DRAWER {snapshot.drawer_open_m:.3f}m"
         )
         + f" | DATA [{episode_bar}] {episode_progress * 100:5.1f}% "

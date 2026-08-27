@@ -61,24 +61,24 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["drawer"]["initial_open_m"] == 0.0
     assert cfg["drawer"]["target_open_m"] == 0.18
     assert cfg["hands"]["left_close"] == [1.0, 0.22, 0.50, 0.50, 0.50, 0.50]
-    assert cfg["targets"]["left_handle_transition_1"]["offset"] == [-0.1635, -0.0230, 0.168]
+    assert cfg["targets"]["left_handle_transition_1"]["offset"] == [-0.1235, -0.0230, 0.168]
     assert cfg["targets"]["left_handle_transition_1"]["rpy"] == [-1.25, 0.00, 1.5]
     assert cfg["targets"]["left_handle_transition_2"]["offset"] == [-0.1285, -0.0220, 0.1418]
     assert cfg["targets"]["left_handle_transition_2"]["rpy"] == [-1.0117, 0.039, 1.5]
     assert cfg["targets"]["left_handle_above_grasp"]["offset"] == [-0.0845, -0.0185, 0.0618]
     assert cfg["targets"]["left_handle_above_grasp"]["rpy"] == [-0.9225, 0.057, 1.5]
-    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.1145, -0.0185, 0.0118]
+    assert cfg["targets"]["left_handle_transition_3"]["offset"] == [-0.1145, -0.0185, 0.0418]
     assert cfg["targets"]["left_handle_transition_3"]["rpy"] == [-0.9076, 0.035, 1.5]
-    assert cfg["targets"]["left_handle_transition_3"]["orientation_weight"] == 0.85
-    assert cfg["targets"]["left_handle_wrap"]["offset"] == [-0.1245, -0.0185, 0.0118]
+    assert cfg["targets"]["left_handle_transition_3"]["orientation_weight"] == 1.00
+    assert cfg["targets"]["left_handle_wrap"]["offset"] == [-0.1245, -0.0185, 0.0318]
     assert cfg["targets"]["left_handle_wrap"]["rpy"] == [-0.9076, 0.045, 1.5]
-    assert cfg["targets"]["left_handle_wrap"]["orientation_weight"] == 0.55
-    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1325, -0.0185, 0.0148]
+    assert cfg["targets"]["left_handle_wrap"]["orientation_weight"] == 1.00
+    assert cfg["targets"]["left_handle_preload"]["offset"] == [-0.1325, -0.0185, 0.0348]
     assert cfg["targets"]["left_handle_preload"]["rpy"] == [-0.9076, 0.055, 1.5]
-    assert cfg["targets"]["left_handle_preload"]["orientation_weight"] == 0.40
+    assert cfg["targets"]["left_handle_preload"]["orientation_weight"] == 1.00
     assert cfg["targets"]["left_drawer_open"]["offset"] == [-0.1245, -0.0185, 0.0518]
     assert cfg["targets"]["left_drawer_open"]["rpy"] == [-0.7854, 0.081, 1.5]
-    assert cfg["targets"]["left_drawer_open"]["orientation_weight"] == 0.35
+    assert cfg["targets"]["left_drawer_open"]["orientation_weight"] == 0.85
 
     # The IK target is left_wrist_yaw_link, not lh_hand_base_link. Include the
     # fixed URDF hand mount before checking the real palm/finger orientation.
@@ -109,18 +109,18 @@ def test_grasp_config_is_stationary_and_deterministic():
     grasp_z = cfg["targets"]["left_handle_transition_3"]["offset"][2]
     preload_z = cfg["targets"]["left_handle_preload"]["offset"][2]
     open_z = cfg["targets"]["left_drawer_open"]["offset"][2]
-    assert np.isclose(preload_z - grasp_z, 0.003)
-    assert np.isclose(open_z - grasp_z, 0.040)
+    assert np.isclose(preload_z - grasp_z, -0.007)
+    assert np.isclose(open_z - grasp_z, 0.010)
     wrap = np.asarray(cfg["targets"]["left_handle_wrap"]["offset"])
     assert np.isclose(grasp_x - wrap[0], 0.010)
-    assert np.isclose(wrap[2], grasp_z)
+    assert np.isclose(wrap[2], grasp_z - 0.010)
     assert np.isclose(wrap[0] - preload_x, 0.008)
     assert np.isclose(preload_z - wrap[2], 0.003)
     above = np.asarray(cfg["targets"]["left_handle_above_grasp"]["offset"])
     grasp = np.asarray(cfg["targets"]["left_handle_transition_3"]["offset"])
     assert np.isclose(grasp[0] - above[0], -0.030)
     assert np.isclose(grasp[1], above[1])
-    assert np.isclose(above[2] - grasp[2], 0.050)
+    assert np.isclose(above[2] - grasp[2], 0.020)
     assert cfg["hands"]["right_open"] == [0.95, 0.0, 0.0, 0.0, 0.0, 0.0]
     assert cfg["hands"]["right_close"] == [1.0, 0.42, 0.85, 0.85, 0.85, 0.85]
     assert cfg["targets"]["right_can_grasp"]["offset"] == [-0.050, -0.038, 0.030]
@@ -129,6 +129,7 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["targets"]["right_can_grasp"]["rpy"] == [0.0, -1.4, 0.0]
 
     phases = {phase["name"]: phase for phase in cfg["phases"]}
+    assert cfg["home_poses"]["tolerance"] == 0.10
     assert phases["left_grasp_handle"]["tolerance"] == 0.040
     assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.75
     assert phases["left_preload_handle"]["orientation_tolerance"] == 0.65
@@ -160,6 +161,8 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["left_preload_handle"]["hold_seconds"] == 0.5
     assert phases["left_preload_handle"]["tolerance"] == 0.030
     assert phases["pull_drawer"]["tolerance"] == 0.035
+    assert phases["pull_drawer"]["target_alpha"] == 0.20
+    assert phases["pull_drawer"]["max_joint_step"] == 0.025
     assert phases["left_hold_drawer_open"]["hold_seconds"] == 0.5
     assert phases["left_hold_drawer_open"]["drawer_open_min"] == 0.08
     assert phases["left_hold_drawer_open"]["tolerance"] == 0.035
@@ -167,7 +170,7 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["left_hold_drawer_open"]["require_left_hand_command_reached"] is False
     assert phases["initial_open_hands"]["hand_actual_tolerance"] == 0.10
     assert phases["right_pregrasp_can"]["tolerance"] == 0.010
-    assert phases["right_hold_can_pregrasp"]["hold_seconds"] == 0.5
+    assert phases["right_hold_can_pregrasp"]["hold_seconds"] == 0.2
     assert phases["right_hold_can_pregrasp"]["hold_current_right_pose"] is True
     assert phases["right_grasp_can"]["tolerance"] == 0.028
     assert phases["right_pregrasp_can"]["task_object_max_displacement_from_start_m"] == 0.020
@@ -199,8 +202,14 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["right_open_hand"]["task_object_max_speed_m_s"] == 0.05
     assert phases["right_lift_can"]["task_object_world_bounds"]["z"] == [1.20, 1.35]
     assert phases["right_lift_clear_drawer"]["right_offset_from_current"] == [0.0, 0.0, 0.10]
+    assert phases["right_lift_clear_drawer"]["target_alpha"] == 0.65
+    assert phases["right_lift_clear_drawer"]["max_joint_step"] == 0.100
     assert phases["right_retreat_clear_drawer"]["right_offset_from_current"] == [-0.10, -0.18, 0.02]
+    assert phases["right_retreat_clear_drawer"]["target_alpha"] == 0.65
+    assert phases["right_retreat_clear_drawer"]["max_joint_step"] == 0.100
     assert phases["right_home_after_retreat"]["right_arm_home"] is True
+    assert "target_alpha" not in phases["right_home_after_retreat"]
+    assert "max_joint_step" not in phases["right_home_after_retreat"]
     assert phases["right_home_after_retreat"]["drawer_open_min"] == 0.08
     assert "right_arm_home" not in phases["left_close_drawer"]
     assert phases["left_open_hand"]["hold_current_left_pose"] is True
@@ -227,7 +236,7 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert transition["right_arm_home"] is True
     assert transition["require_left_hand_actual_reached"] is True
     assert transition["drawer_open_max"] == 0.040
-    assert transition["arm_joint_tolerance"] == 0.040
+    assert transition["arm_joint_tolerance"] == 0.150
     assert transition["target_alpha"] == 0.12
     assert transition["max_joint_step"] == 0.015
     assert phases["left_home"]["require_left_hand_actual_reached"] is True
@@ -235,7 +244,7 @@ def test_grasp_config_is_stationary_and_deterministic():
     for name in ("right_settle_before_close", "right_close_hand", "right_hold_grasp"):
         assert phases[name]["hold_current_right_pose"] is True
     assert phases["right_settle_before_close"]["right_hand"] == "open"
-    assert phases["right_settle_before_close"]["hold_seconds"] == 1.0
+    assert phases["right_settle_before_close"]["hold_seconds"] == 0.3
     assert phases["right_close_hand"]["right_hand"] == "close"
     assert phases["right_hold_grasp"]["right_hand"] == "close"
 
@@ -440,7 +449,7 @@ def test_left_close_hand_moves_toward_wrap_pose_while_closing():
     controller._prepare_current_phase(entry_pose, None, drawer_open_m=0.0)
     phase = controller.current_phase
     expected_wrap_pos = _anchors()["drawer_handle_initial"][0] + np.asarray(
-        [-0.1245, -0.0185, 0.0118], dtype=np.float32
+        [-0.1245, -0.0185, 0.0318], dtype=np.float32
     )
     assert np.allclose(phase.left.pos, expected_wrap_pos)
     assert not np.allclose(phase.left.pos, entry_pose[0])
