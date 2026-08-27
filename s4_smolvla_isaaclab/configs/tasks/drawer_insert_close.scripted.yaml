@@ -323,6 +323,8 @@ phases:
     left: {target: left_handle_transition_1}
     min_steps: 20
     max_steps: 1000
+    target_alpha: 0.5
+    max_joint_step: 0.1
 
   - name: left_approach_handle_fine
     task: "Move the left hand through the intermediate drawer-handle approach pose."
@@ -393,6 +395,8 @@ phases:
   - name: left_preload_handle
     task: "Apply a small pull to verify the left-hand grasp on the drawer handle."
     left: {target: left_handle_preload}
+    target_alpha: 0.15
+    max_joint_step: 0.020
     left_hand: close
     tolerance: 0.030
     # Orientation is a soft objective here (weight 0.40); allow contact-driven
@@ -410,8 +414,8 @@ phases:
     left: {target: left_drawer_open}
     # Slow only the rigid-contact drawer pull to reduce finger slip and wrist
     # tracking lag. Other Cartesian phases keep their existing local/defaults.
-    target_alpha: 0.20
-    max_joint_step: 0.025
+    target_alpha: 0.15
+    max_joint_step: 0.020
     tolerance: 0.035
     orientation_tolerance: 0.65
     min_steps: 30
@@ -449,6 +453,8 @@ phases:
     task_object_max_displacement_from_start_m: 0.020
     min_steps: 20
     max_steps: 1000
+    target_alpha: 0.5
+    max_joint_step: 0.1
 
   - name: right_hold_can_pregrasp
     task: "Hold the open right hand steady at the can pre-grasp pose."
@@ -626,6 +632,8 @@ phases:
     drawer_open_max: 0.020
     min_steps: 360
     max_steps: 1000
+    target_alpha: 0.3
+    max_joint_step: 0.1
 
   - name: left_open_hand
     task: "Open the left hand after the single drawer-close push and wait."
@@ -652,9 +660,8 @@ phases:
     drawer_open_max: 0.040
     tolerance: 0.020
     orientation_tolerance: 0.55
-    target_alpha: 0.12
-    max_joint_step: 0.015
-    hold_seconds: 0.0
+    target_alpha: 0.2
+    max_joint_step: 0.05
     min_steps: 60
     max_steps: 1000
 
@@ -678,9 +685,9 @@ phases:
     # This is a shaping waypoint rather than a final task state. Continue to
     # Home once the arm is approximately on the safe tucked branch.
     arm_joint_tolerance: 0.150
-    target_alpha: 0.5
+    target_alpha: 0.3
     max_joint_step: 0.2
-    min_steps: 150
+    min_steps: 6
     max_steps: 1000
 
   - name: left_home

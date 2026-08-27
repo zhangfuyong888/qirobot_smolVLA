@@ -129,6 +129,24 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert cfg["targets"]["right_can_grasp"]["rpy"] == [0.0, -1.4, 0.0]
 
     phases = {phase["name"]: phase for phase in cfg["phases"]}
+    expected_phase_smoothing = {
+        "left_approach_handle": (0.50, 0.100),
+        "left_grasp_handle": (0.12, 0.015),
+        "left_close_hand": (0.12, 0.015),
+        "left_preload_handle": (0.15, 0.020),
+        "pull_drawer": (0.15, 0.020),
+        "right_pregrasp_can": (0.50, 0.100),
+        "right_grasp_can": (0.18, 0.020),
+        "right_lift_clear_drawer": (0.85, 0.200),
+        "right_retreat_clear_drawer": (0.85, 0.200),
+        "left_close_drawer": (0.30, 0.100),
+        "left_clear_handle_after_release": (0.20, 0.050),
+        "left_joint_transition_after_release": (0.30, 0.200),
+        "left_home": (0.20, 0.025),
+    }
+    for phase_name, (alpha, max_step) in expected_phase_smoothing.items():
+        assert phases[phase_name]["target_alpha"] == alpha
+        assert phases[phase_name]["max_joint_step"] == max_step
     assert cfg["home_poses"]["tolerance"] == 0.10
     assert phases["left_grasp_handle"]["tolerance"] == 0.040
     assert phases["left_grasp_handle"]["orientation_tolerance"] == 0.75
@@ -161,8 +179,8 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["left_preload_handle"]["hold_seconds"] == 0.5
     assert phases["left_preload_handle"]["tolerance"] == 0.030
     assert phases["pull_drawer"]["tolerance"] == 0.035
-    assert phases["pull_drawer"]["target_alpha"] == 0.20
-    assert phases["pull_drawer"]["max_joint_step"] == 0.025
+    assert phases["pull_drawer"]["target_alpha"] == 0.15
+    assert phases["pull_drawer"]["max_joint_step"] == 0.020
     assert phases["left_hold_drawer_open"]["hold_seconds"] == 0.5
     assert phases["left_hold_drawer_open"]["drawer_open_min"] == 0.08
     assert phases["left_hold_drawer_open"]["tolerance"] == 0.035
@@ -202,11 +220,11 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert phases["right_open_hand"]["task_object_max_speed_m_s"] == 0.05
     assert phases["right_lift_can"]["task_object_world_bounds"]["z"] == [1.20, 1.35]
     assert phases["right_lift_clear_drawer"]["right_offset_from_current"] == [0.0, 0.0, 0.10]
-    assert phases["right_lift_clear_drawer"]["target_alpha"] == 0.65
-    assert phases["right_lift_clear_drawer"]["max_joint_step"] == 0.100
+    assert phases["right_lift_clear_drawer"]["target_alpha"] == 0.85
+    assert phases["right_lift_clear_drawer"]["max_joint_step"] == 0.200
     assert phases["right_retreat_clear_drawer"]["right_offset_from_current"] == [-0.10, -0.18, 0.02]
-    assert phases["right_retreat_clear_drawer"]["target_alpha"] == 0.65
-    assert phases["right_retreat_clear_drawer"]["max_joint_step"] == 0.100
+    assert phases["right_retreat_clear_drawer"]["target_alpha"] == 0.85
+    assert phases["right_retreat_clear_drawer"]["max_joint_step"] == 0.200
     assert phases["right_home_after_retreat"]["right_arm_home"] is True
     assert "target_alpha" not in phases["right_home_after_retreat"]
     assert "max_joint_step" not in phases["right_home_after_retreat"]
@@ -220,9 +238,8 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert clear["require_left_hand_actual_reached"] is True
     assert clear["hand_actual_tolerance"] == 0.05
     assert clear["drawer_open_max"] == 0.040
-    assert clear["target_alpha"] == 0.12
-    assert clear["max_joint_step"] == 0.015
-    assert clear["hold_seconds"] == 0.0
+    assert clear["target_alpha"] == 0.20
+    assert clear["max_joint_step"] == 0.050
     transition = phases["left_joint_transition_after_release"]
     assert transition["left_arm_joint_target"] == [
         0.430,
@@ -237,8 +254,9 @@ def test_grasp_config_is_stationary_and_deterministic():
     assert transition["require_left_hand_actual_reached"] is True
     assert transition["drawer_open_max"] == 0.040
     assert transition["arm_joint_tolerance"] == 0.150
-    assert transition["target_alpha"] == 0.12
-    assert transition["max_joint_step"] == 0.015
+    assert transition["target_alpha"] == 0.30
+    assert transition["max_joint_step"] == 0.200
+    assert transition["min_steps"] == 6
     assert phases["left_home"]["require_left_hand_actual_reached"] is True
     assert phases["left_home"]["drawer_open_max"] == 0.040
     for name in ("right_settle_before_close", "right_close_hand", "right_hold_grasp"):
@@ -309,7 +327,9 @@ def test_left_clear_handle_moves_backward_up_before_joint_transition():
     assert np.allclose(phase.left.quat_wxyz, entry_pose[1])
 
     controller._dt = 1.0 / 120.0
-    controller.phase_steps = phase.min_steps
+    controller.phase_steps = max(
+        phase.min_steps, int(math.ceil(phase.hold_seconds / controller._dt))
+    )
     commanded = np.zeros(26, dtype=np.float32)
     commanded[7:13] = phase.left_hand
     blocked = commanded.copy()
@@ -368,7 +388,10 @@ def test_left_release_transition_commands_and_gates_on_joint_target():
     assert np.allclose(action[0:7], phase.left_arm_joint_target)
     assert np.allclose(action[13:20], controller.home_targets["right"])
 
-    controller.phase_steps = phase.min_steps
+    controller._dt = 1.0 / 120.0
+    controller.phase_steps = max(
+        phase.min_steps, int(math.ceil(phase.hold_seconds / controller._dt))
+    )
     almost_reached = current.copy()
     almost_reached[:7] = phase.left_arm_joint_target
     almost_reached[3] += phase.arm_joint_tolerance + 0.01
