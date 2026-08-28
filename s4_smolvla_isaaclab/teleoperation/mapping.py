@@ -23,6 +23,7 @@ class SideMappingResult:
     hand6: np.ndarray
     clutch: bool
     clutch_rising: bool
+    clutch_falling: bool
     tracking_valid: bool
 
 
@@ -162,6 +163,7 @@ class BimanualTeleopMapper:
         else:
             state.clutch = clutch_input >= self.config.mapping.clutch.engage_threshold
         clutch_rising = state.clutch and not previous_clutch
+        clutch_falling = previous_clutch and not state.clutch
 
         if tracking_valid:
             trigger = float(sample.trigger)
@@ -178,6 +180,10 @@ class BimanualTeleopMapper:
             state.tcp_reference_rotation = quat_wxyz_to_matrix(current_tcp.quat_wxyz)
             state.target_position = state.tcp_reference_position.copy()
             state.target_rotation = state.tcp_reference_rotation.copy()
+
+        if clutch_falling:
+            state.target_position = np.asarray(current_tcp.position, dtype=np.float64).copy()
+            state.target_rotation = quat_wxyz_to_matrix(current_tcp.quat_wxyz)
 
         if state.clutch and sample is not None and state.controller_reference_position is not None:
             basis = self.config.mapping.controller_to_base_rotation
@@ -216,6 +222,7 @@ class BimanualTeleopMapper:
             hand6=hand6.astype(np.float32),
             clutch=state.clutch,
             clutch_rising=clutch_rising,
+            clutch_falling=clutch_falling,
             tracking_valid=tracking_valid,
         )
 

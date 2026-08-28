@@ -20,7 +20,9 @@ def test_meta_quest_config_has_proper_coordinate_basis() -> None:
     assert config.controller.rmpflow.left.frame_name == "left_wrist_yaw_link"
     assert config.controller.rmpflow.right.frame_name == "right_wrist_yaw_link"
     assert config.controller.rmpflow.update_every_n_steps == 2
-    assert config.simulation.render_every_n_steps == 2
+    assert config.simulation.render_every_n_steps == 6
+    assert config.simulation.spawn_rgb_cameras is False
+    assert config.runtime.mode == "simulation"
     assert config.mapping.position_scale == 2.2
     assert config.safety.max_translation_speed_m_s == 1.6
     assert config.safety.max_rotation_speed_rad_s == 5.5

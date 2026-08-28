@@ -147,6 +147,9 @@ class SceneBuildCfg:
     right_wrist_camera_quat_wxyz: tuple[float, float, float, float] = RIGHT_WRIST_CAMERA_LOCAL_QUAT_WXYZ
     right_wrist_camera_rpy_deg: tuple[float, float, float] | None = WRIST_CAMERA_LOCAL_RPY_DEG
     wrist_camera_convention: str = WRIST_CAMERA_OFFSET_CONVENTION
+    # Collection and rollout keep the default True. Teleop sets False to skip
+    # unused 680x480 RGB sensors and reduce GPU load while keeping the viewport.
+    spawn_rgb_cameras: bool = True
 
 
 def create_simulation_context(device: str, *, use_fabric: bool = True) -> SimulationContext:
@@ -681,8 +684,11 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
     spawn_background_and_table(cfg)
     print("[BOOT] spawning physics task objects...", flush=True)
     task_objects = spawn_physics_task_objects(cfg)
-    print("[BOOT] creating camera config...", flush=True)
-    camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
+    camera = None
+    wrist_cameras: dict[str, Camera] = {}
+    if cfg.spawn_rgb_cameras:
+        print("[BOOT] creating camera config...", flush=True)
+        camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
     print("[BOOT] creating robot articulation...", flush=True)
     robot = build_robot(
         "/World/Robot",
@@ -691,8 +697,9 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         cfg.joint_effort_limit,
         cfg.robot_base_z,
     )
-    print("[BOOT] creating wrist cameras...", flush=True)
-    wrist_cameras = make_wrist_cameras(cfg)
+    if cfg.spawn_rgb_cameras:
+        print("[BOOT] creating wrist cameras...", flush=True)
+        wrist_cameras = make_wrist_cameras(cfg)
     print("[BOOT] scene objects constructed.", flush=True)
     return {
         "robot": robot,
@@ -759,6 +766,13 @@ def reset_camera(camera: Camera, sim: SimulationContext, cfg: SceneBuildCfg | No
             convention=cfg.camera_convention if cfg is not None else "opengl",
         )
     camera.reset()
+
+
+def reset_viewport(sim: SimulationContext, cfg: SceneBuildCfg | None = None) -> None:
+    """Set the Isaac Sim editor viewport without spawning RGB camera sensors."""
+    eye = cfg.camera_eye if cfg is not None else (0.10, 0.0, 1.80)
+    target = cfg.camera_target if cfg is not None else (0.68, 0.0, 1.02)
+    sim.set_camera_view(list(eye), list(target))
 
 
 def format_layout(cfg: SceneBuildCfg) -> str:

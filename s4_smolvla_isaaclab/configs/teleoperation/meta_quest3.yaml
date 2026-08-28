@@ -41,6 +41,13 @@ smoothing:
 
 # This switch affects only `bash run.sh teleop`. The collection, rollout and
 # scripted-task controllers keep their existing implementations.
+runtime:
+  # simulation: IsaacLab scene + viewport (default)
+  # hardware: reserved real-robot bridge (not implemented)
+  mode: simulation
+  hardware:
+    interface: null
+
 controller:
   backend: rmpflow
   rmpflow:
@@ -71,8 +78,11 @@ ik:
 simulation:
   reset_settle_s: 2.0
   real_time: true
-  # Keep 120 Hz physics/control while rendering the desktop near 60 Hz.
-  render_every_n_steps: 2
+  # Teleop keeps the Isaac viewport but renders less often than physics (120 Hz).
+  # 6 -> ~20 Hz viewport. Override with: bash run.sh teleop --render-every-n-steps N
+  render_every_n_steps: 6
+  # Skip dataset RGB sensors during teleop; collection/rollout keep spawn_rgb_cameras=true.
+  spawn_rgb_cameras: false
   gravity_compensation: true
   gravity_comp_scale: 1.0
   joint_stiffness: 600.0

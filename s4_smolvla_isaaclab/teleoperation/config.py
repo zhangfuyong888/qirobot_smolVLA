@@ -83,10 +83,17 @@ class ControllerConfig:
 
 
 @dataclass(frozen=True)
+class RuntimeConfig:
+    mode: str
+    hardware: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     reset_settle_s: float
     real_time: bool
     render_every_n_steps: int
+    spawn_rgb_cameras: bool
     gravity_compensation: bool
     gravity_comp_scale: float
     joint_stiffness: float
@@ -102,6 +109,7 @@ class TeleopConfig:
     smoothing: SmoothingConfig
     ik: IkConfig
     controller: ControllerConfig
+    runtime: RuntimeConfig
     simulation: SimulationConfig
     raw: dict[str, Any]
     source: Path
@@ -145,6 +153,7 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     controller = raw.get("controller", {})
     rmpflow = controller.get("rmpflow", {})
     simulation = raw["simulation"]
+    runtime = raw.get("runtime", {})
 
     basis = np.asarray(mapping["controller_to_base_rotation"], dtype=np.float64)
     if basis.shape != (3, 3) or not np.isfinite(basis).all():
@@ -197,6 +206,13 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     render_every_n_steps = int(simulation.get("render_every_n_steps", 1))
     if render_every_n_steps < 1:
         raise ValueError("simulation.render_every_n_steps must be at least 1")
+    spawn_rgb_cameras = bool(simulation.get("spawn_rgb_cameras", True))
+    runtime_mode = str(runtime.get("mode", "simulation")).lower()
+    if runtime_mode not in {"simulation", "hardware"}:
+        raise ValueError("runtime.mode must be 'simulation' or 'hardware'")
+    hardware_cfg = runtime.get("hardware", {})
+    if not isinstance(hardware_cfg, dict):
+        raise TypeError("runtime.hardware must be a mapping")
 
     return TeleopConfig(
         network=NetworkConfig(
@@ -231,10 +247,12 @@ def load_teleop_config(path: Path) -> TeleopConfig:
             orientation_weight=float(ik["orientation_weight"]),
         ),
         controller=ControllerConfig(backend=backend, rmpflow=rmpflow_config),
+        runtime=RuntimeConfig(mode=runtime_mode, hardware=dict(hardware_cfg)),
         simulation=SimulationConfig(
             reset_settle_s=float(simulation["reset_settle_s"]),
             real_time=bool(simulation["real_time"]),
             render_every_n_steps=render_every_n_steps,
+            spawn_rgb_cameras=spawn_rgb_cameras,
             gravity_compensation=bool(simulation["gravity_compensation"]),
             gravity_comp_scale=float(simulation["gravity_comp_scale"]),
             joint_stiffness=float(simulation["joint_stiffness"]),

@@ -28,6 +28,22 @@ def mapper() -> BimanualTeleopMapper:
     return BimanualTeleopMapper(config, opened, closed, opened, closed)
 
 
+def test_clutch_release_snaps_target_to_current_tcp() -> None:
+    control = mapper()
+    tcp = TcpPose(np.array([0.4, 0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    engaged = frame(sample(squeeze=1.0), sample(squeeze=0.0))
+    control.update(engaged, tcp, tcp, 0.01, 1.0)
+    moved_tcp = TcpPose(np.array([0.45, 0.25, 0.22]), np.array([1.0, 0.0, 0.0, 0.0]))
+    moved = frame(sample(position=(0.0, 1.2, -0.2), squeeze=1.0), sample(squeeze=0.0), received=1.01)
+    control.update(moved, moved_tcp, moved_tcp, 0.01, 1.01)
+    released = frame(sample(squeeze=0.0), sample(squeeze=0.0), received=1.02)
+    result = control.update(released, moved_tcp, moved_tcp, 0.01, 1.02)
+    assert result.left.clutch_falling
+    assert not result.left.clutch
+    assert result.left.target.position == pytest.approx(moved_tcp.position)
+    assert result.left.target.quat_wxyz == pytest.approx(moved_tcp.quat_wxyz)
+
+
 def test_clutch_maps_webxr_forward_to_base_positive_x() -> None:
     control = mapper()
     left_tcp = TcpPose(np.array([0.4, 0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))

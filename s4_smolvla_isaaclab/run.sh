@@ -209,7 +209,7 @@ case "${1:-help}" in
         ;;
     teleop)
         shift; print_context; use_isaaclab_env
-        "$ISAACLAB" -p teleoperation/isaaclab_teleop.py --enable_cameras \
+        "$ISAACLAB" -p teleoperation/isaaclab_teleop.py \
             --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
         ;;
     teleop-cert)

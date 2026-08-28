@@ -53,8 +53,23 @@ parser.add_argument(
     default=None,
     help="Pace the 120 Hz simulation to wall time. Defaults to YAML simulation.real_time.",
 )
+parser.add_argument(
+    "--render-every-n-steps",
+    type=int,
+    default=None,
+    help="Render the Isaac viewport every N physics steps (default: YAML simulation.render_every_n_steps).",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+
+from teleoperation.config import load_teleop_config
+from teleoperation.runtime import TeleopRuntimeMode, resolve_runtime_mode
+
+if resolve_runtime_mode(load_teleop_config(args_cli.teleop_config)) == TeleopRuntimeMode.HARDWARE:
+    from teleoperation.hardware_teleop import run_hardware_teleop
+
+    run_hardware_teleop(load_teleop_config(args_cli.teleop_config), args_cli)
+    raise SystemExit(0)
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -72,7 +87,7 @@ from s4_robot.control_mapping import (
     make_full_joint_target,
 )
 from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS
-from s4_robot.simulation import SceneBuildCfg, create_simulation_context, reset_camera
+from s4_robot.simulation import SceneBuildCfg, create_simulation_context, reset_camera, reset_viewport
 from tasks import get_task_spec
 from tasks.loading import load_yaml
 from teleoperation.config import TeleopConfig, load_teleop_config
@@ -147,6 +162,7 @@ def make_scene_cfg(config: TeleopConfig) -> SceneBuildCfg:
         robot_base_z=0.98,
         scene_usd=project.scene.scene_usd,
         table_usd=project.scene.table_usd,
+        spawn_rgb_cameras=config.simulation.spawn_rgb_cameras,
     )
 
 
@@ -203,8 +219,7 @@ def _rotation_error_angle(target_wxyz: np.ndarray, current_wxyz: np.ndarray) -> 
     return math.acos(cosine)
 
 
-def run() -> None:
-    config = load_teleop_config(args_cli.teleop_config)
+def run_simulation_teleop(config: TeleopConfig, args_cli: argparse.Namespace) -> None:
     project = load_project_config()
     task_spec = get_task_spec(project.dataset.task_id)
     if task_spec.data.control_mode != "bimanual":
@@ -234,7 +249,23 @@ def run() -> None:
     print(f"[BOOT] teleop scene builder: {scene_builder.__module__}:{scene_builder.__name__}", flush=True)
     scene = scene_builder(scene_cfg)
     sim.reset()
-    reset_camera(scene["camera"], sim, scene_cfg)
+    if scene.get("camera") is not None:
+        reset_camera(scene["camera"], sim, scene_cfg)
+    else:
+        reset_viewport(sim, scene_cfg)
+
+    render_every_n_steps = (
+        int(args_cli.render_every_n_steps)
+        if args_cli.render_every_n_steps is not None
+        else config.simulation.render_every_n_steps
+    )
+    if render_every_n_steps < 1:
+        raise ValueError("--render-every-n-steps must be at least 1")
+    print(
+        f"[TELEOP] runtime=simulation spawn_rgb_cameras={config.simulation.spawn_rgb_cameras} "
+        f"viewport_render_every={render_every_n_steps} physics_steps",
+        flush=True,
+    )
 
     robot = scene["robot"]
     dt = float(sim.get_physics_dt())
@@ -263,7 +294,7 @@ def run() -> None:
         robot.set_joint_position_target(torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1))
         apply_gravity_compensation(robot, gravity_ids, config)
         robot.write_data_to_sim()
-        render = not args_cli.headless and settle_step % config.simulation.render_every_n_steps == 0
+        render = not args_cli.headless and settle_step % render_every_n_steps == 0
         sim.step(render=render)
         update_scene_buffers(scene, dt)
 
@@ -278,7 +309,7 @@ def run() -> None:
     print("\n[TELEOP] Meta Quest controller server ready", flush=True)
     print(f"[TELEOP] Quest URL: {scheme}://{lan_ip}:{port}", flush=True)
     print("[TELEOP] Grip/Squeeze = independent arm clutch; Trigger = hand closure 0..1", flush=True)
-    print("[TELEOP] Releasing Grip freezes that TCP target. Stale tracking freezes both arms.", flush=True)
+    print("[TELEOP] Releasing Grip holds the arm at its current pose. Stale tracking freezes both arms.", flush=True)
     if args_cli.insecure_http:
         print("[TELEOP][WARN] insecure HTTP is for desktop tests; Quest immersive WebXR will not start.", flush=True)
 
@@ -340,36 +371,52 @@ def run() -> None:
             # makes the robot visibly lag the controller. The Pinocchio
             # compatibility backend retains its original physics-dt behavior.
             controller_dt = mapping_dt if controller_backend == "rmpflow" else dt
-            arm_targets = arm_controller.compute(
-                current_joint_pos,
-                controller_dt,
-                mapped.left.target,
-                mapped.right.target,
-            )
             actual_action_before_command = extract_bimanual_state(current_joint_pos, robot.joint_names)
-            ik_step_left = float(
-                np.max(np.abs(arm_targets[:7] - actual_action_before_command[ACTION_SLICES.left_arm]))
-            )
-            ik_step_right = float(
-                np.max(np.abs(arm_targets[7:14] - actual_action_before_command[ACTION_SLICES.right_arm]))
-            )
+            ik_step_left = 0.0
+            ik_step_right = 0.0
+            arm_targets = None
+            if mapped.left.clutch or mapped.right.clutch:
+                arm_targets = arm_controller.compute(
+                    current_joint_pos,
+                    controller_dt,
+                    mapped.left.target,
+                    mapped.right.target,
+                )
+                ik_step_left = float(
+                    np.max(np.abs(arm_targets[:7] - actual_action_before_command[ACTION_SLICES.left_arm]))
+                )
+                ik_step_right = float(
+                    np.max(np.abs(arm_targets[7:14] - actual_action_before_command[ACTION_SLICES.right_arm]))
+                )
             desired = command_action.copy()
-            desired[ACTION_SLICES.left_arm] = arm_targets[:7]
-            desired[ACTION_SLICES.right_arm] = arm_targets[7:14]
+            if mapped.left.clutch:
+                desired[ACTION_SLICES.left_arm] = arm_targets[:7]
+            else:
+                desired[ACTION_SLICES.left_arm] = actual_action_before_command[ACTION_SLICES.left_arm]
+            if mapped.right.clutch:
+                desired[ACTION_SLICES.right_arm] = arm_targets[7:14]
+            else:
+                desired[ACTION_SLICES.right_arm] = actual_action_before_command[ACTION_SLICES.right_arm]
             desired[ACTION_SLICES.left_hand] = mapped.left.hand6
             desired[ACTION_SLICES.right_hand] = mapped.right.hand6
-            command_action[ACTION_SLICES.left_arm] = smooth_command(
-                command_action[ACTION_SLICES.left_arm],
-                desired[ACTION_SLICES.left_arm],
-                config.smoothing.arm_command_alpha,
-                config.smoothing.arm_max_joint_step_rad,
-            )
-            command_action[ACTION_SLICES.right_arm] = smooth_command(
-                command_action[ACTION_SLICES.right_arm],
-                desired[ACTION_SLICES.right_arm],
-                config.smoothing.arm_command_alpha,
-                config.smoothing.arm_max_joint_step_rad,
-            )
+            if mapped.left.clutch:
+                command_action[ACTION_SLICES.left_arm] = smooth_command(
+                    command_action[ACTION_SLICES.left_arm],
+                    desired[ACTION_SLICES.left_arm],
+                    config.smoothing.arm_command_alpha,
+                    config.smoothing.arm_max_joint_step_rad,
+                )
+            else:
+                command_action[ACTION_SLICES.left_arm] = desired[ACTION_SLICES.left_arm]
+            if mapped.right.clutch:
+                command_action[ACTION_SLICES.right_arm] = smooth_command(
+                    command_action[ACTION_SLICES.right_arm],
+                    desired[ACTION_SLICES.right_arm],
+                    config.smoothing.arm_command_alpha,
+                    config.smoothing.arm_max_joint_step_rad,
+                )
+            else:
+                command_action[ACTION_SLICES.right_arm] = desired[ACTION_SLICES.right_arm]
             command_action[ACTION_SLICES.left_hand] = smooth_command(
                 command_action[ACTION_SLICES.left_hand],
                 desired[ACTION_SLICES.left_hand],
@@ -398,7 +445,7 @@ def run() -> None:
             )
             apply_gravity_compensation(robot, gravity_ids, config)
             robot.write_data_to_sim()
-            render = not args_cli.headless and simulation_step % config.simulation.render_every_n_steps == 0
+            render = not args_cli.headless and simulation_step % render_every_n_steps == 0
             sim.step(render=render)
             simulation_step += 1
             update_scene_buffers(scene, dt)
@@ -533,7 +580,8 @@ def run() -> None:
 
 if __name__ == "__main__":
     try:
-        run()
+        teleop_config = load_teleop_config(args_cli.teleop_config)
+        run_simulation_teleop(teleop_config, args_cli)
     except BaseException:
         print("[FATAL] Quest teleoperation failed:", flush=True)
         traceback.print_exc()

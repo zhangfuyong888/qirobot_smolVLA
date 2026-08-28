@@ -400,7 +400,10 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
             named_objects[DISTRACTOR_OBJECT_NAMES[2]] = obj
         object_initial_poses.append((obj, item.position, item.orientation))
 
-    camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
+    camera = None
+    wrist_cameras: dict[str, object] = {}
+    if cfg.spawn_rgb_cameras:
+        camera = make_rgb_camera("/World/DebugFrontCamera", cfg)
     robot = build_robot(
         "/World/Robot",
         cfg.joint_stiffness,
@@ -408,7 +411,8 @@ def build_scene(cfg: SceneBuildCfg) -> dict[str, object]:
         cfg.joint_effort_limit,
         cfg.robot_base_z,
     )
-    wrist_cameras = make_wrist_cameras(cfg)
+    if cfg.spawn_rgb_cameras:
+        wrist_cameras = make_wrist_cameras(cfg)
     print("[BOOT] drawer task scene objects constructed.", flush=True)
     return {
         "task_id": "drawer_insert_close",
