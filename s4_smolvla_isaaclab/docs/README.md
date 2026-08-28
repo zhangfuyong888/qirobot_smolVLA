@@ -10,7 +10,7 @@
 | [REPRODUCTION.md](REPRODUCTION.md) | 双 Conda 环境、版本导出、外部仓库、资产、模型、数据与 checkpoint 部署 | 负责安装、迁移和交付的人 |
 | [PIPELINE.md](PIPELINE.md) | 采集、转换、检查、训练、Rollout、核心契约和故障定位 | 负责实验和成功率优化的人 |
 
-课程教程位于 [course/](course/SMOLVLA_ADVANCED_TECHNICAL_COURSE.md)，它不是命令手册，而是按“原理 → 实现 → 部署”讲解整个系统。
+课程教程位于 [course/](course/index.md)，它不是命令手册，而是按“原理 → 实现 → 部署”讲解整个系统。
 
 ## 当前活动基线
 

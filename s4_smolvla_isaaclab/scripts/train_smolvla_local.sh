@@ -15,10 +15,28 @@ RESUME_OVERRIDE=""
 STEPS_OVERRIDE=""
 BATCH_SIZE_OVERRIDE=""
 SAVE_FREQ_OVERRIDE=""
+NUM_WORKERS_OVERRIDE=""
+NUM_GPUS="1"
+GPU_IDS=""
+MASTER_PORT="29500"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -h|--help)
-            echo "Usage: bash run.sh train [CONFIG] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]"
+            cat <<'EOF'
+Usage: bash run.sh train [CONFIG] [options]
+
+Options:
+  --resume, --no-resume       Resume from / start a fresh training run
+  --overwrite-output          Intentionally replace an existing fresh-training output
+  --steps N                   Target total optimizer steps
+  --batch-size N              Per-process batch size (global batch = N × --num-gpus)
+  --num-workers N             DataLoader workers per training process
+  --save-freq N               Checkpoint interval in optimizer steps
+  --num-gpus N                Use N local GPUs via Accelerate DDP (default: 1)
+  --gpu-ids I,J,...           Visible-GPU-relative IDs for DDP; must contain --num-gpus IDs
+  --master-port PORT          Local DDP rendezvous port (default: 29500)
+  --config PATH               Explicit SmolVLA training YAML
+EOF
             exit 0
             ;;
         --resume)
@@ -45,13 +63,29 @@ while [[ $# -gt 0 ]]; do
             SAVE_FREQ_OVERRIDE="$2"
             shift 2
             ;;
+        --num-workers)
+            NUM_WORKERS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --num-gpus)
+            NUM_GPUS="$2"
+            shift 2
+            ;;
+        --gpu-ids)
+            GPU_IDS="$2"
+            shift 2
+            ;;
+        --master-port)
+            MASTER_PORT="$2"
+            shift 2
+            ;;
         --config)
             CONFIG="$2"
             shift 2
             ;;
         *)
             echo "Unknown train option: $1" >&2
-            echo "Usage: bash run.sh train [config] [--resume|--no-resume] [--overwrite-output] [--steps N] [--batch-size N] [--save-freq N]" >&2
+            echo "Run 'bash run.sh train --help' for supported options." >&2
             exit 2
             ;;
     esac
@@ -91,13 +125,57 @@ fi
 if [ -n "$SAVE_FREQ_OVERRIDE" ]; then
     SAVE_FREQ="$SAVE_FREQ_OVERRIDE"
 fi
-for value_name in STEPS BATCH_SIZE SAVE_FREQ; do
+if [ -n "$NUM_WORKERS_OVERRIDE" ]; then
+    NUM_WORKERS="$NUM_WORKERS_OVERRIDE"
+fi
+for value_name in STEPS BATCH_SIZE SAVE_FREQ NUM_GPUS; do
     value="${!value_name}"
     if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "$value_name must be a positive integer: $value" >&2
         exit 2
     fi
 done
+if ! [[ "$NUM_WORKERS" =~ ^[0-9]+$ ]]; then
+    echo "NUM_WORKERS must be a non-negative integer: $NUM_WORKERS" >&2
+    exit 2
+fi
+if ! [[ "$MASTER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( MASTER_PORT > 65535 )); then
+    echo "MASTER_PORT must be an integer in [1, 65535]: $MASTER_PORT" >&2
+    exit 2
+fi
+if (( NUM_GPUS == 1 )) && [[ -n "$GPU_IDS" ]]; then
+    echo "--gpu-ids is only valid together with --num-gpus greater than 1. Use CUDA_VISIBLE_DEVICES for a single selected GPU." >&2
+    exit 2
+fi
+if (( NUM_GPUS > 1 )); then
+    if [[ "$DEVICE" != cuda* ]]; then
+        echo "--num-gpus requires a CUDA policy device, got: $DEVICE" >&2
+        exit 2
+    fi
+    if ! command -v accelerate >/dev/null 2>&1; then
+        echo "--num-gpus requires Hugging Face Accelerate in the smolvla environment." >&2
+        exit 2
+    fi
+    if [[ -n "$GPU_IDS" ]]; then
+        if ! [[ "$GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]]; then
+            echo "--gpu-ids must be a comma-separated list such as 0,1,2,3: $GPU_IDS" >&2
+            exit 2
+        fi
+        IFS=',' read -r -a GPU_ID_LIST <<< "$GPU_IDS"
+        if (( ${#GPU_ID_LIST[@]} != NUM_GPUS )); then
+            echo "--gpu-ids contains ${#GPU_ID_LIST[@]} IDs but --num-gpus is $NUM_GPUS." >&2
+            exit 2
+        fi
+        for (( i = 0; i < ${#GPU_ID_LIST[@]}; ++i )); do
+            for (( j = i + 1; j < ${#GPU_ID_LIST[@]}; ++j )); do
+                if [[ "${GPU_ID_LIST[i]}" == "${GPU_ID_LIST[j]}" ]]; then
+                    echo "--gpu-ids must not contain duplicates: $GPU_IDS" >&2
+                    exit 2
+                fi
+            done
+        done
+    fi
+fi
 RESUME=$(cfg resume)
 if [ -n "$RESUME_OVERRIDE" ]; then
     RESUME="$RESUME_OVERRIDE"
@@ -107,6 +185,21 @@ OPT_LR=$(cfg optimizer_lr)
 OPT_WD=$(cfg optimizer_weight_decay)
 OPT_CLIP=$(cfg optimizer_grad_clip_norm)
 
+TRAIN_LAUNCHER=(lerobot-train)
+if (( NUM_GPUS > 1 )); then
+    TRAIN_LAUNCHER=(
+        accelerate launch
+        --multi_gpu
+        --num_processes "$NUM_GPUS"
+        --main_process_port "$MASTER_PORT"
+    )
+    if [[ -n "$GPU_IDS" ]]; then
+        TRAIN_LAUNCHER+=(--gpu_ids "$GPU_IDS")
+    fi
+    TRAIN_LAUNCHER+=(lerobot-train)
+fi
+EFFECTIVE_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS))
+
 echo "========================================"
 echo "  Local S4 SmolVLA training"
 echo "  Config:  $CONFIG"
@@ -114,7 +207,12 @@ echo "  Dataset: $DATASET_ROOT/$DATASET"
 echo "  Output:  $OUTPUT_DIR"
 echo "  Resume:  $RESUME"
 echo "  Steps:   $STEPS"
-echo "  Batch:   $BATCH_SIZE"
+echo "  GPUs:    $NUM_GPUS${GPU_IDS:+ (ids: $GPU_IDS)}"
+echo "  Batch:   $BATCH_SIZE per process (effective: $EFFECTIVE_BATCH_SIZE)"
+echo "  Workers: $NUM_WORKERS per process"
+if (( NUM_GPUS > 1 )); then
+    echo "  DDP:     Accelerate, rendezvous port $MASTER_PORT"
+fi
 echo "  Save:    every $SAVE_FREQ steps"
 echo "  Seed:    $SEED"
 echo "========================================"
@@ -196,7 +294,7 @@ if [ "$RESUME" = true ]; then
         echo "Resume target --steps ($STEPS) must be greater than saved step ($RESUME_STEP)." >&2
         exit 2
     fi
-    exec python3 scripts/supervise_training.py --output-dir "$OUTPUT_DIR" -- lerobot-train \
+    exec python3 scripts/supervise_training.py --output-dir "$OUTPUT_DIR" -- "${TRAIN_LAUNCHER[@]}" \
         --config_path="$RESUME_CONFIG" \
         --resume=true \
         --output_dir="$OUTPUT_DIR" \
@@ -217,7 +315,7 @@ cp "$DATASET_CONTRACT" "$CONTRACT_STAGE"
 python3 scripts/supervise_training.py \
     --output-dir "$OUTPUT_DIR" \
     --contract-stage "$CONTRACT_STAGE" \
-    -- lerobot-train \
+    -- "${TRAIN_LAUNCHER[@]}" \
     --policy.type=smolvla \
     --dataset.repo_id="$DATASET" \
     --dataset.root="$DATASET_ROOT/$DATASET" \

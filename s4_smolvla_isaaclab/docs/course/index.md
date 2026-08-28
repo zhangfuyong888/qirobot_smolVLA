@@ -42,9 +42,9 @@
 
 | 顺序 | 章节 | 核心问题 | 建议读者 |
 |---|---|---|---|
-| 1 | [第一章：SmolVLA 原理与任务设计](01_SMOLVLA_PRINCIPLES.md) | SmolVLA 为什么能从图像、语言和状态预测动作？什么样的仿真任务适合学习？ | 第一次接触 VLA 或需要理解系统设计者 |
-| 2 | [第二章：项目实现与端到端闭环](02_PROJECT_IMPLEMENTATION.md) | 当前项目怎样完成专家控制、采集、转换、训练和 Rollout？ | 准备读代码、采集数据或优化成功率者 |
-| 3 | [第三章：项目环境与完整部署](03_PROJECT_DEPLOYMENT.md) | 如何准备仓库、双环境、资产、模型、数据目录并完成部署验收？ | 需要复现、迁移或交付项目者 |
+| 1 | [第一章：SmolVLA 原理与任务设计](01-principles.md) | SmolVLA 为什么能从图像、语言和状态预测动作？什么样的仿真任务适合学习？ | 第一次接触 VLA 或需要理解系统设计者 |
+| 2 | [第二章：项目实现与端到端闭环](02-implementation.md) | 当前项目怎样完成专家控制、采集、转换、训练和 Rollout？ | 准备读代码、采集数据或优化成功率者 |
+| 3 | [第三章：项目环境与完整部署](03-deployment.md) | 如何准备仓库、双环境、资产、模型、数据目录并完成部署验收？ | 需要复现、迁移或交付项目者 |
 
 ```mermaid
 flowchart LR
@@ -127,10 +127,10 @@ flowchart LR
 
 ```text
 docs/course/
-├── SMOLVLA_ADVANCED_TECHNICAL_COURSE.md  # 本索引
-├── 01_SMOLVLA_PRINCIPLES.md               # 原理、架构、任务设计
-├── 02_PROJECT_IMPLEMENTATION.md            # 专家、数据、训练、Rollout
-└── 03_PROJECT_DEPLOYMENT.md                # 环境、资产、配置、部署验收
+├── index.md                # 本索引
+├── 01-principles.md        # 原理、架构、任务设计
+├── 02-implementation.md    # 专家、数据、训练、Rollout
+└── 03-deployment.md        # 环境、资产、配置、部署验收
 ```
 
 ## 官方参考资料

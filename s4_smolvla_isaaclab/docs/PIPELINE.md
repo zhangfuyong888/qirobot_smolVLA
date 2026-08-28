@@ -294,6 +294,30 @@ bash run.sh train \
 
 `--steps` 是目标总步数，必须大于 checkpoint 已保存步数。Resume 要求训练输出中的数据契约与当前数据集完全一致。
 
+### 单机多 GPU DDP
+
+`--num-gpus` 大于 1 时，训练入口会在现有进程监管器内使用 Accelerate DDP 启动一个 rank 对应一张
+GPU 的训练进程；不要为同一输出目录手动启动多个 `bash run.sh train`。`--batch-size` 和
+`--num-workers` 都是**每个 rank**的值，实际全局 batch 为每卡 batch 乘以 GPU 数。
+
+保持当前单卡全局 batch 16 的四卡起始配置：
+
+```bash
+bash run.sh train \
+  --no-resume \
+  --num-gpus 4 \
+  --gpu-ids 0,1,2,3 \
+  --batch-size 4 \
+  --num-workers 6 \
+  --master-port 29500 \
+  --steps 500000 \
+  --save-freq 50000
+```
+
+`--gpu-ids` 是当前进程可见 GPU 的编号；若 Docker 已通过 `CUDA_VISIBLE_DEVICES` 选择了四张物理卡，
+容器内通常仍填写 `0,1,2,3`。多卡 resume 最好保持 GPU 数和每卡 batch 不变；底层 LeRobot 会记录
+world size，但更改后只能保证继续训练，不保证逐 rank 的样本顺序完全一致。
+
 当前活动 `run.sh` 没有“每 50000 步自动暂停并运行 10 次 Rollout”的 `train-eval` 命令；不要把旧计划文档中的接口当成已实现功能。
 
 ## 9. checkpoint 检查

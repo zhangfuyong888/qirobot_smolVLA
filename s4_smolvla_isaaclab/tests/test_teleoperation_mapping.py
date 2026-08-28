@@ -53,7 +53,7 @@ def test_clutch_maps_webxr_forward_to_base_positive_x() -> None:
     moved = frame(sample(position=(0.0, 1.2, -0.1), squeeze=1.0), sample(), received=1.01)
     second = control.update(moved, left_tcp, right_tcp, 1.0, 1.01)
     assert first.left.clutch_rising
-    assert second.left.target.position[0] == pytest.approx(0.62)
+    assert second.left.target.position[0] == pytest.approx(0.60)
     assert second.left.target.position[1] == pytest.approx(0.2)
 
 

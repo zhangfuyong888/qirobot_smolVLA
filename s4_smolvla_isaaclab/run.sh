@@ -71,6 +71,15 @@ print(f"[S4] task={active_task_id()} dataset={cfg.dataset.repo_id} fps={cfg.data
 PY
 }
 
+print_smolvla_context() {
+    "$S4_SMOLVLA_PYTHON" - <<'PY'
+from s4_pipeline.config import load_project_config
+from s4_pipeline.paths import active_task_id
+cfg = load_project_config()
+print(f"[S4] task={active_task_id()} dataset={cfg.dataset.repo_id} fps={cfg.dataset.fps}Hz action={cfg.features.action_dim}D")
+PY
+}
+
 record_command() {
     local output="" episodes="1" timeout="300" block="blue" resume=0
     local -a app_args=() script_args=()
@@ -158,7 +167,7 @@ Core commands:
   convert [--overwrite]              Convert HDF5 to LeRobotDataset
   dataset-check [PATH]               Validate dataset and optional checkpoint
   validate-workspace [options]       Dense offline IK/singularity audit for grasp region
-  train [--resume]                   Train SmolVLA in the smolvla environment
+  train [--resume] [--num-gpus N]    Train SmolVLA in the smolvla environment (DDP for N > 1)
   preview                            Offline checkpoint preview
   rollout [--deterministic|--success-rate N]
                                          Online IsaacLab rollout / success-rate eval
@@ -252,7 +261,7 @@ EOF
         use_isaaclab_env
         "$S4_ISAACLAB_PREFIX/bin/python" scripts/validate_drawer_grasp_workspace.py "$@"
         ;;
-    train|train-smolvla) shift; print_context; use_smolvla_env; exec bash scripts/train_smolvla_local.sh "$@" ;;
+    train|train-smolvla) shift; use_smolvla_env; print_smolvla_context; exec bash scripts/train_smolvla_local.sh "$@" ;;
     preview|preview-smolvla) shift; print_context; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/preview_policy.py "$@" ;;
     visualize-smolvla) shift; use_smolvla_env; "$S4_SMOLVLA_PYTHON" scripts/visualize_policy.py "$@" ;;
     rollout|eval-smolvla) shift; print_context; rollout_command "$@" ;;

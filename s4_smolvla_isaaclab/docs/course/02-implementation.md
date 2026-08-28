@@ -1,6 +1,6 @@
 # 第二章：项目实现与端到端闭环
 
-> 导航：[课程索引](SMOLVLA_ADVANCED_TECHNICAL_COURSE.md) · [第一章：核心原理](01_SMOLVLA_PRINCIPLES.md) · **第二章** · [第三章：完整部署](03_PROJECT_DEPLOYMENT.md)
+> 导航：[课程索引](index.md) · [第一章：核心原理](01-principles.md) · **第二章** · [第三章：完整部署](03-deployment.md)
 
 本章以 `drawer_insert_close` 为贯穿案例，说明理论如何落实为脚本化专家、HDF5 数据、LeRobotDataset、SmolVLA 训练和在线闭环控制。内容以当前配置和代码为准，命令均从 `run.sh` 的真实入口出发。
 
@@ -1227,4 +1227,4 @@ flowchart LR
 
 ---
 
-**继续阅读：**[第三章：项目环境与完整部署](03_PROJECT_DEPLOYMENT.md)
+**继续阅读：**[第三章：项目环境与完整部署](03-deployment.md)

@@ -1,6 +1,6 @@
 # 第一章：SmolVLA 原理与任务设计
 
-> 导航：[课程索引](SMOLVLA_ADVANCED_TECHNICAL_COURSE.md) · **第一章** · [第二章：项目实现](02_PROJECT_IMPLEMENTATION.md) · [第三章：完整部署](03_PROJECT_DEPLOYMENT.md)
+> 导航：[课程索引](index.md) · **第一章** · [第二章：项目实现](02-implementation.md) · [第三章：完整部署](03-deployment.md)
 
 本章从 VLA 和 SmolVLA 的模型原理出发，逐步建立项目架构、核心数据契约和仿真任务设计方法。阅读本章不要求先运行项目；重点是理解后续实现为什么采用三路视觉、26D 绝对关节动作、Action Chunk、分层随机化和独立 Policy Server。
 
@@ -581,4 +581,4 @@ flowchart LR
 
 ---
 
-**继续阅读：**[第二章：项目实现与端到端闭环](02_PROJECT_IMPLEMENTATION.md)
+**继续阅读：**[第二章：项目实现与端到端闭环](02-implementation.md)

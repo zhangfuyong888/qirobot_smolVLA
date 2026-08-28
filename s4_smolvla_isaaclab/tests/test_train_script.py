@@ -12,7 +12,9 @@ TRAIN_CONFIG = ROOT / "configs" / "tasks" / "drawer_insert_close.smolvla.yaml"
 DATASET_NAME = "s4_drawer_insert_close_v4_12phase_serial_acquire"
 
 
-def _run_fake_training(tmp_path: Path, mode: str) -> tuple[subprocess.CompletedProcess[str], Path, dict]:
+def _run_fake_training(
+    tmp_path: Path, mode: str, extra_args: tuple[str, ...] = ()
+) -> tuple[subprocess.CompletedProcess[str], Path, dict]:
     data_root = tmp_path / "data"
     output_root = tmp_path / "outputs"
     dataset_root = data_root / "lerobot_data" / DATASET_NAME
@@ -63,6 +65,28 @@ fi
         encoding="utf-8",
     )
     fake_train.chmod(0o755)
+    fake_accelerate = fake_bin / "accelerate"
+    fake_accelerate.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$@" > "${FAKE_ACCELERATE_ARGS:?}"
+found_train=false
+train_args=()
+for arg in "$@"; do
+    if [[ "$found_train" == false ]]; then
+        if [[ "$arg" == "lerobot-train" ]]; then
+            found_train=true
+        fi
+    else
+        train_args+=("$arg")
+    fi
+done
+[[ "$found_train" == true ]]
+exec lerobot-train "${train_args[@]}"
+""",
+        encoding="utf-8",
+    )
+    fake_accelerate.chmod(0o755)
 
     env = os.environ.copy()
     env.update(
@@ -73,6 +97,7 @@ fi
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
             "FAKE_TRAIN_MODE": mode,
+            "FAKE_ACCELERATE_ARGS": str(tmp_path / "accelerate_args.txt"),
             "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
         }
     )
@@ -85,6 +110,7 @@ fi
             "10",
             "--save-freq",
             "5",
+            *extra_args,
         ],
         cwd=ROOT,
         env=env,
@@ -157,6 +183,42 @@ def test_contract_is_published_while_training_process_is_running(tmp_path: Path)
     result, output_dir, contract = _run_fake_training(tmp_path, "wait_for_contract")
 
     assert result.returncode == 0, result.stderr
+    assert json.loads((output_dir / "s4_dataset_contract.json").read_text()) == contract
+
+
+def test_ddp_launch_is_supervised_and_keeps_batch_per_process(tmp_path: Path):
+    result, output_dir, contract = _run_fake_training(
+        tmp_path,
+        "success",
+        (
+            "--num-gpus",
+            "2",
+            "--gpu-ids",
+            "0,1",
+            "--num-workers",
+            "3",
+            "--master-port",
+            "24680",
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Batch:   16 per process (effective: 32)" in result.stdout
+    assert "Workers: 3 per process" in result.stdout
+    launch_args = (tmp_path / "accelerate_args.txt").read_text(encoding="utf-8").splitlines()
+    assert launch_args[:7] == [
+        "launch",
+        "--multi_gpu",
+        "--num_processes",
+        "2",
+        "--main_process_port",
+        "24680",
+        "--gpu_ids",
+    ]
+    assert launch_args[7] == "0,1"
+    assert "lerobot-train" in launch_args
+    assert "--batch_size=16" in launch_args
+    assert "--num_workers=3" in launch_args
     assert json.loads((output_dir / "s4_dataset_contract.json").read_text()) == contract
 
 

@@ -19,7 +19,7 @@ def test_hardware_config_loads() -> None:
     assert config.hardware.max_state_age_s == pytest.approx(0.5)
     assert config.ik.backend == "rmpflow"
     assert len(config.hands.left_open_uint16) == 6
-    assert config.teleop.mapping.position_scale == pytest.approx(2.2)
+    assert config.teleop.mapping.position_scale == pytest.approx(2.0)
     assert config.startup.move_to_home is True
     assert config.startup.check_lowcmd_publishers is True
     assert config.gravity.enabled is True

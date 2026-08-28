@@ -1,6 +1,6 @@
 # 第三章：项目环境与完整部署
 
-> 导航：[课程索引](SMOLVLA_ADVANCED_TECHNICAL_COURSE.md) · [第一章：核心原理](01_SMOLVLA_PRINCIPLES.md) · [第二章：项目实现](02_PROJECT_IMPLEMENTATION.md) · **第三章**
+> 导航：[课程索引](index.md) · [第一章：核心原理](01-principles.md) · [第二章：项目实现](02-implementation.md) · **第三章**
 
 本章说明如何把当前项目迁移到另一台工作站，并建立从仿真、数据采集、训练到在线 Rollout 的可复现运行环境。当前仓库已经提供双 Conda 环境定义、统一入口、环境检查和本地资产归纳工具；自动下载、操作系统级驱动安装和完整发布包仍需后续完善。
 
@@ -461,4 +461,4 @@ flowchart TD
 
 完整部署不是把 Python 包安装成功，而是让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约和 checkpoint 同时对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、资产归纳、`doctor` 和数据检查等基础设施；后续重点是完善固定下载来源、校验清单、版本兼容矩阵和一键预检。
 
-部署完成后，应返回[第二章](02_PROJECT_IMPLEMENTATION.md)按照“专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率”的顺序验证完整闭环。
+部署完成后，应返回[第二章](02-implementation.md)按照“专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率”的顺序验证完整闭环。

@@ -289,7 +289,7 @@ bash run.sh collect-convert \
 - [复现与部署](docs/REPRODUCTION.md)
 - [完整流水线、契约与诊断](docs/PIPELINE.md)
 
-课程教程保留在 [docs/course/](docs/course/SMOLVLA_ADVANCED_TECHNICAL_COURSE.md)，按“原理 → 项目实现 → 部署”分为三章。
+课程教程保留在 [docs/course/](docs/course/index.md)，按“原理 → 项目实现 → 部署”分为三章。
 
 ## 6. 重要安全边界
 
