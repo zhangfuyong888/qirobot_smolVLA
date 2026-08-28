@@ -7,6 +7,10 @@ __pycache__/
 .env
 .local/
 local_assets/
+hardware_teleop/ros_ws/build/
+hardware_teleop/ros_ws/install/
+hardware_teleop/ros_ws/log/
+hardware_teleop/config/ros_env.local.sh
 
 *.log
 *.tmp

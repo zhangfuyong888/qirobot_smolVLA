@@ -146,7 +146,10 @@ Core commands:
   list-tasks                         List registered tasks
   activate-task TASK                Select a task in .local/active_task
   sim [IsaacLab options]             Start the active task scene
-  teleop [options]                   Control both arms with Meta Quest 3
+  teleop [options]                   Control both arms with Meta Quest 3 (Isaac simulation)
+  teleop-hardware [options]          Control the real robot with Meta Quest 3 (headless IK)
+  teleop-hardware-build              Build vendored qi ROS2 messages for hardware teleop
+  teleop-hardware-env                Print command to source ROS2/DDS env in another shell
   teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
   record [--episodes N] [--resume]    Record/continue successful HDF5 demonstrations
   collect-convert [options]           Collect, validate and convert; never train
@@ -211,6 +214,28 @@ case "${1:-help}" in
         shift; print_context; use_isaaclab_env
         "$ISAACLAB" -p teleoperation/isaaclab_teleop.py \
             --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
+        ;;
+    teleop-hardware)
+        shift; print_context
+        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+            echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
+            bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
+        fi
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+        use_isaaclab_env
+        "$ISAACLAB" -p hardware_teleop/main.py --headless \
+            --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
+        ;;
+    teleop-hardware-build)
+        shift
+        bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh" "$@"
+        ;;
+    teleop-hardware-env)
+        cat <<EOF
+# Source ROS2 / CycloneDDS env for hardware teleop (edit hardware_teleop/config/ros_env.sh):
+source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+EOF
         ;;
     teleop-cert)
         shift; "$S4_ISAACLAB_PREFIX/bin/python" -m teleoperation.certificate "$@"

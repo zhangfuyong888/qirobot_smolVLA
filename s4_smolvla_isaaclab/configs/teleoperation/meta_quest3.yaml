@@ -15,7 +15,7 @@ mapping:
     - [-1.0, 0.0, 0.0]
     - [0.0, 1.0, 0.0]
   # 10 cm of controller translation requests 22 cm of TCP translation.
-  position_scale: 2.2
+  position_scale: 2.0
   orientation_enabled: true
   clutch:
     # On the validated meta-quest-touch-plus stream, buttons[1] matches
