@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import yaml
 
 from teleoperation.config import load_teleop_config
@@ -12,10 +13,21 @@ def test_meta_quest_config_has_proper_coordinate_basis() -> None:
     basis = config.mapping.controller_to_base_rotation
     assert np.allclose(basis.T @ basis, np.eye(3))
     assert np.linalg.det(basis) == 1.0
+    assert basis @ np.array([1.0, 0.0, 0.0]) == pytest.approx([0.0, 1.0, 0.0])
+    assert basis @ np.array([0.0, 1.0, 0.0]) == pytest.approx([0.0, 0.0, 1.0])
+    assert basis @ np.array([0.0, 0.0, 1.0]) == pytest.approx([1.0, 0.0, 0.0])
     assert config.mapping.clutch.release_threshold < config.mapping.clutch.engage_threshold
     assert config.mapping.clutch.button_indices == (1,)
     assert config.network.stale_timeout_s == 1.0
-    assert config.controller.backend == "rmpflow"
+    assert config.controller.backend == "pink"
+    assert config.controller.pink.urdf_file.is_file()
+    assert config.controller.pink.solver == "quadprog"
+    assert config.controller.pink.tcp_offset_wrist == pytest.approx([0.0, 0.0, -0.10])
+    assert config.controller.pink.elbow_avoidance.enabled is True
+    assert config.controller.pink.elbow_avoidance.left_frame_name == "left_elbow_link"
+    assert config.controller.pink.elbow_avoidance.right_frame_name == "right_elbow_link"
+    assert config.controller.pink.elbow_avoidance.min_lateral_distance_base_m == 0.28
+    assert config.controller.pink.elbow_avoidance.gain == 1.0
     assert config.controller.rmpflow.urdf_file.is_file()
     assert config.controller.rmpflow.left.frame_name == "left_wrist_yaw_link"
     assert config.controller.rmpflow.right.frame_name == "right_wrist_yaw_link"

@@ -10,9 +10,12 @@ network:
 mapping:
   # WebXR local-floor: +X right, +Y up, -Z forward.
   # S4 base_link: +X forward, +Y left, +Z up.
+  # Quest 3 hardware calibration: the delivered controller translation axes
+  # require reversing the nominal horizontal mapping. Keep +Y -> base +Z,
+  # while +X -> base +Y and +Z -> base +X.
   controller_to_base_rotation:
-    - [0.0, 0.0, -1.0]
-    - [-1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0]
+    - [1.0, 0.0, 0.0]
     - [0.0, 1.0, 0.0]
   # 10 cm of controller translation requests 22 cm of TCP translation.
   position_scale: 2.0
@@ -49,7 +52,38 @@ runtime:
     interface: null
 
 controller:
-  backend: rmpflow
+  backend: pink
+  # Repository-vendored Pink 4.3 backend. This uses Pinocchio for FK and a
+  # dense QP for differential IK; Isaac remains only the physics runtime.
+  pink:
+    urdf_file: assets/my_robot/urdf/s4_40dof_merged.urdf
+    # qpsolvers 4.12 + the currently locked daqp 0.7.2 are API-incompatible;
+    # quadprog is verified in this environment and is fast for this dense QP.
+    solver: quadprog
+    left_frame_name: left_wrist_yaw_link
+    right_frame_name: right_wrist_yaw_link
+    tcp_offset_wrist_m: [0.0, 0.0, -0.10]
+    position_cost: 1.0
+    # Pink cost is a QP weight, not the old DLS orientation_weight. A lower
+    # value keeps translation dominant and reproduces RMPflow's softer wrist
+    # orientation response instead of making the whole arm visibly twist.
+    orientation_cost: 0.25
+    posture_cost: 0.001
+    task_gain: 0.5
+    lm_damping: 0.1
+    damping: 1.0e-6
+    # Match the old RMPflow joint_velocity_cap_rmp. Pink advances in wall-time
+    # during interactive teleoperation, while the common 0.065 rad command
+    # step guard remains the final actuator-side limit.
+    max_joint_velocity_rad_s: 3.0
+    # Keep both elbows outside a lateral corridor around the body centerline.
+    # In base_link, +Y points left: left elbow Y >= +d, right elbow Y <= -d.
+    elbow_avoidance:
+      enabled: true
+      left_frame_name: left_elbow_link
+      right_frame_name: right_elbow_link
+      min_lateral_distance_base_m: 0.28
+      gain: 1.0
   rmpflow:
     name: rmp_flow
     urdf_file: assets/my_robot/urdf/s4_40dof_merged.urdf

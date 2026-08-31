@@ -77,9 +77,36 @@ class RmpFlowConfig:
 
 
 @dataclass(frozen=True)
+class PinkElbowAvoidanceConfig:
+    enabled: bool
+    left_frame_name: str
+    right_frame_name: str
+    min_lateral_distance_base_m: float
+    gain: float
+
+
+@dataclass(frozen=True)
+class PinkConfig:
+    urdf_file: Path
+    solver: str
+    left_frame_name: str
+    right_frame_name: str
+    tcp_offset_wrist: np.ndarray
+    position_cost: float
+    orientation_cost: float
+    posture_cost: float
+    task_gain: float
+    lm_damping: float
+    damping: float
+    max_joint_velocity_rad_s: float
+    elbow_avoidance: PinkElbowAvoidanceConfig
+
+
+@dataclass(frozen=True)
 class ControllerConfig:
     backend: str
     rmpflow: RmpFlowConfig
+    pink: PinkConfig
 
 
 @dataclass(frozen=True)
@@ -152,6 +179,7 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     ik = raw["ik"]
     controller = raw.get("controller", {})
     rmpflow = controller.get("rmpflow", {})
+    pink = controller.get("pink", {})
     simulation = raw["simulation"]
     runtime = raw.get("runtime", {})
 
@@ -174,8 +202,8 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     if np.any(workspace_min >= workspace_max):
         raise ValueError("workspace_min_base_m must be below workspace_max_base_m")
     backend = str(controller.get("backend", "pinocchio")).lower()
-    if backend not in {"pinocchio", "rmpflow"}:
-        raise ValueError("controller.backend must be 'pinocchio' or 'rmpflow'")
+    if backend not in {"pinocchio", "pink", "rmpflow"}:
+        raise ValueError("controller.backend must be 'pinocchio', 'pink' or 'rmpflow'")
     if not rmpflow:
         raise ValueError("controller.rmpflow configuration is required")
     evaluations_per_frame = float(rmpflow.get("evaluations_per_frame", 4.0))
@@ -203,6 +231,64 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
         raise FileNotFoundError("RMPflow configuration files are missing: " + ", ".join(missing))
+    if not pink:
+        raise ValueError("controller.pink configuration is required")
+    pink_urdf = _project_path(source, str(pink.get("urdf_file", rmpflow["urdf_file"])))
+    if not pink_urdf.is_file():
+        raise FileNotFoundError(f"Pink URDF is missing: {pink_urdf}")
+    tcp_offset = _vec(pink, "tcp_offset_wrist_m", 3)
+    solver = str(pink.get("solver", "daqp"))
+    if not solver:
+        raise ValueError("controller.pink.solver must not be empty")
+    elbow_avoidance = pink.get("elbow_avoidance", {})
+    if not isinstance(elbow_avoidance, dict):
+        raise TypeError("controller.pink.elbow_avoidance must be a mapping")
+    elbow_avoidance_config = PinkElbowAvoidanceConfig(
+        enabled=bool(elbow_avoidance.get("enabled", False)),
+        left_frame_name=str(elbow_avoidance.get("left_frame_name", "left_elbow_link")),
+        right_frame_name=str(elbow_avoidance.get("right_frame_name", "right_elbow_link")),
+        min_lateral_distance_base_m=float(
+            elbow_avoidance.get("min_lateral_distance_base_m", 0.28)
+        ),
+        gain=float(elbow_avoidance.get("gain", 1.0)),
+    )
+    if not elbow_avoidance_config.left_frame_name or not elbow_avoidance_config.right_frame_name:
+        raise ValueError("controller.pink.elbow_avoidance frame names must not be empty")
+    if not 0.0 < elbow_avoidance_config.min_lateral_distance_base_m < 1.0:
+        raise ValueError(
+            "controller.pink.elbow_avoidance.min_lateral_distance_base_m "
+            "must be in (0, 1)"
+        )
+    if elbow_avoidance_config.gain <= 0.0:
+        raise ValueError("controller.pink.elbow_avoidance.gain must be positive")
+    pink_config = PinkConfig(
+        urdf_file=pink_urdf,
+        solver=solver,
+        left_frame_name=str(pink.get("left_frame_name", "left_wrist_yaw_link")),
+        right_frame_name=str(pink.get("right_frame_name", "right_wrist_yaw_link")),
+        tcp_offset_wrist=tcp_offset,
+        position_cost=float(pink.get("position_cost", 1.0)),
+        orientation_cost=float(pink.get("orientation_cost", 0.65)),
+        posture_cost=float(pink.get("posture_cost", 1.0e-3)),
+        task_gain=float(pink.get("task_gain", 0.5)),
+        lm_damping=float(pink.get("lm_damping", 0.1)),
+        damping=float(pink.get("damping", 1.0e-6)),
+        max_joint_velocity_rad_s=float(pink.get("max_joint_velocity_rad_s", 4.8)),
+        elbow_avoidance=elbow_avoidance_config,
+    )
+    positive_pink_values = {
+        "position_cost": pink_config.position_cost,
+        "posture_cost": pink_config.posture_cost,
+        "task_gain": pink_config.task_gain,
+        "max_joint_velocity_rad_s": pink_config.max_joint_velocity_rad_s,
+    }
+    invalid_pink = [name for name, value in positive_pink_values.items() if value <= 0.0]
+    if invalid_pink:
+        raise ValueError("controller.pink values must be positive: " + ", ".join(invalid_pink))
+    if not 0.0 <= pink_config.orientation_cost:
+        raise ValueError("controller.pink.orientation_cost must be non-negative")
+    if not 0.0 < pink_config.task_gain <= 1.0:
+        raise ValueError("controller.pink.task_gain must be in (0, 1]")
     render_every_n_steps = int(simulation.get("render_every_n_steps", 1))
     if render_every_n_steps < 1:
         raise ValueError("simulation.render_every_n_steps must be at least 1")
@@ -246,7 +332,7 @@ def load_teleop_config(path: Path) -> TeleopConfig:
             max_joint_delta_rad=float(ik["max_joint_delta_rad"]),
             orientation_weight=float(ik["orientation_weight"]),
         ),
-        controller=ControllerConfig(backend=backend, rmpflow=rmpflow_config),
+        controller=ControllerConfig(backend=backend, rmpflow=rmpflow_config, pink=pink_config),
         runtime=RuntimeConfig(mode=runtime_mode, hardware=dict(hardware_cfg)),
         simulation=SimulationConfig(
             reset_settle_s=float(simulation["reset_settle_s"]),

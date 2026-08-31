@@ -44,17 +44,18 @@ def test_clutch_release_snaps_target_to_current_tcp() -> None:
     assert result.left.target.quat_wxyz == pytest.approx(moved_tcp.quat_wxyz)
 
 
-def test_clutch_maps_webxr_forward_to_base_positive_x() -> None:
+def test_clutch_uses_quest_hardware_calibrated_horizontal_directions() -> None:
     control = mapper()
     left_tcp = TcpPose(np.array([0.4, 0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
     right_tcp = TcpPose(np.array([0.4, -0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
     engaged = frame(sample(squeeze=1.0), sample(squeeze=0.0))
     first = control.update(engaged, left_tcp, right_tcp, 1.0 / 120.0, 1.0)
-    moved = frame(sample(position=(0.0, 1.2, -0.1), squeeze=1.0), sample(), received=1.01)
+    moved = frame(sample(position=(0.1, 1.3, 0.1), squeeze=1.0), sample(), received=1.01)
     second = control.update(moved, left_tcp, right_tcp, 1.0, 1.01)
     assert first.left.clutch_rising
     assert second.left.target.position[0] == pytest.approx(0.60)
-    assert second.left.target.position[1] == pytest.approx(0.2)
+    assert second.left.target.position[1] == pytest.approx(0.40)
+    assert second.left.target.position[2] == pytest.approx(0.40)
 
 
 def test_each_arm_has_an_independent_clutch() -> None:

@@ -32,7 +32,7 @@ parser.add_argument(
 parser.add_argument("--report-period-s", type=float, default=0.5)
 parser.add_argument(
     "--controller-backend",
-    choices=("rmpflow", "pinocchio"),
+    choices=("rmpflow", "pink", "pinocchio"),
     default=None,
     help="Arm controller for this teleop process; defaults to YAML controller.backend.",
 )
@@ -300,7 +300,26 @@ def run_simulation_teleop(config: TeleopConfig, args_cli: argparse.Namespace) ->
 
     controller_backend = args_cli.controller_backend or config.controller.backend
     arm_controller = create_arm_controller(controller_backend, config, robot, sim.device, base_id)
-    arm_controller.set_posture_reference(robot.data.joint_pos[0].detach().cpu().numpy())
+    controller_joint_state = robot.data.joint_pos[0].detach().cpu().numpy()
+    arm_controller.set_posture_reference(controller_joint_state)
+    if controller_backend == "pink":
+        pink_left_tcp, pink_right_tcp = arm_controller.forward(controller_joint_state)
+        isaac_left_tcp = current_tcp_pose_base(robot, base_id, left_wrist_id)
+        isaac_right_tcp = current_tcp_pose_base(robot, base_id, right_wrist_id)
+        left_position_error = float(np.linalg.norm(pink_left_tcp.position - isaac_left_tcp.position))
+        right_position_error = float(np.linalg.norm(pink_right_tcp.position - isaac_right_tcp.position))
+        left_rotation_error = _rotation_error_angle(pink_left_tcp.quat_wxyz, isaac_left_tcp.quat_wxyz)
+        right_rotation_error = _rotation_error_angle(pink_right_tcp.quat_wxyz, isaac_right_tcp.quat_wxyz)
+        print(
+            "[TELEOP][PINK][FK-PARITY] "
+            f"position_error_m(L/R)={left_position_error:.6f}/{right_position_error:.6f} "
+            f"rotation_error_rad(L/R)={left_rotation_error:.6f}/{right_rotation_error:.6f}",
+            flush=True,
+        )
+        if max(left_position_error, right_position_error) > 2.0e-3 or max(
+            left_rotation_error, right_rotation_error
+        ) > 2.0e-2:
+            raise RuntimeError("Pink and Isaac TCP forward kinematics disagree")
     print(f"[TELEOP][CTRL] backend={controller_backend} details={arm_controller.diagnostics()}", flush=True)
 
     server.start()
@@ -370,7 +389,7 @@ def run_simulation_teleop(config: TeleopConfig, args_cli: argparse.Namespace) ->
             # Isaac Sim runs below 120 Hz, advancing it with fixed physics dt
             # makes the robot visibly lag the controller. The Pinocchio
             # compatibility backend retains its original physics-dt behavior.
-            controller_dt = mapping_dt if controller_backend == "rmpflow" else dt
+            controller_dt = mapping_dt if controller_backend in {"rmpflow", "pink"} else dt
             actual_action_before_command = extract_bimanual_state(current_joint_pos, robot.joint_names)
             ik_step_left = 0.0
             ik_step_right = 0.0

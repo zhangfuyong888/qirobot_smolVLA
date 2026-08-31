@@ -20,6 +20,10 @@ def create_arm_controller(
         from teleoperation.controllers.pinocchio_backend import PinocchioTeleopController
 
         return PinocchioTeleopController(robot, device, config)
+    if selected == "pink":
+        from teleoperation.controllers.pink_backend import PinkTeleopController
+
+        return PinkTeleopController(robot, config)
     if selected == "rmpflow":
         from teleoperation.controllers.rmpflow_backend import BimanualRmpFlowController
 
