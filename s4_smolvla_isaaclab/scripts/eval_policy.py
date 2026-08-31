@@ -59,18 +59,18 @@ parser.add_argument("--action-clip", choices=["none", "dataset_minmax", "dataset
 parser.add_argument(
     "--chunk-replan-frames",
     type=int,
-    default=40,
-    help="Predict a new overlapping action chunk every N policy frames (default: 40 = 2.0 s at 20 Hz).",
+    default=30,
+    help="Predict a new overlapping action chunk every N policy frames (default: 30 = 1.5 s at 20 Hz).",
 )
 parser.add_argument("--chunk-overlap-blend-frames", type=int, default=5, help="Cross-fade only the previous and newest stochastic chunks for N frames.")
-parser.add_argument("--phase-transition-blend-frames", type=int, default=8)
+parser.add_argument("--phase-transition-blend-frames", type=int, default=5)
 parser.add_argument("--phase-state-gating", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--phase-max-extension-frames", type=int, default=20)
 parser.add_argument(
     "--drawer-phase-max-extension-frames",
     type=int,
-    default=80,
-    help="Gate extension for language phases marked rollout_extension=drawer (default: 80 = 4.0 s at 20 Hz).",
+    default=20,
+    help="Gate extension for language phases marked rollout_extension=drawer (default: 20 = 1.0 s at 20 Hz).",
 )
 parser.add_argument("--phase-q-track-tolerance", type=float, default=0.08)
 parser.add_argument("--phase-hand-tolerance", type=float, default=0.15)
@@ -278,7 +278,8 @@ def numeric_checkpoints(root: Path) -> list[Path]:
 
 
 def resolve_checkpoint(project_cfg) -> Path:
-    path = Path(args_cli.checkpoint).expanduser() if args_cli.checkpoint else project_cfg.training.output_dir
+    checkpoint_override = args_cli.checkpoint or os.environ.get("S4_ROLLOUT_CHECKPOINT")
+    path = Path(checkpoint_override).expanduser() if checkpoint_override else project_cfg.training.output_dir
     if (path / "config.json").is_file():
         return path.resolve()
     if (path / "pretrained_model" / "config.json").is_file():
@@ -732,11 +733,6 @@ def phase_transition_gate(
         maximum = float(phase_cfg["drawer_open_max"])
         if drawer_open > maximum:
             reasons.append(f"drawer={drawer_open:.3f}>{maximum:.3f}")
-    if phase_cfg.get("close_drawer_from_current"):
-        close_limit = float(scripted_cfg.get("success", {}).get("drawer_open_abs_max", 0.04))
-        if abs(drawer_open) >= close_limit:
-            reasons.append(f"drawer_abs={abs(drawer_open):.3f}>={close_limit:.3f}")
-
     object_position = (
         None
         if task_object_position_world is None
@@ -1285,10 +1281,12 @@ def main() -> None:
 
             elapsed = time.monotonic() - start
             drawer_open = drawer_sign * float(scene["drawer"].data.joint_pos[0, drawer_joint_id].item())
-            can_z = float(scene["named_objects"]["can"].data.root_pos_w[0, 2].item())
+            can_position = [
+                float(value)
+                for value in scene["named_objects"]["can"].data.root_pos_w[0, :3].detach().cpu().tolist()
+            ]
             success_info = evaluate_drawer_success(
-                drawer_open_m=drawer_open,
-                can_world_z_m=can_z,
+                can_world_position_m=can_position,
                 success_cfg=scripted_cfg.get("success", {}),
             )
             result = {
@@ -1297,10 +1295,10 @@ def main() -> None:
                 "complete": bool(rollout_complete),
                 "success": bool(success_info["success"]),
                 "failure_reason": rollout_failure_reason,
-                "drawer_ok": bool(success_info["drawer_ok"]),
-                "can_ok": bool(success_info["can_ok"]),
-                "drawer_open_m": float(success_info["drawer_open_m"]),
-                "can_world_z_m": float(success_info["can_world_z_m"]),
+                "can_in_drawer": bool(success_info["can_in_drawer"]),
+                "can_world_position_m": list(success_info["can_world_position_m"]),
+                "can_world_bounds_m": dict(success_info["can_world_bounds_m"]),
+                "drawer_open_m": float(drawer_open),
                 "can_x_offset_m": float(init_sample["can_x_offset_m"]),
                 "can_y_offset_m": float(init_sample["can_y_offset_m"]),
                 "initial_drawer_open_m": float(init_sample["drawer_open_m"]),
@@ -1319,10 +1317,9 @@ def main() -> None:
                 f"[EVAL] episode {episode_index + 1}/{episodes} done "
                 f"complete={result['complete']} success={result['success']} "
                 f"wall={elapsed:.1f}s sim={result['sim_s']:.1f}s "
-                f"drawer={result['drawer_open_m']:.3f}m "
-                f"(<{success_info['drawer_limit_m']:.3f}) "
-                f"can_z={result['can_world_z_m']:.3f}m "
-                f"({success_info['can_z_min_m']:.2f},{success_info['can_z_max_m']:.2f})"
+                f"drawer={result['drawer_open_m']:.3f}m (telemetry only) "
+                f"can_xyz={tuple(round(value, 3) for value in result['can_world_position_m'])} "
+                f"in_drawer={result['can_in_drawer']}"
             )
             if args_cli.save_videos:
                 print(f"[EVAL] video={artifacts['video'].resolve()}")

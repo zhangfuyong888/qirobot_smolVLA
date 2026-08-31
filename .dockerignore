@@ -1,0 +1,24 @@
+# The complete image deliberately includes local_assets/, models/, datasets/ and
+# outputs/.  Exclude only source-control metadata and regenerable local caches.
+.git
+**/.git
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.cache
+**/.DS_Store
+**/*.swp
+**/*~
+docker/runtime/
+
+# Workstation-only path overrides must never replace container paths.
+.env
+**/.env
+
+# Generated ROS build trees contain absolute host symlinks and are not needed
+# by the simulation/data/training/rollout pipeline.  ROS source remains copied.
+s4_smolvla_isaaclab/hardware_teleop/ros_ws/build/
+s4_smolvla_isaaclab/hardware_teleop/ros_ws/install/
+s4_smolvla_isaaclab/hardware_teleop/ros_ws/log/

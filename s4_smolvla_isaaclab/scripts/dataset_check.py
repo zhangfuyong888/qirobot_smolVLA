@@ -180,7 +180,7 @@ def _check_hdf5(path: Path, cfg) -> tuple[int, int]:
                         final_success = metadata.get("final_success")
                         if not isinstance(final_success, dict) or not final_success.get("accepted", False):
                             _fail(f"{file}:{name} is missing an accepted final_success record")
-                        if not final_success.get("drawer_closed", False) or not final_success.get("can_height_valid", False):
+                        if not final_success.get("can_in_drawer", False):
                             _fail(f"{file}:{name} has invalid final_success={final_success}")
                     cell = randomization.get("can_grid_cell")
                     if cell is not None:

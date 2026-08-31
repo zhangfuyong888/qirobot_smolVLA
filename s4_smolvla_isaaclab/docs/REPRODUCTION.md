@@ -119,8 +119,7 @@ flowchart LR
 > Rollout-only 不是单环境模式。当前 `run.sh rollout` 同时需要 `env_isaaclab` 和 `smolvla`：前者运行仿真，后者加载 checkpoint 并执行策略推理。只有采集和场景预览不需要 `smolvla`；只做数据转换、检查、训练或离线预览则不需要启动 Isaac Sim。
 
 训练入口 `bash run.sh train` 只读取 `smolvla` 环境，可部署到不安装 Isaac Sim/IsaacLab 的训练服务器。
-单机多 GPU 使用 `--num-gpus N` 启动 Accelerate DDP；数据集、基础模型和训练输出应作为服务器目录或 Docker
-volume 挂载，而不是放进镜像层。具体参数见 [PIPELINE.md](PIPELINE.md#单机多-gpu-ddp)。
+单机多 GPU 使用 `--num-gpus N` 启动 Accelerate DDP。仓库顶层提供的完整 Docker 发布方式会把基础模型、当前数据集和训练输出放入镜像，并在首次 Compose 启动时初始化持久命名卷；后续新增的数据与 checkpoint 保存在卷中。具体参数见 [PIPELINE.md](PIPELINE.md#单机多-gpu-ddp) 和顶层 `docker/README.md`。
 
 ## 5. 导出当前两个环境
 

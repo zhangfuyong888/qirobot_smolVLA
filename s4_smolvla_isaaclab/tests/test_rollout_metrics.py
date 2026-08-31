@@ -38,10 +38,30 @@ SCRIPTED = {
         },
     },
     "success": {
-        "drawer_open_abs_max": 0.04,
-        "can_world_z": {"min_m": 1.00, "max_m": 1.04},
+        "can_world_bounds": {"x": [0.28, 0.52], "y": [0.00, 0.30], "z": [0.96, 1.10]},
     },
 }
+
+
+def test_final_success_requires_can_inside_broad_drawer_region():
+    success = evaluate_drawer_success(
+        can_world_position_m=(0.40, 0.14, 1.02),
+        success_cfg=SCRIPTED["success"],
+    )
+    assert success["success"] is True
+    assert success["can_in_drawer"] is True
+
+    initial_table = evaluate_drawer_success(
+        can_world_position_m=(0.52, -0.13, 1.16),
+        success_cfg=SCRIPTED["success"],
+    )
+    assert initial_table["success"] is False
+
+    dropped = evaluate_drawer_success(
+        can_world_position_m=(0.40, 0.14, 0.50),
+        success_cfg=SCRIPTED["success"],
+    )
+    assert dropped["success"] is False
 
 
 def test_rollout_drawer_pregrasp_acquire_pull_and_close_get_80_extension_frames():

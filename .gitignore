@@ -4,3 +4,9 @@ __pycache__/
 datasets/
 models/
 outputs/
+# External IsaacLab checkout copied locally only for the complete Docker release.
+# It is intentionally not tracked by this repository.
+/IsaacLab/
+/docker/release-manifest.env
+/docker/ISAACLAB_COMMIT
+/docker/vendor/

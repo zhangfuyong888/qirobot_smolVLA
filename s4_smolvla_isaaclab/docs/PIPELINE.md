@@ -162,7 +162,7 @@ bash run.sh record \
   非抓取阶段失败直接在当前格内重新采样，只有接受成功 episode 才推进网格；
 - 偶发物理失败需要持续采集时，`collect-convert` 可使用 `--continue-on-failure`。它只取消累计失败次数上限；失败 episode 仍被丢弃并记录，程序异常、契约检查失败和最终成功数不足仍会终止流水线；
 - Headless 只隐藏窗口，相机仍然渲染；
-- 最终数据只接受满足抽屉与罐子成功条件的 episode。
+- 最终数据只接受主罐根坐标位于配置的宽松抽屉世界坐标 X/Y/Z 区域内的 episode；最终抽屉开度仅记录为遥测，不参与成功判定。
 
 ### 4.1 中断恢复
 
@@ -370,11 +370,11 @@ bash run.sh rollout \
   --deterministic \
   --checkpoint "${CHECKPOINT}" \
   --dataset-root "${LEROBOT_DIR}" \
-  --chunk-replan-frames 40 \
+  --chunk-replan-frames 30 \
   --chunk-overlap-blend-frames 5 \
-  --phase-transition-blend-frames 8 \
+  --phase-transition-blend-frames 5 \
   --phase-max-extension-frames 20 \
-  --drawer-phase-max-extension-frames 80 \
+  --drawer-phase-max-extension-frames 20 \
   --policy-device cuda
 ```
 
@@ -386,17 +386,17 @@ bash run.sh rollout \
   --success-rate 20 \
   --checkpoint "${CHECKPOINT}" \
   --dataset-root "${LEROBOT_DIR}" \
-  --chunk-replan-frames 40 \
+  --chunk-replan-frames 30 \
   --chunk-overlap-blend-frames 5 \
-  --phase-transition-blend-frames 8 \
+  --phase-transition-blend-frames 5 \
   --phase-max-extension-frames 20 \
-  --drawer-phase-max-extension-frames 80 \
+  --drawer-phase-max-extension-frames 20 \
   --policy-device cuda
 ```
 
-`--success-rate 20` 使用当前 YAML 的主罐随机范围；抽屉仍固定从 `0.00 m` 开始。Action Chunk 50 与重规划间隔 40 是不同概念：模型预测 50 帧，但执行到 40 帧时可以请求新 chunk，并用 5 帧 overlap 融合。
+`--success-rate 20` 使用当前 YAML 的主罐随机范围；抽屉仍固定从 `0.00 m` 开始。Action Chunk 50 与重规划间隔 30 是不同概念：模型预测 50 帧，但执行到 30 帧时可以请求新 chunk，并用 5 帧 overlap 融合。
 
-每个语言阶段在数据契约中声明允许变化的 action group。策略仍预测完整 26D，但非活动臂和手保持阶段入口命令：左手操作抽屉时右臂保持，右手操作罐子时左臂持续保持抽屉。门控超出扩展预算时，只有 `left_pull_drawer` 会因抽屉开度不足而结束该轮并写入 `failure_reason`；其他阶段软放行，最终仍由抽屉与罐子的物理状态判定成功。
+每个语言阶段在数据契约中声明允许变化的 action group。策略仍预测完整 26D，但非活动臂和手保持阶段入口命令：左手操作抽屉时右臂保持，右手操作罐子时左臂持续保持抽屉。门控超出扩展预算时，只有 `left_pull_drawer` 会因抽屉开度不足而结束该轮并写入 `failure_reason`；其他阶段软放行，最终仅由主罐是否位于配置的宽松抽屉世界坐标区域内判定成功。
 
 ## 12. Rollout 诊断
 

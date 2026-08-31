@@ -30,7 +30,7 @@ IsaacLab 专家策略
 | 相机 | 胸前、左腕、右腕三路 RGB，480×680 |
 | 控制频率 / 数据频率 | 120 Hz / 20 Hz |
 | Action Chunk | 50 个策略帧 |
-| 默认在线重规划 | 40 个策略帧 |
+| 默认在线重规划 | 30 个策略帧 |
 | 抽屉初始开度 | 固定 `0.00 m` |
 | 主罐随机化 | 5×5 分层网格内连续随机 |
 | 当前数据集 | `s4_drawer_insert_close_v4_12phase_serial_acquire` |
@@ -62,6 +62,8 @@ Git 仓库不包含以下大文件：
 - 训练 checkpoint 和 Rollout 输出。
 
 这些资源必须单独分发，并由 `.env` 指向实际路径。
+
+如果使用仓库顶层的完整 Docker 发布方式，则例外：`docker/Dockerfile` 会把当前项目源码、两个环境、IsaacLab、LeRobot、场景资产、基础模型、数据集和训练输出一起放进镜像，并排除宿主机 `.env`。推荐通过 Compose 启动，让镜像内的数据集和 checkpoint 在首次运行时初始化到持久命名卷。完整构建和验证命令见顶层 `docker/README.md`。
 
 ## 3. 从克隆到首次 Rollout
 
@@ -206,11 +208,11 @@ bash run.sh rollout \
   --deterministic \
   --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
   --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
-  --chunk-replan-frames 40 \
+  --chunk-replan-frames 30 \
   --chunk-overlap-blend-frames 5 \
-  --phase-transition-blend-frames 8 \
+  --phase-transition-blend-frames 5 \
   --phase-max-extension-frames 20 \
-  --drawer-phase-max-extension-frames 80 \
+  --drawer-phase-max-extension-frames 20 \
   --policy-device cuda
 ```
 
@@ -221,11 +223,11 @@ bash run.sh rollout \
   --success-rate 20 \
   --checkpoint outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/<STEP>/pretrained_model \
   --dataset-root datasets/lerobot_data/s4_drawer_insert_close_v4_12phase_serial_acquire \
-  --chunk-replan-frames 40 \
+  --chunk-replan-frames 30 \
   --chunk-overlap-blend-frames 5 \
-  --phase-transition-blend-frames 8 \
+  --phase-transition-blend-frames 5 \
   --phase-max-extension-frames 20 \
-  --drawer-phase-max-extension-frames 80 \
+  --drawer-phase-max-extension-frames 20 \
   --policy-device cuda
 ```
 

@@ -44,6 +44,9 @@ ISAACLAB="$ISAACLAB_ROOT/isaaclab.sh"
 ISAAC_LOCAL_KIT_ARGS="--/persistent/isaac/asset_root/default=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/cloud=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/nvidia=$S4_SCENE_ASSET_ROOT --/persistent/isaac/asset_root/timeout=1"
 ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.asset.browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.asset.browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.asset.browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.asset.browser/data/timeout=1 --/exts/isaacsim.asset.browser/visible_after_startup=false"
 ISAAC_LOCAL_KIT_ARGS+=" --/exts/isaacsim.gui.content_browser/folders/0=file:$S4_SCENE_ASSET_ROOT/Isaac/Environments --/exts/isaacsim.gui.content_browser/folders/1=file:$S4_SCENE_ASSET_ROOT/Isaac/Props --/exts/isaacsim.gui.content_browser/folders/2=file:$S4_SCENE_ASSET_ROOT/Isaac/Robots --/exts/isaacsim.gui.content_browser/timeout=1"
+if [[ "${S4_KIT_OFFLINE:-0}" == "1" ]]; then
+    ISAAC_LOCAL_KIT_ARGS+=" --/app/extensions/registryEnabled=0"
+fi
 
 use_isaaclab_env() {
     local pyver
@@ -51,7 +54,10 @@ use_isaaclab_env() {
     local cmeel="$S4_ISAACLAB_PREFIX/lib/python$pyver/site-packages/cmeel.prefix"
     export PATH="$S4_ISAACLAB_PREFIX/bin:$PATH"
     export PYTHONPATH="$cmeel/lib/python$pyver/site-packages:${PYTHONPATH:-}"
-    export LD_LIBRARY_PATH="$cmeel/lib:${LD_LIBRARY_PATH:-}"
+    # Conda-forge's ICU and Python extension modules require the matching C++
+    # runtime shipped in this environment.  Keep it ahead of Ubuntu's older
+    # system libstdc++ (especially inside the Ubuntu 22.04 release image).
+    export LD_LIBRARY_PATH="$S4_ISAACLAB_PREFIX/lib:$cmeel/lib:${LD_LIBRARY_PATH:-}"
     export PYTHONUNBUFFERED=1
     export ISAAC_LOCAL_ASSET_ROOT="$S4_SCENE_ASSET_ROOT"
 }

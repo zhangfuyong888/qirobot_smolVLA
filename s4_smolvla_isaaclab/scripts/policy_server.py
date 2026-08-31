@@ -197,6 +197,7 @@ def main() -> None:
     print(f"[SERVER] python={sys.executable}", file=sys.stderr, flush=True)
     print(f"[SERVER] conda_prefix={os.environ.get('CONDA_PREFIX', '')}", file=sys.stderr, flush=True)
 
+    from lerobot.configs.policies import PreTrainedConfig
     from lerobot.policies import make_pre_post_processors, prepare_observation_for_inference
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
 
@@ -210,8 +211,23 @@ def main() -> None:
 
     ckpt = _resolve_checkpoint(args.checkpoint)
     print(f"[SERVER] loading {ckpt}", file=sys.stderr, flush=True)
+    policy_config = PreTrainedConfig.from_pretrained(ckpt, local_files_only=True)
+    configured_vlm = Path(policy_config.vlm_model_name).expanduser()
+    if not configured_vlm.is_dir():
+        model_root = Path(os.environ.get("SMOLVLA_MODEL_ROOT", PROJECT_ROOT / "models")).expanduser()
+        bundled_vlm = model_root / "HuggingFaceTB" / "SmolVLM2-500M-Video-Instruct"
+        if not bundled_vlm.is_dir():
+            raise FileNotFoundError(
+                f"Checkpoint VLM path is unavailable ({configured_vlm}) and bundled fallback is missing: {bundled_vlm}"
+            )
+        print(
+            f"[SERVER] remapping unavailable VLM path {configured_vlm} -> {bundled_vlm}",
+            file=sys.stderr,
+            flush=True,
+        )
+        policy_config.vlm_model_name = str(bundled_vlm.resolve())
     with contextlib.redirect_stdout(sys.stderr):
-        policy = SmolVLAPolicy.from_pretrained(str(ckpt), local_files_only=True)
+        policy = SmolVLAPolicy.from_pretrained(str(ckpt), config=policy_config, local_files_only=True)
     print("[SERVER] checkpoint loaded", file=sys.stderr, flush=True)
     print(f"[SERVER] moving policy to {device}", file=sys.stderr, flush=True)
     with contextlib.redirect_stdout(sys.stderr):
@@ -230,7 +246,10 @@ def main() -> None:
     preprocessor, postprocessor = make_pre_post_processors(
         policy.config,
         pretrained_path=str(ckpt),
-        preprocessor_overrides={"device_processor": {"device": str(device)}},
+        preprocessor_overrides={
+            "tokenizer_processor": {"tokenizer_name": policy.config.vlm_model_name},
+            "device_processor": {"device": str(device)},
+        },
         postprocessor_overrides={"device_processor": {"device": "cpu"}},
     )
 

@@ -363,14 +363,14 @@ headless Isaac 仅用于加载机器人做 FK/IK，**不加载 drawer 等任务�
 **终端 1 — 启动真机遥操（自动 source ROS 环境 + 编译检查）：**
 
 ```bash
-cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+# 在 s4_smolvla_isaaclab 项目根目录执行
 bash run.sh teleop-hardware
 ```
 
 **终端 2 — 调试 ROS 话题（需先 source 环境）：**
 
 ```bash
-cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+# 在 s4_smolvla_isaaclab 项目根目录执行
 source hardware_teleop/scripts/source_ros_env.sh
 
 ros2 topic list
@@ -685,7 +685,7 @@ hardware:
 ### 单元测试
 
 ```bash
-cd /home/zfy/smolVLA/s4_smolvla_isaaclab
+# 在 s4_smolvla_isaaclab 项目根目录执行
 python3 -m pytest tests/test_hardware_teleop_*.py -q
 ```
 
@@ -735,4 +735,3 @@ bash run.sh teleop-hardware
 # https://192.168.x.x:8443
 # Grip = 臂离合 | Trigger = 手
 ```
-

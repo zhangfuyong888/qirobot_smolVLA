@@ -1,0 +1,5 @@
+# flatdict 4.0.1 still imports pkg_resources while building from source.
+# New pip versions use a separate build constraint for isolated PEP 517 build
+# environments, so Dockerfile passes this through PIP_BUILD_CONSTRAINT.
+# setuptools 81+ no longer provides that module.
+setuptools<81

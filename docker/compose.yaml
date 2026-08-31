@@ -1,0 +1,33 @@
+services:
+  s4-smolvla:
+    image: s4-smolvla:full-v2
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    gpus: all
+    ipc: host
+    shm_size: 64g
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      ACCEPT_EULA: "Y"
+      OMNI_KIT_ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
+      S4_KIT_OFFLINE: "1"
+      S4_DATA_ROOT: /workspace/smolVLA/s4_smolvla_isaaclab/datasets
+      S4_OUTPUT_ROOT: /workspace/smolVLA/s4_smolvla_isaaclab/outputs
+      S4_ROLLOUT_CHECKPOINT: /workspace/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/350000/pretrained_model
+      S4_CACHE_ROOT: /workspace/runtime/cache
+    volumes:
+      - ./runtime:/workspace/runtime
+      # Docker initializes these named volumes from the datasets and outputs
+      # baked into the image, then preserves all later collection/training data.
+      - s4-datasets:/workspace/smolVLA/s4_smolvla_isaaclab/datasets
+      - s4-outputs:/workspace/smolVLA/s4_smolvla_isaaclab/outputs
+    working_dir: /workspace/smolVLA/s4_smolvla_isaaclab
+    command: bash
+
+volumes:
+  s4-datasets:
+  s4-outputs:

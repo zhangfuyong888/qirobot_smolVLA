@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -214,26 +215,32 @@ def sample_randomization(
 
 def evaluate_drawer_success(
     *,
-    drawer_open_m: float,
-    can_world_z_m: float,
+    can_world_position_m: tuple[float, float, float] | list[float],
     success_cfg: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply the active task final success criteria."""
-    drawer_limit = float(success_cfg.get("drawer_open_abs_max", 0.04))
-    can_limits = success_cfg.get("can_world_z", {}) or {}
-    can_min = float(can_limits.get("min_m", 1.00))
-    can_max = float(can_limits.get("max_m", 1.04))
-    drawer_ok = abs(float(drawer_open_m)) < drawer_limit
-    can_ok = can_min < float(can_world_z_m) < can_max
+    """Apply the final task-can-in-drawer world-space bounds criterion."""
+    bounds_cfg = success_cfg.get("can_world_bounds", {}) or {}
+    axes = ("x", "y", "z")
+    position = tuple(float(value) for value in can_world_position_m)
+    if len(position) != 3:
+        raise ValueError(f"can_world_position_m must contain XYZ, got {position!r}")
+    bounds: dict[str, tuple[float, float]] = {}
+    for axis in axes:
+        values = bounds_cfg.get(axis)
+        if not isinstance(values, (list, tuple)) or len(values) != 2:
+            raise ValueError(f"success.can_world_bounds.{axis} requires [min_m, max_m]")
+        lower, upper = (float(value) for value in values)
+        if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+            raise ValueError(f"success.can_world_bounds.{axis} requires finite min_m < max_m")
+        bounds[axis] = (lower, upper)
+    can_in_drawer = bool(
+        all(math.isfinite(value) and bounds[axis][0] <= value <= bounds[axis][1] for axis, value in zip(axes, position))
+    )
     return {
-        "drawer_ok": drawer_ok,
-        "can_ok": can_ok,
-        "success": bool(drawer_ok and can_ok),
-        "drawer_open_m": float(drawer_open_m),
-        "drawer_limit_m": drawer_limit,
-        "can_world_z_m": float(can_world_z_m),
-        "can_z_min_m": can_min,
-        "can_z_max_m": can_max,
+        "can_in_drawer": can_in_drawer,
+        "success": can_in_drawer,
+        "can_world_position_m": list(position),
+        "can_world_bounds_m": {axis: list(bounds[axis]) for axis in axes},
     }
 
 

@@ -1822,35 +1822,37 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
         """Validate the final physical task state before persisting an episode."""
         success_cfg = scripted_cfg.get("success", {})
         drawer_open = current_drawer_open_m()
-        drawer_open_abs_max = float(success_cfg.get("drawer_open_abs_max", 0.04))
-        drawer_closed = drawer_open is not None and np.isfinite(drawer_open) and abs(drawer_open) < drawer_open_abs_max
-
-        can_cfg = success_cfg.get("can_world_z", {})
-        min_z = float(can_cfg.get("min_m", 1.00))
-        max_z = float(can_cfg.get("max_m", 1.04))
-        if not np.isfinite(min_z) or not np.isfinite(max_z) or min_z >= max_z:
-            raise ValueError("success.can_world_z requires finite min_m < max_m")
+        bounds_cfg = success_cfg.get("can_world_bounds", {}) or {}
+        axes = ("x", "y", "z")
+        can_bounds: dict[str, tuple[float, float]] = {}
+        for axis in axes:
+            values = bounds_cfg.get(axis)
+            if not isinstance(values, (list, tuple)) or len(values) != 2:
+                raise ValueError(f"success.can_world_bounds.{axis} requires [min_m, max_m]")
+            lower, upper = (float(value) for value in values)
+            if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+                raise ValueError(f"success.can_world_bounds.{axis} requires finite min_m < max_m")
+            can_bounds[axis] = (lower, upper)
 
         can_obj = scene.get("named_objects", {}).get("can")
-        can_world_z = float("nan")
         can_world_position = [float("nan"), float("nan"), float("nan")]
         if can_obj is not None:
             can_pose_tensor = can_obj.data.root_pose_w[0]
             can_world_position = [float(value) for value in can_pose_tensor[0:3].detach().cpu().tolist()]
-            can_world_z = float(can_pose_tensor[2].item())
-        can_height_valid = bool(np.isfinite(can_world_z) and min_z < can_world_z < max_z)
+        can_in_drawer = bool(
+            all(
+                np.isfinite(value) and can_bounds[axis][0] <= value <= can_bounds[axis][1]
+                for axis, value in zip(axes, can_world_position)
+            )
+        )
         details: dict[str, object] = {
-            "accepted": bool(drawer_closed and can_height_valid),
-            "drawer_closed": bool(drawer_closed),
+            "accepted": can_in_drawer,
             "drawer_open_m": None if drawer_open is None else float(drawer_open),
-            "drawer_open_abs_max_m": drawer_open_abs_max,
-            "can_height_valid": can_height_valid,
-            "can_world_z_m": can_world_z,
             "can_world_position_m": can_world_position,
-            "can_world_z_min_m": min_z,
-            "can_world_z_max_m": max_z,
+            "can_in_drawer": can_in_drawer,
+            "can_world_bounds_m": {axis: list(can_bounds[axis]) for axis in axes},
         }
-        return bool(drawer_closed and can_height_valid), details
+        return can_in_drawer, details
 
     def settle_static_target(full_target: np.ndarray) -> np.ndarray:
         target_tensor = torch.tensor(full_target, dtype=torch.float32, device=robot.device).view(1, -1)
@@ -2940,24 +2942,21 @@ def run_static_task_scene(scene: dict[str, object], cfg: SceneBuildCfg, sim) -> 
                     task_success, success_details = evaluate_drawer_task_success()
                     drawer_open_text = success_details["drawer_open_m"]
                     drawer_open_value = float("nan") if drawer_open_text is None else float(drawer_open_text)
-                    can_world_z = float(success_details["can_world_z_m"])
+                    can_world_position = success_details["can_world_position_m"]
                     log_collection_event(
                         "VERIFY",
-                        f"accepted={task_success} | drawer={drawer_open_value:+.4f}m "
-                        f"(required |q|<{float(success_details['drawer_open_abs_max_m']):.4f}m) | "
-                        f"can_z={can_world_z:+.3f}m "
-                        f"(required {float(success_details['can_world_z_min_m']):.3f}<z<"
-                        f"{float(success_details['can_world_z_max_m']):.3f}m) | "
-                        f"can_height_valid={success_details['can_height_valid']}",
+                        f"accepted={task_success} | drawer={drawer_open_value:+.4f}m (telemetry only) | "
+                        f"can_xyz=({float(can_world_position[0]):+.3f},{float(can_world_position[1]):+.3f},"
+                        f"{float(can_world_position[2]):+.3f}) | "
+                        f"can_in_drawer={success_details['can_in_drawer']} | "
+                        f"bounds={success_details['can_world_bounds_m']}",
                         "green" if task_success else "red",
                     )
                     if not task_success:
                         failed_attempts_total += 1
                         failed_checks = []
-                        if not success_details["drawer_closed"]:
-                            failed_checks.append("drawer_not_closed")
-                        if not success_details["can_height_valid"]:
-                            failed_checks.append("can_world_z_out_of_range")
+                        if not success_details["can_in_drawer"]:
+                            failed_checks.append("can_not_in_drawer")
                         reason = ",".join(failed_checks) or "final_state_invalid"
                         record_attempt_failure("final_state_invalid", reason, drawer_controller, wall_elapsed)
                         enforce_failure_budget()

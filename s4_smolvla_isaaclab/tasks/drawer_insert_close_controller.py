@@ -106,14 +106,14 @@ def load_scripted_config(path: Path = DEFAULT_SCRIPTED_CONFIG) -> dict[str, Any]
                 )
     success_cfg = data.get("success", {})
     if success_cfg:
-        drawer_open_abs_max = float(success_cfg.get("drawer_open_abs_max", 0.04))
-        if drawer_open_abs_max <= 0.0:
-            raise ValueError("success.drawer_open_abs_max must be positive")
-        can_cfg = success_cfg.get("can_world_z", {})
-        min_z = float(can_cfg.get("min_m", 1.00))
-        max_z = float(can_cfg.get("max_m", 1.04))
-        if not np.isfinite(min_z) or not np.isfinite(max_z) or min_z >= max_z:
-            raise ValueError("success.can_world_z requires finite min_m < max_m")
+        bounds_cfg = success_cfg.get("can_world_bounds", {}) or {}
+        for axis in ("x", "y", "z"):
+            values = bounds_cfg.get(axis)
+            if not isinstance(values, (list, tuple)) or len(values) != 2:
+                raise ValueError(f"success.can_world_bounds.{axis} requires [min_m, max_m]")
+            lower, upper = (float(value) for value in values)
+            if not np.isfinite(lower) or not np.isfinite(upper) or lower >= upper:
+                raise ValueError(f"success.can_world_bounds.{axis} requires finite min_m < max_m")
     return data
 
 

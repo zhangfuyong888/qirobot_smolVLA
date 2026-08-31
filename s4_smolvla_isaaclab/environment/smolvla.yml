@@ -16,6 +16,7 @@ dependencies:
       - transformers==5.5.4
       - safetensors==0.8.0
       - datasets==5.0.0
+      - num2words==0.5.14
       - pyyaml==6.0.2
 # Install the external LeRobot checkout in editable mode after creating this
 # environment. See docs/REPRODUCTION.md.

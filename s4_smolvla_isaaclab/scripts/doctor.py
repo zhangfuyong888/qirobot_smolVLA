@@ -99,7 +99,13 @@ def main() -> None:
             ),
         )
     )
-    checks.append(_check("LeRobot checkout", (REFERENCE_LEROBOT_DIR / ".git").is_dir(), str(REFERENCE_LEROBOT_DIR)))
+    checks.append(
+        _check(
+            "LeRobot source",
+            (REFERENCE_LEROBOT_DIR / "src" / "lerobot").is_dir(),
+            str(REFERENCE_LEROBOT_DIR),
+        )
+    )
     checks.append(_check("base model", Path(train["vlm_model_name"]).is_dir(), str(train["vlm_model_name"])))
     checks.append(_check("26D contract", cfg.features.state_dim == cfg.features.action_dim == 26, f"state={cfg.features.state_dim} action={cfg.features.action_dim}"))
     checks.append(_check("schema", cfg.dataset.schema_version == "s4_bimanual_v1", cfg.dataset.schema_version))
@@ -122,6 +128,22 @@ def main() -> None:
         checks.append(_check("LeRobotDataset", (dataset / "meta/info.json").is_file(), str(dataset)))
     if args.strict or checkpoint.exists():
         checks.append(_check("checkpoint", (checkpoint / "config.json").is_file(), str(checkpoint)))
+    if args.strict:
+        dataset_contract = dataset / "meta" / "s4_contract.json"
+        training_contract = Path(train["output_dir"]) / "s4_dataset_contract.json"
+        contracts_match = (
+            dataset_contract.is_file()
+            and training_contract.is_file()
+            and json.loads(dataset_contract.read_text(encoding="utf-8"))
+            == json.loads(training_contract.read_text(encoding="utf-8"))
+        )
+        checks.append(
+            _check(
+                "dataset/checkpoint contract",
+                contracts_match,
+                f"{dataset_contract} == {training_contract}",
+            )
+        )
     if checkpoint.joinpath("config.json").is_file():
         ckpt = json.loads(checkpoint.joinpath("config.json").read_text(encoding="utf-8"))
         checks.append(_check("checkpoint action", ckpt["output_features"]["action"]["shape"] == [26], str(ckpt["output_features"]["action"]["shape"])))

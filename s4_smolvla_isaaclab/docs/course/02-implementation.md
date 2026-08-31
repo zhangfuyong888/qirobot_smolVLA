@@ -927,11 +927,11 @@ sequenceDiagram
 | 参数 | 当前默认值 | 作用 |
 |---|---:|---|
 | `chunk_size` | 50 | 模型预测动作长度 |
-| `chunk_replan_frames` | 40 | 每 40 个策略帧预测新 chunk |
+| `chunk_replan_frames` | 30 | 每 30 个策略帧预测新 chunk |
 | `chunk_overlap_blend_frames` | 5 | 新旧随机 chunk 交叉淡入 |
-| `phase_transition_blend_frames` | 8 | 阶段任务文本切换时融合 |
+| `phase_transition_blend_frames` | 5 | 阶段任务文本切换时融合 |
 | `phase_max_extension_frames` | 20 | 普通宏阶段门控不满足时最多延长 |
-| `drawer_phase_max_extension_frames` | 80 | 接近把手和拉抽屉宏阶段最多延长 |
+| `drawer_phase_max_extension_frames` | 20 | 接近把手和拉抽屉宏阶段最多延长 |
 | `action_clip` | dataset min/max | 限制超出训练动作范围 |
 | `max_joint_step` | 0.050 rad/120 Hz 基础步 | 机械臂 endpoint 变化基准 |
 | `hand_max_joint_step` | 0.015 rad/120 Hz 基础步 | 灵巧手 endpoint 变化基准 |
@@ -994,7 +994,7 @@ Actual 已按“当前 command 对下一 policy boundary 的实际状态”对�
 
 ### 2.5.6 阶段状态门控
 
-Rollout 的 12 阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。每个语言阶段通过稳定 ID 选择末端专家门控，并携带活动 action group、超时策略和扩展类型。系统检查活动臂跟踪、手指状态、Home、抽屉开度，以及配置存在时的罐子边界、速度和位移。门控未满足时先延长当前阶段；标记为 `drawer` 的阶段最多延长 80 帧，其余阶段默认延长 20 帧。当前只有 `left_pull_drawer` 在扩展耗尽且抽屉仍未达到 0.08 m 开度时直接终止本轮，其他阶段超时后软放行，并交由后续过程和最终物理成功条件判断。
+Rollout 的 12 阶段 schedule 来源于数据时长，但开启 `phase-state-gating` 后，阶段边界不是完全按时间盲切。每个语言阶段通过稳定 ID 选择末端专家门控，并携带活动 action group、超时策略和扩展类型。系统检查活动臂跟踪、手指状态、Home、抽屉开度，以及配置存在时的罐子边界、速度和位移。门控未满足时先延长当前阶段；标记为 `drawer` 的阶段最多延长 20 帧，其余阶段默认延长 20 帧。当前只有 `left_pull_drawer` 在扩展耗尽且抽屉仍未达到 0.08 m 开度时直接终止本轮，其他阶段超时后软放行，并交由后续过程和最终物理成功条件判断。
 
 这是一种介于纯时间播放和完整任务状态机之间的机制：
 
