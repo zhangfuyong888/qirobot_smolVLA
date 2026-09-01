@@ -280,7 +280,9 @@ bash run.sh train \
   --save-freq 50000
 ```
 
-训练入口会先运行完整 LeRobotDataset 检查。Fresh training 要求输出目录不存在；`--overwrite-output` 会删除可识别的现有训练输出，只能在明确重训时使用。
+训练入口会先运行完整 LeRobotDataset 检查。Fresh training 要求配置文件中的 `output_dir` 不存在；训练 CLI 当前没有 `--output-dir` 覆盖参数，需要新 run 时应复制任务 `.smolvla.yaml`、修改其中的 `output_dir`，再传 `--config PATH`。`--overwrite-output` 会删除可识别的现有训练输出，只能在明确重训时使用。
+
+在任何删除之前，入口还会执行只读 training runtime preflight，精确检查 Torch/CUDA、`accelerate==1.14.0`、LeRobot training extra、同一 Python 环境中的 `accelerate`/`lerobot-train` CLI、GPU 数量和输出父目录权限。不要在多 Conda 环境中用裸 `pip install` 临时补包。
 
 从完整 `checkpoints/last` 继续：
 
@@ -314,9 +316,11 @@ bash run.sh train \
   --save-freq 50000
 ```
 
-`--gpu-ids` 是当前进程可见 GPU 的编号；若 Docker 已通过 `CUDA_VISIBLE_DEVICES` 选择了四张物理卡，
-容器内通常仍填写 `0,1,2,3`。多卡 resume 最好保持 GPU 数和每卡 batch 不变；底层 LeRobot 会记录
+`--gpu-ids` 是当前进程可见 GPU 的编号；Docker 应在创建容器时通过 `--gpus device=...` 选择物理卡，
+例如宿主 `4,5,6,7` 在容器内重新编号为 `0,1,2,3`。不要只设置 `NVIDIA_VISIBLE_DEVICES` 来模拟设备隔离。多卡 resume 最好保持 GPU 数和每卡 batch 不变；底层 LeRobot 会记录
 world size，但更改后只能保证继续训练，不保证逐 rank 的样本顺序完全一致。
+
+`accelerate launch` 的训练入口必须是当前 SmolVLA 环境中 `lerobot-train` 的绝对路径；`run.sh` 已通过 `command -v` 和 `readlink` 解析并门禁。共享服务器训练前还应检查所选物理卡的剩余显存；其他 PID 占满显存导致的 optimizer state OOM 不是 batch 或模型代码错误。
 
 当前活动 `run.sh` 没有“每 50000 步自动暂停并运行 10 次 Rollout”的 `train-eval` 命令；不要把旧计划文档中的接口当成已实现功能。
 

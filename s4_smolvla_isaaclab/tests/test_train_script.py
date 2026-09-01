@@ -13,10 +13,16 @@ DATASET_NAME = "s4_drawer_insert_close_v4_12phase_serial_acquire"
 
 
 def _run_fake_training(
-    tmp_path: Path, mode: str, extra_args: tuple[str, ...] = ()
+    tmp_path: Path,
+    mode: str,
+    extra_args: tuple[str, ...] = (),
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, dict]:
     data_root = tmp_path / "data"
     output_root = tmp_path / "outputs"
+    (tmp_path / "models" / "HuggingFaceTB" / "SmolVLM2-500M-Video-Instruct").mkdir(
+        parents=True
+    )
     dataset_root = data_root / "lerobot_data" / DATASET_NAME
     contract = {
         "schema_version": "s4_bimanual_v1",
@@ -71,18 +77,21 @@ fi
 set -euo pipefail
 printf '%s\\n' "$@" > "${FAKE_ACCELERATE_ARGS:?}"
 found_train=false
+train_command=""
 train_args=()
 for arg in "$@"; do
     if [[ "$found_train" == false ]]; then
-        if [[ "$arg" == "lerobot-train" ]]; then
+        if [[ "$(basename "$arg")" == "lerobot-train" ]]; then
             found_train=true
+            train_command="$arg"
         fi
     else
         train_args+=("$arg")
     fi
 done
 [[ "$found_train" == true ]]
-exec lerobot-train "${train_args[@]}"
+[[ "$train_command" == /* ]]
+exec "$train_command" "${train_args[@]}"
 """,
         encoding="utf-8",
     )
@@ -99,8 +108,11 @@ exec lerobot-train "${train_args[@]}"
             "FAKE_TRAIN_MODE": mode,
             "FAKE_ACCELERATE_ARGS": str(tmp_path / "accelerate_args.txt"),
             "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
+            "S4_TEST_SKIP_TRAIN_RUNTIME_PREFLIGHT": "1",
         }
     )
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [
             "bash",
@@ -156,6 +168,7 @@ printf '%s\n' "$@" | grep -q -- '--resume=true'
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
             "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
+            "S4_TEST_SKIP_TRAIN_RUNTIME_PREFLIGHT": "1",
         }
     )
     resumed = subprocess.run(
@@ -216,10 +229,36 @@ def test_ddp_launch_is_supervised_and_keeps_batch_per_process(tmp_path: Path):
         "--gpu_ids",
     ]
     assert launch_args[7] == "0,1"
-    assert "lerobot-train" in launch_args
+    assert str((tmp_path / "bin" / "lerobot-train").resolve()) in launch_args
     assert "--batch_size=16" in launch_args
     assert "--num_workers=3" in launch_args
     assert json.loads((output_dir / "s4_dataset_contract.json").read_text()) == contract
+
+
+def test_runtime_preflight_failure_happens_before_overwrite_deletion(tmp_path: Path):
+    output_dir = (
+        tmp_path
+        / "outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire"
+    )
+    output_dir.mkdir(parents=True)
+    (output_dir / "s4_dataset_contract.json").write_text("{}\n", encoding="utf-8")
+    sentinel = output_dir / "checkpoint.must_survive"
+    sentinel.write_text("keep\n", encoding="utf-8")
+    failing_preflight = tmp_path / "fail_preflight.py"
+    failing_preflight.write_text("raise SystemExit(23)\n", encoding="utf-8")
+
+    result, _output_dir, _contract = _run_fake_training(
+        tmp_path,
+        "success",
+        ("--overwrite-output",),
+        {
+            "S4_TEST_SKIP_TRAIN_RUNTIME_PREFLIGHT": "0",
+            "S4_TRAIN_RUNTIME_PREFLIGHT_SCRIPT": str(failing_preflight),
+        },
+    )
+
+    assert result.returncode == 23
+    assert sentinel.read_text(encoding="utf-8") == "keep\n"
 
 
 @pytest.mark.parametrize("kind", ("empty_directory", "symlink"))
@@ -231,6 +270,9 @@ def test_fresh_training_rejects_any_existing_output_path(tmp_path: Path, kind: s
         json.dumps({"language_contract_version": "drawer_12phase_v4_serial_acquire"}), encoding="utf-8"
     )
     output_root = tmp_path / "outputs"
+    (tmp_path / "models" / "HuggingFaceTB" / "SmolVLM2-500M-Video-Instruct").mkdir(
+        parents=True
+    )
     output_dir = output_root / "train" / "smolvla_drawer_insert_close_v4_12phase_serial_acquire"
     output_dir.parent.mkdir(parents=True)
     if kind == "empty_directory":
@@ -240,14 +282,22 @@ def test_fresh_training_rejects_any_existing_output_path(tmp_path: Path, kind: s
         target.mkdir()
         output_dir.symlink_to(target, target_is_directory=True)
 
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_train = fake_bin / "lerobot-train"
+    fake_train.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    fake_train.chmod(0o755)
+
     env = os.environ.copy()
     env.update(
         {
+            "PATH": f"{fake_bin}:{env['PATH']}",
             "S4_DATA_ROOT": str(data_root),
             "S4_OUTPUT_ROOT": str(output_root),
             "S4_CACHE_ROOT": str(tmp_path / "cache"),
             "SMOLVLA_MODEL_ROOT": str(tmp_path / "models"),
             "S4_TEST_SKIP_TRAIN_DATASET_CHECK": "1",
+            "S4_TEST_SKIP_TRAIN_RUNTIME_PREFLIGHT": "1",
         }
     )
     result = subprocess.run(

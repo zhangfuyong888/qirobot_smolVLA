@@ -144,16 +144,12 @@ if ! [[ "$MASTER_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || (( MASTER_PORT > 65535 )); the
     exit 2
 fi
 if (( NUM_GPUS == 1 )) && [[ -n "$GPU_IDS" ]]; then
-    echo "--gpu-ids is only valid together with --num-gpus greater than 1. Use CUDA_VISIBLE_DEVICES for a single selected GPU." >&2
+    echo "--gpu-ids is only valid with --num-gpus greater than 1. In Docker, select the physical GPU with docker/run.sh --gpus N; it becomes cuda:0." >&2
     exit 2
 fi
 if (( NUM_GPUS > 1 )); then
     if [[ "$DEVICE" != cuda* ]]; then
         echo "--num-gpus requires a CUDA policy device, got: $DEVICE" >&2
-        exit 2
-    fi
-    if ! command -v accelerate >/dev/null 2>&1; then
-        echo "--num-gpus requires Hugging Face Accelerate in the smolvla environment." >&2
         exit 2
     fi
     if [[ -n "$GPU_IDS" ]]; then
@@ -180,12 +176,34 @@ RESUME=$(cfg resume)
 if [ -n "$RESUME_OVERRIDE" ]; then
     RESUME="$RESUME_OVERRIDE"
 fi
+if [ "$OVERWRITE_OUTPUT" = true ] && [ "$RESUME" = true ]; then
+    echo "--overwrite-output cannot be used together with --resume" >&2
+    exit 2
+fi
 VLM_PATH=$(cfg vlm_model_name)
 OPT_LR=$(cfg optimizer_lr)
 OPT_WD=$(cfg optimizer_weight_decay)
 OPT_CLIP=$(cfg optimizer_grad_clip_norm)
 
-TRAIN_LAUNCHER=(lerobot-train)
+# LeRobot requires Accelerate even for a single-GPU run. This read-only check
+# must complete before dataset scanning or any --overwrite-output deletion.
+if [ "${S4_TEST_SKIP_TRAIN_RUNTIME_PREFLIGHT:-0}" != "1" ]; then
+    PREFLIGHT_SCRIPT="${S4_TRAIN_RUNTIME_PREFLIGHT_SCRIPT:-scripts/training_runtime_preflight.py}"
+    python3 "$PREFLIGHT_SCRIPT" \
+        --device "$DEVICE" \
+        --num-gpus "$NUM_GPUS" \
+        --gpu-ids "$GPU_IDS" \
+        --output-dir "$OUTPUT_DIR"
+fi
+
+LEROBOT_TRAIN_CLI="$(command -v lerobot-train || true)"
+if [[ -z "$LEROBOT_TRAIN_CLI" || ! -x "$LEROBOT_TRAIN_CLI" ]]; then
+    echo "Required training CLI is not executable: lerobot-train" >&2
+    exit 2
+fi
+LEROBOT_TRAIN_CLI="$(readlink -f "$LEROBOT_TRAIN_CLI")"
+
+TRAIN_LAUNCHER=("$LEROBOT_TRAIN_CLI")
 if (( NUM_GPUS > 1 )); then
     TRAIN_LAUNCHER=(
         accelerate launch
@@ -196,7 +214,9 @@ if (( NUM_GPUS > 1 )); then
     if [[ -n "$GPU_IDS" ]]; then
         TRAIN_LAUNCHER+=(--gpu_ids "$GPU_IDS")
     fi
-    TRAIN_LAUNCHER+=(lerobot-train)
+    # Accelerate treats its positional entry point as a Python file path and
+    # does not resolve a bare console-script name through PATH.
+    TRAIN_LAUNCHER+=("$LEROBOT_TRAIN_CLI")
 fi
 EFFECTIVE_BATCH_SIZE=$((BATCH_SIZE * NUM_GPUS))
 
@@ -223,6 +243,11 @@ if [ ! -d "$DATASET_ROOT/$DATASET" ]; then
     exit 2
 fi
 
+if [ ! -d "$VLM_PATH" ]; then
+    echo "Configured VLM model directory does not exist: $VLM_PATH" >&2
+    exit 2
+fi
+
 DATASET_CONTRACT="$DATASET_ROOT/$DATASET/meta/s4_contract.json"
 if [ ! -f "$DATASET_CONTRACT" ]; then
     echo "Dataset language contract is missing: $DATASET_CONTRACT" >&2
@@ -241,10 +266,6 @@ if [ "${S4_TEST_SKIP_TRAIN_DATASET_CHECK:-0}" != "1" ]; then
 fi
 
 if [ "$OVERWRITE_OUTPUT" = true ]; then
-    if [ "$RESUME" = true ]; then
-        echo "--overwrite-output cannot be used together with --resume" >&2
-        exit 2
-    fi
     if [ -e "$OUTPUT_DIR" ] || [ -L "$OUTPUT_DIR" ]; then
         echo "[INFO] Removing existing training output: $OUTPUT_DIR"
         python3 scripts/safe_remove_train_output.py \

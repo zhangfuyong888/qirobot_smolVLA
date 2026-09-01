@@ -4,8 +4,11 @@ set -euo pipefail
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
 compose_file="$workspace_root/docker/compose.yaml"
 
-image_tag="${S4_IMAGE:-s4-smolvla:full-v3}"
+image_tag="${S4_IMAGE:-s4-smolvla:full-v4}"
 gpu_spec="${S4_GPUS:-all}"
+if [[ -n "${S4_GPUS:-}" ]]; then
+    echo "[docker/run.sh][WARN] S4_GPUS is deprecated as user input; prefer --gpus." >&2
+fi
 use_compose=false
 interactive=false
 
@@ -18,13 +21,13 @@ Run the S4 SmolVLA release container with optional host GPU selection.
 Options:
   -g, --gpus DEVICES   Host GPU indices to expose (default: all).
                        Examples: 0 | 0,1,2,3 | all
-  -i, --image TAG      Docker image tag (default: s4-smolvla:full-v3)
+  -i, --image TAG      Docker image tag (default: s4-smolvla:full-v4)
   -c, --compose        Use "docker compose run" (named volumes + runtime/)
   -t, --tty            Allocate a TTY (default for bash, off for verify)
   -h, --help           Show this help
 
 Environment:
-  S4_GPUS              Same as --gpus (CLI wins if both are set)
+  S4_GPUS              Deprecated compatibility input; prefer --gpus
   S4_IMAGE             Same as --image
 
 Inside the container, visible GPUs are always renumbered from cuda:0.
@@ -32,11 +35,12 @@ Single-GPU runs use Docker `--gpus device=N` (not only NVIDIA_VISIBLE_DEVICES).
 
 Examples:
   bash docker/run.sh --gpus 0 verify
+  bash docker/run.sh --gpus 0 verify-train
+  bash docker/run.sh --gpus 0 verify-rollout
   bash docker/run.sh --gpus 0 s4-verify-runtime
   bash docker/run.sh --gpus 0,1,2,3 --compose bash
-  S4_GPUS=3 bash docker/run.sh bash
   bash docker/run.sh --gpus 4,5,6,7 --compose bash -lc \
-    'bash run.sh train --num-gpus 4 --gpu-ids 0,1,2,3 --batch-size 4'
+    'bash run.sh train --resume --steps 500000 --num-gpus 4 --gpu-ids 0,1,2,3 --batch-size 4'
 EOF
 }
 
@@ -87,13 +91,6 @@ while [[ $# -gt 0 ]]; do
             shift
             break
             ;;
-        verify|s4-verify-runtime)
-            if [[ $# -eq 1 ]]; then
-                set -- s4-verify-runtime
-                break
-            fi
-            shift
-            ;;
         *)
             break
             ;;
@@ -108,13 +105,23 @@ if [[ "$1" == "verify" ]]; then
     shift
     set -- s4-verify-runtime "$@"
 fi
+if [[ "$1" == "verify-train" ]]; then
+    shift
+    set -- s4-verify-runtime --profile train "$@"
+elif [[ "$1" == "verify-rollout" ]]; then
+    shift
+    set -- s4-verify-runtime --profile rollout "$@"
+fi
 
 gpu_spec="$(normalize_gpus "$gpu_spec")"
 
 if [[ "$gpu_spec" == "all" ]]; then
     docker_gpus="all"
+    selected_gpu_count=""
 else
     docker_gpus="device=$gpu_spec"
+    IFS=',' read -r -a selected_gpu_ids <<< "$gpu_spec"
+    selected_gpu_count="${#selected_gpu_ids[@]}"
 fi
 
 if [[ "$1" == "bash" && "$interactive" == false ]]; then
@@ -131,11 +138,16 @@ runtime_env=(
     "PRIVACY_CONSENT=Y"
     "S4_KIT_OFFLINE=1"
 )
+if [[ -n "$selected_gpu_count" ]]; then
+    runtime_env+=("S4_DOCKER_SELECTED_GPU_COUNT=$selected_gpu_count")
+fi
 
 echo "[docker/run.sh] image=$image_tag gpus=$gpu_spec docker_gpus=$docker_gpus mode=$([[ "$use_compose" == true ]] && echo compose || echo run) command=$*"
 
 if [[ "$use_compose" == true ]]; then
-    export S4_GPUS="$gpu_spec"
+    export S4_GPUS_INTERNAL="$gpu_spec"
+    export S4_IMAGE_INTERNAL="$image_tag"
+    export S4_SELECTED_GPU_COUNT_INTERNAL="$selected_gpu_count"
     compose_cmd=(docker compose -f "$compose_file" run --rm)
     if [[ "$gpu_spec" != "all" ]]; then
         compose_cmd+=(--gpus "$docker_gpus")

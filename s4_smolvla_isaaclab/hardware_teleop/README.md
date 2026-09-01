@@ -330,6 +330,8 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 
 默认启动不会自动移动双臂。完成 shadow 和单臂验证后，才可按需启用任务 `home_pose` 插值。
 
+“启动 homing”不是电机找机械零点，而是收到可信 lowstate 和站立策略数据后，以受限关节步长把双臂从当前实测姿态插值到任务 `home_pose`。启用方式是复制一份 `quest_hardware.yaml`，将 `startup.move_to_home` 改为 `true`，再用 `--hardware-config` 指向该文件；`--skip-homing` 始终可在本次运行强制跳过。不要在未完成 shadow、方向核对和单臂小步长验证前启用。
+
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `move_to_home` | `false` | 是否执行启动 homing；首次真机保持关闭 |
@@ -358,6 +360,8 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `source` | `current` | 用 `current`（实测关节）或 `target`（指令关节）算重力 |
 
 重力补偿初始化失败时会打印警告并禁用前馈力矩；但 Pink 主流程本身仍要求 ROS Pinocchio 可用，doctor 不通过时禁止启动真机遥操。
+
+重力补偿没有命令行开关。测试时应复制硬件 YAML，将 `gravity_compensation.enabled` 改为 `true`，启动时使用 `--enabled-arms left|right`、较小的 `--max-arm-step-rad` 和默认 ramp，只验证一条手臂的力矩方向、静态下垂和急停。`--shadow` 不创建命令 publisher，因此不能验证实际补偿力矩。
 
 
 #### `hands` 段
@@ -613,7 +617,7 @@ bash run.sh teleop-hardware --max-runtime-s 30
 
 - 直接读取真机 LA7+RA7 反馈做 Pinocchio FK
 - 复用仿真 Pink 权重、TCP offset、关节限制和肘部 PositionBarrier
-- QP 初次真机联调使用 `quadprog`，轻量环境同时固定兼容的 DAQP 版本
+- QP 默认使用 `quadprog`；此前 `qpsolvers 4.12.0 + daqp 0.7.2` 的 API 不兼容已通过固定 `daqp 0.8.7` 解决，DAQP 保留为可验证备选，不会自动改变当前 solver
 
 ```bash
 bash run.sh teleop-hardware
@@ -638,14 +642,15 @@ bash run.sh teleop-hardware-isaac
 
 ## 命令行参数
 
-通过 `bash run.sh teleop-hardware -- [参数]` 传递：
+通过 `bash run.sh teleop-hardware [参数]` 直接传递：
 
 
 | 参数                               | 说明                                                        |
 | -------------------------------- | --------------------------------------------------------- |
 | `--hardware-config PATH`         | 硬件配置 yaml，默认 `hardware_teleop/config/quest_hardware.yaml` |
 | `--ik-backend pink`             | 覆盖 yaml 中的纯运行时 IK 后端                                    |
-| `--host / --port`                | Quest 服务绑定地址（默认读 meta_quest3.yaml）                        |
+| `--host HOST` / `--port PORT`    | Quest 服务绑定地址（默认读 meta_quest3.yaml）                        |
+| `--cert PATH` / `--key PATH`     | 覆盖 HTTPS 证书和私钥路径                                             |
 | `--insecure-http`                | 仅桌面调试，Quest WebXR 不可用                                     |
 | `--report-period-s 0.5`          | 状态日志周期                                                    |
 | `--max-runtime-s N`              | N 秒后自动退出，0 为一直运行                                          |
@@ -655,6 +660,8 @@ bash run.sh teleop-hardware-isaac
 | `--disable-hands`                | 禁止发布手部命令                                                    |
 | `--skip-homing`                  | 跳过启动回零                                                        |
 | `--max-arm-step-rad N`           | 设置不大于 YAML 上限的更严格单周期关节步长                           |
+| `--record-state-jsonl PATH`      | 记录 q14、FK、目标和命令，供离线 Pink replay                         |
+| `--overwrite-state-log`          | 明确允许覆盖已存在的 state JSONL；默认拒绝                            |
 | `--allow-existing-lowcmd-publishers` | 仅在人工确认 graph 中多个 publisher 身份后放宽“最多一个”检查；策略数据门禁仍生效 |
 | `--allow-no-policy-lowcmd` | **危险**：绕过策略腿缓存门禁，仅限固定工装 |
 | `--allow-unverified-sdk-mode5-merge` | **危险**：绕过 SDK 融合版本校验，不用于正常站立真机 |
@@ -671,8 +678,8 @@ bash run.sh teleop-hardware-isaac
 - [ ] **1. 机器人上电**，SDK 与站立策略正常运行
 - [ ] **2. 配置网卡** — 编辑 `config/ros_env.sh` 中 `HW_TELEOP_NETWORK_INTERFACE`
 - [ ] **3. source 环境** — `source hardware_teleop/scripts/source_ros_env.sh`
-- [ ] **4. doctor 在线检查** — `--require-live-state` 有稳定 `/lowstate`，识别策略 publisher，并验证正在运行的 SDK 二进制
-- [ ] **5. 编译 qi 消息** — `bash run.sh teleop-hardware-build`（若未做过）
+- [ ] **4. 编译 qi 消息** — `bash run.sh teleop-hardware-build`（若未做过）
+- [ ] **5. doctor 在线检查** — `--require-live-state` 有稳定 `/lowstate`，识别策略 publisher，并验证正在运行的 SDK 二进制
 - [ ] **6. 证书** — `bash run.sh teleop-cert --ip <Quest可访问的IP>`
 - [ ] **7. shadow 短跑** — `bash run.sh teleop-hardware --shadow --max-runtime-s 30`
 - [ ] **8. 验证 lowcmd** — 启动遥操前已存在稳定站立策略流；启动后是策略流叠加 30 Hz mode-5，不能按总频率等于 30 Hz 判断

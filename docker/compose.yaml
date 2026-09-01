@@ -1,6 +1,6 @@
 services:
   s4-smolvla:
-    image: s4-smolvla:full-v3
+    image: ${S4_IMAGE_INTERNAL:-s4-smolvla:full-v4}
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -15,9 +15,10 @@ services:
       OMNI_KIT_ACCEPT_EULA: "Y"
       PRIVACY_CONSENT: "Y"
       S4_KIT_OFFLINE: "1"
-      # Host GPU selection: all | 0 | 0,1,2,3 (physical indices from nvidia-smi).
-      # Prefer: bash docker/run.sh --gpus N ... (uses docker --gpus device=N).
-      S4_GPUS: ${S4_GPUS:-all}
+      # Informational only. docker/run.sh sets this after creating the actual
+      # Docker GPU device request; it must not be used for GPU isolation.
+      S4_GPUS: ${S4_GPUS_INTERNAL:-all}
+      S4_DOCKER_SELECTED_GPU_COUNT: ${S4_SELECTED_GPU_COUNT_INTERNAL:-}
       XDG_RUNTIME_DIR: /workspace/runtime/xdg-runtime
       NVIDIA_DRIVER_CAPABILITIES: graphics,compute,utility
       VK_ICD_FILENAMES: /etc/vulkan/icd.d/nvidia_icd_headless.json

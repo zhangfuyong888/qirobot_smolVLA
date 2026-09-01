@@ -12,7 +12,7 @@
 2. **实现线**：任务、专家、数据、模型和在线控制怎样通过稳定契约连接；
 3. **部署线**：如何准备两个 Python 环境、外部仓库、资产、模型和运行目录，并验证整条链路。
 
-当前项目只研究仿真 VLA，不展开仿真与真机联合数据训练。
+本课程主线只讲仿真 VLA，不展开仿真与真机联合数据训练。仓库另有独立的无 Isaac 真机 Quest/Pink 遥操链路，操作与安全说明见 `hardware_teleop/README.md`；不要把它与本课程的 Isaac Rollout 控制进程混为一体。
 
 ## 适用读者与前置知识
 
@@ -88,6 +88,7 @@ flowchart LR
 | 模型环境 | Python 3.12，环境名 `smolvla` | `environment/smolvla.yml`、`run.sh` |
 | VLM 基座 | `SmolVLM2-500M-Video-Instruct` 本地目录 | 当前任务训练配置 |
 | 活跃案例 | `drawer_insert_close` | `configs/tasks/` |
+| Docker release | `full-v4-r1` 已完成 8×RTX 4090 服务器全链路验证 | 顶层 `docker/README.md`、`environment/versions.md` |
 
 > 版本说明：`environment/versions.md` 是已验证工作站快照，不表示任意补丁版本都可互换。部署时应记录实际 commit、Python、CUDA、驱动和包版本。
 

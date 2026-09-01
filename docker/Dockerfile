@@ -166,16 +166,18 @@ ENV S4_ROLLOUT_CHECKPOINT=/workspace/smolVLA/s4_smolvla_isaaclab/outputs/train/s
 # Kit. Runtime users remain responsible for accepting the NVIDIA license.
 ENV OMNI_KIT_ACCEPT_EULA=Y
 ENV S4_KIT_OFFLINE=1
+ENV S4_ISAAC_ENV_HELPER=/usr/local/lib/s4/isaac_env.sh
 
+COPY docker/isaac_env.sh /usr/local/lib/s4/isaac_env.sh
 COPY docker/entrypoint.sh /usr/local/bin/s4-entrypoint
 COPY docker/verify_runtime.sh /usr/local/bin/s4-verify-runtime
 COPY docker/release-manifest.env /workspace/release-manifest/source-versions.env
-RUN chmod 0755 /usr/local/bin/s4-entrypoint /usr/local/bin/s4-verify-runtime \
+RUN chmod 0755 /usr/local/lib/s4/isaac_env.sh /usr/local/bin/s4-entrypoint /usr/local/bin/s4-verify-runtime \
     && mkdir -p /workspace/runtime/cache /workspace/release-manifest \
     && cp /workspace/release-manifest/source-versions.env /workspace/release-manifest/versions.env \
     && printf '%s\n' "isaacsim=5.1.0.0" >> /workspace/release-manifest/versions.env \
     && conda run -n env_isaaclab python -c "import importlib.metadata as m; assert m.version('isaacsim') == '5.1.0.0'; import isaaclab" \
-    && conda run -n smolvla python -c "import torch, lerobot; assert torch.version.cuda == '12.8', torch.version.cuda" \
+    && conda run -n smolvla python -c "import importlib.metadata as m; import torch, lerobot; assert torch.version.cuda == '12.8', torch.version.cuda; assert m.version('accelerate') == '1.14.0'" \
     && cd /workspace/smolVLA/s4_smolvla_isaaclab \
     && bash run.sh doctor --strict
 

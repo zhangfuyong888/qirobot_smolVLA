@@ -54,6 +54,16 @@ if [[ "${S4_KIT_OFFLINE:-0}" == "1" ]]; then
 fi
 
 use_isaaclab_env() {
+    if [[ -n "${S4_ISAAC_ENV_HELPER:-}" ]]; then
+        if [[ ! -r "$S4_ISAAC_ENV_HELPER" ]]; then
+            echo "[S4][ISAAC-ENV][FAIL] configured helper is unreadable: $S4_ISAAC_ENV_HELPER" >&2
+            return 1
+        fi
+        # shellcheck disable=SC1090
+        source "$S4_ISAAC_ENV_HELPER"
+        s4_setup_isaac_env
+        return
+    fi
     local pyver
     pyver="$($S4_ISAACLAB_PREFIX/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
     local cmeel="$S4_ISAACLAB_PREFIX/lib/python$pyver/site-packages/cmeel.prefix"

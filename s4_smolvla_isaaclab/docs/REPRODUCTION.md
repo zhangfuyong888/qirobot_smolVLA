@@ -32,6 +32,8 @@
 | `env_isaaclab` | Python 3.11.15 |
 | `smolvla` | Python 3.12.13 |
 
+上述补丁版本是 2026-08-07 工作站快照。另有一条独立的 Docker 验证记录：`full-v4-r1` 在 Ubuntu 22.04、driver 570.190、8×RTX 4090 上实际运行 Python 3.11.16/3.12.14，并通过 CUDA 12.8、EGL Vulkan、Isaac Camera RGB、真实 Rollout、单卡 resume 和双卡 DDP 反向传播。Conda 工作站快照与 Docker release snapshot 不应混写成一个精确环境。
+
 版本快照是已知工作组合，不表示任意新版本都兼容。特别不要独立升级 LeRobot、Transformers、PyAV 或 IsaacLab 后继续使用旧 checkpoint。
 
 ## 3. 克隆仓库
@@ -120,6 +122,8 @@ flowchart LR
 
 训练入口 `bash run.sh train` 只读取 `smolvla` 环境，可部署到不安装 Isaac Sim/IsaacLab 的训练服务器。
 单机多 GPU 使用 `--num-gpus N` 启动 Accelerate DDP。仓库顶层提供的完整 Docker 发布方式会把基础模型、当前数据集和训练输出放入镜像，并在首次 Compose 启动时初始化持久命名卷；后续新增的数据与 checkpoint 保存在卷中。具体参数见 [PIPELINE.md](PIPELINE.md#单机多-gpu-ddp) 和顶层 `docker/README.md`。
+
+Docker 部署的职责边界是：宿主提供 NVIDIA driver、device nodes 和 Container Toolkit；镜像提供 CUDA userspace、PyTorch、Vulkan/EGL loader、Isaac、LeRobot 和固定训练依赖。宿主 `/usr/local/cuda` 不是容器 CUDA compatibility 的主要判断依据。部署顺序应为 `host_preflight → docker load/build → verify-train/verify-rollout → 真实任务`。
 
 ## 5. 导出当前两个环境
 
@@ -327,6 +331,10 @@ bash run.sh rollout \
 | dataset-check 语言顺序不匹配 | 是否用了旧数据集或转换时任务契约不一致 |
 | checkpoint 拒绝 Rollout | dataset/checkpoint contract 不一致或 checkpoint 不完整 |
 | 显示卡死或内存上涨 | 检查残留训练 worker、CPU powersave、并发仿真进程 |
+| 容器 CUDA 通过但 Vulkan 失败 | 检查 graphics capability、EGL NVIDIA ICD、Container Toolkit 注入；拒绝 llvmpipe |
+| `accelerate` 把 `lerobot-train` 当本地文件 | 必须使用 `full-v4-r1`/当前脚本，由入口传绝对 console-script 路径 |
+| Resume 加载 optimizer 时 OOM | 先看 `nvidia-smi` 中其他 PID 和容器物理卡映射；显存被占满时减 batch 不能解决加载阶段 OOM |
+| Camera verify `SIGSEGV 139`，独立脚本成功 | 使用当前独立 `scripts/verify_isaac_camera.py`，不要恢复长 `python -c` 形式 |
 
 ## 11. 复现验收清单
 

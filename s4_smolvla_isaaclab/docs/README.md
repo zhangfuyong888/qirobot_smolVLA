@@ -10,6 +10,13 @@
 | [REPRODUCTION.md](REPRODUCTION.md) | 双 Conda 环境、版本导出、外部仓库、资产、模型、数据与 checkpoint 部署 | 负责安装、迁移和交付的人 |
 | [PIPELINE.md](PIPELINE.md) | 采集、转换、检查、训练、Rollout、核心契约和故障定位 | 负责实验和成功率优化的人 |
 
+专项文档不重复上述工程契约：
+
+| 文档 | 内容 |
+|---|---|
+| [Docker README](../../docker/README.md) | 完整镜像构建、宿主 preflight、GPU 选择、迁移和分 profile 验证 |
+| [真机遥操 README](../hardware_teleop/README.md) | 无 Isaac 的 Pink/ROS2/Quest 真机链路与分级安全联调 |
+
 课程教程位于 [course/](course/index.md)，它不是命令手册，而是按“原理 → 实现 → 部署”讲解整个系统。
 
 ## 当前活动基线
@@ -44,6 +51,13 @@ bash run.sh record --episodes 5
 bash run.sh collect-convert --help
 bash run.sh dataset-check --help
 bash run.sh train --help
+```
+
+Docker 发布入口位于仓库顶层；以下命令应从顶层 `smolVLA/` 目录执行：
+
+```bash
+bash docker/host_preflight.sh --gpu 0
+S4_IMAGE=s4-smolvla:full-v4-r1 bash docker/run.sh --gpus 0 verify
 ```
 
 `run.sh` 负责选择正确的 Python 环境。不要在同一解释器中同时导入 Isaac Sim 和当前 LeRobot/SmolVLA 依赖。

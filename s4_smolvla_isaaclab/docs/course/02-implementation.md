@@ -804,6 +804,8 @@ stateDiagram-v2
 
 > 警告：`--overwrite-output` 会删除整个已有训练输出目录。它不能与 `--resume` 同时使用。
 
+当前训练 CLI 不提供 `--output-dir` 参数。新实验应复制 `.smolvla.yaml` 并修改其中的 `output_dir`，然后使用 `bash run.sh train --config <新配置>`；不要为了 smoke test 覆盖正式 run。
+
 ### 2.4.6 当前训练命令
 
 #### 使用当前默认配置开始训练
@@ -830,6 +832,8 @@ bash run.sh train \
 ```
 
 `steps=600000` 是总目标步数，不是额外训练 600000 步。
+
+训练入口在读取数据和修改输出前执行 runtime preflight；单卡训练同样要求 Accelerate。多卡通过 `--num-gpus N --gpu-ids 0,...,N-1` 启动一个 rank 对应一张容器可见 GPU，`--batch-size` 是每 rank 数值。Docker 中物理卡必须在创建容器时用 `--gpus device=...` 选择，容器内再从 0 编号。Resume 若改变 world size 或每 rank batch，可以继续优化，但不能保持逐 rank sample-exact 数据顺序。
 
 ### 2.4.7 训练 loss 能说明什么
 

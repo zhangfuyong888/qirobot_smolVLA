@@ -2,7 +2,7 @@
 
 > 导航：[课程索引](index.md) · [第一章：核心原理](01-principles.md) · [第二章：项目实现](02-implementation.md) · **第三章**
 
-本章说明如何把当前项目迁移到另一台工作站，并建立从仿真、数据采集、训练到在线 Rollout 的可复现运行环境。当前仓库已经提供双 Conda 环境定义、统一入口、环境检查和本地资产归纳工具；自动下载、操作系统级驱动安装和完整发布包仍需后续完善。
+本章说明如何把当前项目迁移到另一台工作站或 NVIDIA 训练服务器，并建立从仿真、数据采集、训练到在线 Rollout 的可复现运行环境。当前仓库同时提供双 Conda 工作站路径和完整 Docker release 路径；操作系统级 NVIDIA driver 与 Container Toolkit 始终属于宿主，不进入应用镜像。
 
 > 部署原则：代码、外部仓库、场景资产、基础模型、数据集和训练输出是六类不同对象。它们必须分别锁定版本和位置，不能把“代码 clone 成功”理解为“项目已经可以运行”。
 
@@ -49,6 +49,8 @@ workspace/
 | LeRobot | 0.6.1，Git `3f2179f3...` |
 | `env_isaaclab` Python | 3.11.15 |
 | `smolvla` Python | 3.12.13 |
+
+Docker `full-v4-r1` 另在 Ubuntu 22.04、driver 570.190、8×RTX 4090 服务器完成 CUDA、EGL Vulkan、Isaac Camera、真实 Rollout、单卡 resume 与双卡 DDP 实测；容器内补丁版本为 Python 3.11.16/3.12.14。它与上表工作站快照是两条可审计记录。
 
 完整包快照见 `environment/versions.md`。可在目标机器安装完成后运行以下脚本收集实际版本：
 
@@ -252,6 +254,16 @@ bash run.sh doctor
 
 `doctor --strict` 还要求已生成的数据集和约定 checkpoint，因此应放在完整产物存在之后执行，不宜作为空工作区的第一条命令。
 
+Docker 路径先在宿主执行（以下命令从顶层 `smolVLA/` 目录运行）：
+
+```bash
+bash docker/host_preflight.sh --gpu 0
+export S4_IMAGE=s4-smolvla:full-v4-r1
+bash docker/run.sh --gpus 0 verify
+```
+
+`verify-train` 检查固定训练依赖、完整数据集与所选 GPU；显式选择多张物理卡时还会实际启动对应数量的 Accelerate rank。`verify-rollout` 检查 EGL Vulkan、checkpoint processor、Isaac renderer 和真实 RGB frame。GPU 在创建容器时确定，宿主物理 `4,5` 会在容器内重编号为 `0,1`。
+
 ### 3.9.3 场景验收
 
 ```bash
@@ -305,6 +317,8 @@ bash run.sh collect-convert \
 ```bash
 bash run.sh train
 ```
+
+该命令只适用于配置中 `output_dir` 尚不存在的 fresh run；已有发布 checkpoint 时会被安全拒绝。新实验要复制 `.smolvla.yaml` 并修改 `output_dir`，当前 CLI 没有 `--output-dir` 覆盖参数。
 
 继续完整 checkpoint：
 
@@ -430,7 +444,7 @@ flowchart TD
 
 ## 3.14 后续部署优化框架
 
-以下内容目前尚未在仓库中形成完整的一键部署能力，后续可按优先级补齐：
+以下框架区分已经落地的能力和仍待完善的交付项：
 
 ### P0：可复现性
 
@@ -441,7 +455,7 @@ flowchart TD
 
 ### P1：安装自动化
 
-1. 增加只检查、不修改系统的部署预检脚本；
+1. `docker/host_preflight.sh` 已提供只读宿主检查；后续补充更多驱动/GPU 兼容矩阵；
 2. 增加基础模型和资产包的显式下载命令；
 3. 下载后执行 revision/SHA-256 校验，失败时停止；
 4. 将环境创建、editable LeRobot 安装和版本采集合并为可审计步骤；
@@ -451,7 +465,7 @@ flowchart TD
 
 1. 生成包含 commit、环境版本、任务配置和 checkpoint 的运行清单；
 2. 给数据集、checkpoint 和 Rollout 结果定义统一归档命名；
-3. 提供新机器最小 smoke test 和完整验收模式；
+3. `s4-verify-runtime --profile train|rollout|full` 已提供最小与完整验收；后续增加正式训练 startup 的自动限步 profile；
 4. 增加部署升级指南，说明哪些变化需要重采、重训或只需重跑 Rollout；
 5. 在不静默修改用户环境的前提下支持自动恢复缺失的非敏感依赖。
 
@@ -459,6 +473,6 @@ flowchart TD
 
 ## 3.15 本章小结
 
-完整部署不是把 Python 包安装成功，而是让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约和 checkpoint 同时对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、资产归纳、`doctor` 和数据检查等基础设施；后续重点是完善固定下载来源、校验清单、版本兼容矩阵和一键预检。
+完整部署不是把 Python 包安装成功，而是让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约和 checkpoint 同时对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、完整 Docker release、宿主 preflight、分 profile runtime verify、资产归纳、`doctor` 和数据检查；后续重点是完善固定下载来源、更多宿主兼容矩阵和发布自动化。
 
 部署完成后，应返回[第二章](02-implementation.md)按照“专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率”的顺序验证完整闭环。

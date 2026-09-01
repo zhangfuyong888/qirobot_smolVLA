@@ -16,6 +16,10 @@ dependencies:
       - transformers==5.5.4
       - safetensors==0.8.0
       - datasets==5.0.0
+      # LeRobot's training entry point requires Accelerate for both single-GPU
+      # and distributed runs. Keep it in the reproducible environment rather
+      # than installing it into a disposable container at runtime.
+      - accelerate==1.14.0
       - num2words==0.5.14
       - pyyaml==6.0.2
 # Install the external LeRobot checkout in editable mode after creating this

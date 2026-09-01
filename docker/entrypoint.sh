@@ -26,9 +26,9 @@ if [[ ! -r "$VK_ICD_FILENAMES" ]]; then
     exit 1
 fi
 
-gpu_selection="${NVIDIA_VISIBLE_DEVICES:-${S4_GPUS:-all}}"
+gpu_selection="${NVIDIA_VISIBLE_DEVICES:-all}"
 if [[ "$gpu_selection" != "all" ]]; then
-    echo "[S4] host GPU selection: NVIDIA_VISIBLE_DEVICES=$gpu_selection (container cuda indices start at 0)"
+    echo "[S4] runtime-injected GPU visibility=$gpu_selection (container CUDA indices start at 0)"
 fi
 
 mkdir -p "$S4_DATA_ROOT" "$S4_OUTPUT_ROOT" "$S4_CACHE_ROOT"

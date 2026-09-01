@@ -14,6 +14,8 @@ IsaacLab 专家策略
 → IsaacLab Rollout
 ```
 
+项目还提供两条独立运行链路：仓库顶层完整 Docker 镜像用于跨工作站/训练服务器部署；`hardware_teleop/` 使用 vendored Pink + ROS2 DDS 在真机运行，不依赖 Isaac Sim。二者分别见 [Docker 部署](../docker/README.md) 和 [真机 Quest 遥操](hardware_teleop/README.md)。
+
 > 当前活动版本是 `drawer_12phase_v4_serial_acquire`。预抓握、接触抓握和后续搬运动作使用清晰边界，左右臂主体运动串行执行。旧数据集或旧 checkpoint 不能仅凭 26D 维度相同就认为与当前版本兼容，必须通过 `dataset-check` 检查。
 
 ## 1. 当前技术契约
@@ -63,7 +65,7 @@ Git 仓库不包含以下大文件：
 
 这些资源必须单独分发，并由 `.env` 指向实际路径。
 
-如果使用仓库顶层的完整 Docker 发布方式，则例外：`docker/Dockerfile` 会把当前项目源码、两个环境、IsaacLab、LeRobot、场景资产、基础模型、数据集和训练输出一起放进镜像，并排除宿主机 `.env`。推荐通过 Compose 启动，让镜像内的数据集和 checkpoint 在首次运行时初始化到持久命名卷。完整构建和验证命令见顶层 `docker/README.md`。
+如果使用仓库顶层的完整 Docker 发布方式，则例外：`docker/Dockerfile` 会把当前项目源码、两个环境、IsaacLab、LeRobot、场景资产、基础模型、数据集和训练输出一起放进镜像，并排除宿主机 `.env`。推荐通过 Compose 启动，让镜像内的数据集和 checkpoint 在首次运行时初始化到持久命名卷。`full-v4-r1` 已在 8×RTX 4090 服务器完成 CUDA、EGL Vulkan、Isaac/Camera、Rollout、单卡训练和双卡 DDP 实测；新宿主仍需逐项验证。完整命令见顶层 [docker/README.md](../docker/README.md)。
 
 ## 3. 从克隆到首次 Rollout
 
@@ -285,13 +287,18 @@ bash run.sh collect-convert \
 
 ## 5. 文档
 
-工程文档只保留三份：
+核心工程文档保留三份：
 
 - [文档索引](docs/README.md)
 - [复现与部署](docs/REPRODUCTION.md)
 - [完整流水线、契约与诊断](docs/PIPELINE.md)
 
 课程教程保留在 [docs/course/](docs/course/index.md)，按“原理 → 项目实现 → 部署”分为三章。
+
+专项运行文档：
+
+- [完整 Docker 构建、迁移与 GPU 验证](../docker/README.md)
+- [真机 Quest + Pink 遥操作](hardware_teleop/README.md)
 
 ## 6. 重要安全边界
 
