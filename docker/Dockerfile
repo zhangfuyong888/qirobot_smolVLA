@@ -142,6 +142,22 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends libxt6 \
     && rm -rf /var/lib/apt/lists/*
 
+# Headless Isaac Sim needs the Vulkan loader and an EGL-backed NVIDIA ICD.
+# libEGL_nvidia.so.0 is mounted at runtime by NVIDIA Container Toolkit.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        libvulkan1 \
+        vulkan-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/vulkan/nvidia_icd_headless.json \
+    /etc/vulkan/icd.d/nvidia_icd_headless.json
+RUN test -r /etc/vulkan/icd.d/nvidia_icd_headless.json \
+    && ldconfig -p | grep -q 'libvulkan\.so\.1'
+
+ENV VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json
+ENV NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility
+
 # The release image is immediately usable for the validated 350000-step policy.
 # This is a Docker-only default: an explicit --checkpoint still wins, and
 # workstation behavior remains unchanged when this variable is unset.

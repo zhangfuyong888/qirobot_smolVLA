@@ -53,6 +53,7 @@ from hardware_teleop.ik import create_hardware_ik_backend
 from hardware_teleop.ros import HardwareRobotBridge, RosImportError
 from hardware_teleop.scene.minimal import build_minimal_robot_scene
 from hardware_teleop.startup import run_startup_homing
+from hardware_teleop.safety import find_verified_mode5_sdk_process
 from s4_pipeline.config import load_project_config
 from s4_robot.arm_control import DEFAULT_TCP_OFFSET_WRIST, smooth_command
 from s4_robot.control_mapping import ACTION_SLICES, extract_bimanual_state, make_full_joint_target
@@ -120,6 +121,13 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
     store = LatestFrameStore()
     server = QuestWebServer(store, host, port, cert, key, PROJECT_ROOT / "teleoperation/webxr")
 
+    if config.startup.require_sdk_mode5_merge:
+        sdk_pid, sdk_executable = find_verified_mode5_sdk_process()
+        print(
+            f"[HW-TELEOP] verified SDK mode5 merge: pid={sdk_pid} executable={sdk_executable}",
+            flush=True,
+        )
+
     try:
         bridge = HardwareRobotBridge(
             config.hardware,
@@ -149,8 +157,8 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
         flush=True,
     )
     print(
-        "[HW-TELEOP] Self-contained server mode: publishes lowcmd directly. "
-        "Ensure no other node publishes lowcmd concurrently.",
+        "[HW-TELEOP] Shared lowcmd mode: keep exactly one standing-policy source and "
+        "stop old teleop, MoveIt and replay controllers.",
         flush=True,
     )
     if config.startup.check_lowcmd_publishers:
@@ -163,6 +171,12 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             flush=True,
         )
         bridge.wait_for_initial_state(config.hardware.initial_state_timeout_s)
+    if config.startup.require_policy_lowcmd:
+        bridge.wait_for_policy_lowcmd(
+            config.startup.policy_initial_timeout_s,
+            config.startup.policy_min_valid_frames,
+            config.startup.max_policy_age_s,
+        )
 
     command_action = run_startup_homing(
         startup_cfg=config.startup,
@@ -250,7 +264,16 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             if config.hardware.stale_command_hold and mapped.stale:
                 allow_arm_motion = False
             state_feed_stale = bridge.is_state_feed_stale(config.hardware.max_state_age_s)
+            policy_feed_stale = (
+                config.startup.require_policy_lowcmd
+                and bridge.is_policy_feed_stale(config.startup.max_policy_age_s)
+            )
+            lowcmd_graph_conflict = bridge.is_lowcmd_graph_conflicted()
             if state_feed_stale:
+                allow_arm_motion = False
+            if policy_feed_stale:
+                allow_arm_motion = False
+            if lowcmd_graph_conflict:
                 allow_arm_motion = False
 
             if mapped.left.clutch and allow_arm_motion:
@@ -292,11 +315,12 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
                 command_action[ACTION_SLICES.left_hand],
                 command_action[ACTION_SLICES.right_hand],
             )
-            bridge.publish_arm_command(
-                command_action,
-                allow_motion=allow_arm_motion,
-                hold_commanded=state_feed_stale,
-            )
+            if not state_feed_stale and not policy_feed_stale and not lowcmd_graph_conflict:
+                bridge.publish_arm_command(
+                    command_action,
+                    allow_motion=allow_arm_motion,
+                    hold_commanded=False,
+                )
 
             if not mapped.stale:
                 left_trigger = trigger_from_hand6(profiles["left_open"], profiles["left_close"], mapped.left.hand6)
@@ -318,6 +342,8 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
                 print(
                     f"[HW-TELEOP] loop={loop_hz:.1f}Hz target={config.hardware.control_rate_hz:.1f}Hz "
                     f"stale={mapped.stale} state_feed_stale={state_feed_stale} "
+                    f"policy_feed_stale={policy_feed_stale} "
+                    f"lowcmd_graph_conflict={lowcmd_graph_conflict} "
                     f"clutch(L/R)={mapped.left.clutch}/{mapped.right.clutch} "
                     f"js_age={bridge.last_state_age_s:.3f}s bridge={bridge.diagnostics()}",
                     flush=True,
@@ -333,11 +359,19 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             else:
                 next_deadline = time.monotonic()
     finally:
-        server.stop()
-        try:
-            bridge.hold_current_arms()
-        except Exception:
-            pass
+        server.close()
+        if (
+            not bridge.is_state_feed_stale(config.hardware.max_state_age_s)
+            and (
+                not config.startup.require_policy_lowcmd
+                or not bridge.is_policy_feed_stale(config.startup.max_policy_age_s)
+            )
+            and not bridge.is_lowcmd_graph_conflicted(check_period_s=0.0)
+        ):
+            try:
+                bridge.hold_current_arms()
+            except Exception:
+                pass
         bridge.close()
         simulation_app.close()
 

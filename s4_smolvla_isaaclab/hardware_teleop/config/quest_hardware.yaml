@@ -10,10 +10,13 @@
 #
 # Runtime requirements on the teleop machine:
 #   - ROS2 Humble (/opt/ros/humble)
-#   - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp and CYCLONEDDS_URI pointing at the robot LAN
+#   - A ROS2 RMW implementation available on the robot LAN. The environment
+#     script prefers CycloneDDS when installed and otherwise uses Fast DDS.
 #   - Robot SDK publishing lowstate on the configured topic (default: lowstate)
 #
-# Do not run another lowcmd publisher (e.g. moveit_mit_arm_bridge) concurrently.
+# Do not run another arm controller (e.g. moveit_mit_arm_bridge) concurrently.
+# The robot standing policy may already publish lowcmd by design; identify it
+# with doctor before explicitly allowing that publisher at startup.
 
 teleop_config: configs/teleoperation/meta_quest3.yaml
 
@@ -26,29 +29,54 @@ hardware:
   joint_states_topic: /joint_states
   lowcmd_topic: lowcmd
   hands_cmd_topic: /handscmd
+  # These are ROS topic names. Do not write native DDS names such as
+  # rt/lowstate: ROS2 adds the rt/ DDS prefix automatically.
   body_dof: 26
   arm_kp: 60.0
-  arm_kd: 2.0
+  # Match the validated qiling MoveIt arm bridge defaults.
+  arm_kd: 3.0
   reversed_joint_names:
     - left_wrist_roll_joint
     - left_wrist_yaw_joint
     - right_shoulder_yaw_joint
-  max_joint_step_rad: 0.065
+  # Hardware-only final limit: 0.02 rad at 30 Hz = 0.6 rad/s maximum.
+  max_joint_step_rad: 0.020
   require_initial_state: true
   initial_state_timeout_s: 15.0
   stale_command_hold: true
   # Stop arm motion if lowstate/joint_states has not updated for this long.
-  max_state_age_s: 0.5
+  max_state_age_s: 0.2
+  # Reject a single feedback-frame jump larger than this. A rejected stream
+  # becomes stale and command output is relinquished to the standing policy.
+  max_state_joint_jump_rad: 0.35
+  # Stricter than simulation: a headset pause must stop target integration
+  # quickly, and TCP target slew is limited before IK.
+  input_stale_timeout_s: 0.25
+  max_tcp_translation_speed_m_s: 0.50
+  max_tcp_rotation_speed_rad_s: 1.50
 
 startup:
-  move_to_home: true
+  # No automatic arm motion merely from starting the process. Enable only
+  # after the shadow and single-arm commissioning stages are complete.
+  move_to_home: false
   duration_s: 4.0
-  max_joint_step_rad: 0.03
+  max_joint_step_rad: 0.01
   position_tolerance_rad: 0.02
   check_lowcmd_publishers: true
+  # mode_ctrl=5 contains meaningful arms but placeholder legs. The SDK can
+  # merge it safely only after receiving fresh non-5 standing-policy packets.
+  require_policy_lowcmd: true
+  policy_initial_timeout_s: 5.0
+  policy_min_valid_frames: 3
+  max_policy_age_s: 0.2
+  # Older SDK servers do not merge mode_ctrl=5 arms with standing-policy legs.
+  # Refuse command output unless the running binary contains the verified merge.
+  require_sdk_mode5_merge: true
 
 gravity_compensation:
-  enabled: true
+  # Keep feed-forward torque off until its sign and scale are validated on a
+  # supported single arm. Position PD remains active without it.
+  enabled: false
   urdf_path: assets/my_robot/urdf/s4_40dof_merged.urdf
   scale: 0.6
   sign: 1.0
@@ -58,7 +86,9 @@ gravity_compensation:
   source: current
 
 ik:
-  backend: rmpflow
+  # Pure Pinocchio/Pink runtime. The weights, TCP offset, joint limits and
+  # elbow barriers are shared with simulation through teleop_config above.
+  backend: pink
 
 hands:
   left_open_uint16: [255, 255, 255, 255, 255, 255]

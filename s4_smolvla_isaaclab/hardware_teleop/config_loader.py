@@ -28,6 +28,10 @@ class HardwareRosConfig:
     initial_state_timeout_s: float
     stale_command_hold: bool
     max_state_age_s: float
+    max_state_joint_jump_rad: float
+    input_stale_timeout_s: float
+    max_tcp_translation_speed_m_s: float
+    max_tcp_rotation_speed_rad_s: float
 
 
 @dataclass(frozen=True)
@@ -66,6 +70,11 @@ class HardwareStartupConfig:
     max_joint_step_rad: float
     position_tolerance_rad: float
     check_lowcmd_publishers: bool
+    require_policy_lowcmd: bool
+    policy_initial_timeout_s: float
+    policy_min_valid_frames: int
+    max_policy_age_s: float
+    require_sdk_mode5_merge: bool
 
 
 @dataclass(frozen=True)
@@ -130,9 +139,9 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
     startup = raw.get("startup", {})
     gravity = raw.get("gravity_compensation", {})
 
-    backend = str(ik.get("backend", "rmpflow")).lower()
-    if backend not in {"rmpflow", "pinocchio"}:
-        raise ValueError("ik.backend must be 'rmpflow' or 'pinocchio'")
+    backend = str(ik.get("backend", "pink")).lower()
+    if backend not in {"pink", "rmpflow", "pinocchio"}:
+        raise ValueError("ik.backend must be 'pink', 'rmpflow' or 'pinocchio'")
 
     project_root = _resolve_project_root(path)
     teleop_path = (project_root / str(teleop_rel)).resolve()
@@ -145,6 +154,36 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
     control_rate_hz = float(hardware.get("control_rate_hz", 30.0))
     if control_rate_hz <= 0.0:
         raise ValueError("hardware.control_rate_hz must be positive")
+
+    max_state_age_s = float(hardware.get("max_state_age_s", 0.5))
+    max_state_joint_jump_rad = float(hardware.get("max_state_joint_jump_rad", 0.35))
+    input_stale_timeout_s = float(hardware.get("input_stale_timeout_s", 0.25))
+    max_tcp_translation_speed_m_s = float(
+        hardware.get("max_tcp_translation_speed_m_s", 0.5)
+    )
+    max_tcp_rotation_speed_rad_s = float(
+        hardware.get("max_tcp_rotation_speed_rad_s", 1.5)
+    )
+    if max_state_age_s <= 0.0:
+        raise ValueError("hardware.max_state_age_s must be positive")
+    if max_state_joint_jump_rad <= 0.0:
+        raise ValueError("hardware.max_state_joint_jump_rad must be positive")
+    if input_stale_timeout_s <= 0.0:
+        raise ValueError("hardware.input_stale_timeout_s must be positive")
+    if max_tcp_translation_speed_m_s <= 0.0:
+        raise ValueError("hardware.max_tcp_translation_speed_m_s must be positive")
+    if max_tcp_rotation_speed_rad_s <= 0.0:
+        raise ValueError("hardware.max_tcp_rotation_speed_rad_s must be positive")
+
+    policy_initial_timeout_s = float(startup.get("policy_initial_timeout_s", 5.0))
+    policy_min_valid_frames = int(startup.get("policy_min_valid_frames", 3))
+    max_policy_age_s = float(startup.get("max_policy_age_s", 0.5))
+    if policy_initial_timeout_s <= 0.0:
+        raise ValueError("startup.policy_initial_timeout_s must be positive")
+    if policy_min_valid_frames < 1:
+        raise ValueError("startup.policy_min_valid_frames must be at least 1")
+    if max_policy_age_s <= 0.0:
+        raise ValueError("startup.max_policy_age_s must be positive")
 
     state_source = str(hardware.get("state_source", "lowstate")).lower()
     if state_source not in {"lowstate", "joint_states"}:
@@ -172,11 +211,15 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
             arm_kp=float(hardware.get("arm_kp", 60.0)),
             arm_kd=float(hardware.get("arm_kd", 2.0)),
             reversed_joint_names=tuple(str(name) for name in reversed_names),
-            max_joint_step_rad=float(hardware.get("max_joint_step_rad", 0.065)),
+            max_joint_step_rad=float(hardware.get("max_joint_step_rad", 0.020)),
             require_initial_state=bool(hardware.get("require_initial_state", True)),
             initial_state_timeout_s=float(hardware.get("initial_state_timeout_s", 15.0)),
             stale_command_hold=bool(hardware.get("stale_command_hold", True)),
-            max_state_age_s=float(hardware.get("max_state_age_s", 0.5)),
+            max_state_age_s=max_state_age_s,
+            max_state_joint_jump_rad=max_state_joint_jump_rad,
+            input_stale_timeout_s=input_stale_timeout_s,
+            max_tcp_translation_speed_m_s=max_tcp_translation_speed_m_s,
+            max_tcp_rotation_speed_rad_s=max_tcp_rotation_speed_rad_s,
         ),
         ik=HardwareIkConfig(backend=backend),
         hands=HardwareHandsConfig(
@@ -202,12 +245,19 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
         startup=HardwareStartupConfig(
             move_to_home=bool(startup.get("move_to_home", True)),
             duration_s=float(startup.get("duration_s", 4.0)),
-            max_joint_step_rad=float(startup.get("max_joint_step_rad", 0.03)),
+            max_joint_step_rad=float(startup.get("max_joint_step_rad", 0.01)),
             position_tolerance_rad=float(startup.get("position_tolerance_rad", 0.02)),
             check_lowcmd_publishers=bool(startup.get("check_lowcmd_publishers", True)),
+            require_policy_lowcmd=bool(startup.get("require_policy_lowcmd", True)),
+            policy_initial_timeout_s=policy_initial_timeout_s,
+            policy_min_valid_frames=policy_min_valid_frames,
+            max_policy_age_s=max_policy_age_s,
+            require_sdk_mode5_merge=bool(
+                startup.get("require_sdk_mode5_merge", True)
+            ),
         ),
         gravity=HardwareGravityCompConfig(
-            enabled=bool(gravity.get("enabled", True)),
+            enabled=bool(gravity.get("enabled", False)),
             urdf_path=str(
                 gravity.get("urdf_path", "assets/my_robot/urdf/s4_40dof_merged.urdf")
             ),

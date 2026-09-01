@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import importlib
 import math
-import socket
 import sys
 import time
 import traceback
@@ -89,7 +88,7 @@ from s4_robot.control_mapping import (
 from s4_robot.s4_robot_cfg import ALL_DRIVE_JOINTS
 from s4_robot.simulation import SceneBuildCfg, create_simulation_context, reset_camera, reset_viewport
 from tasks import get_task_spec
-from tasks.loading import load_yaml
+from teleoperation.common import detect_lan_ip, load_task_control_profiles
 from teleoperation.config import TeleopConfig, load_teleop_config
 from teleoperation.controllers import create_arm_controller
 from teleoperation.mapping import BimanualTeleopMapper, TcpPose, quat_wxyz_to_matrix
@@ -97,59 +96,10 @@ from teleoperation.protocol import ControllerFrame, ControllerSample, LatestFram
 from teleoperation.server import QuestWebServer
 
 
-DEFAULT_HANDS = {
-    "left_open": [0.9, 0.0, 0.05, 0.05, 0.05, 0.05],
-    "left_close": [1.0, 0.22, 0.85, 0.85, 0.85, 0.85],
-    "right_open": [0.9, 0.0, 0.05, 0.05, 0.05, 0.05],
-    "right_close": [1.0, 0.42, 0.85, 0.85, 0.85, 0.85],
-}
-
-
-def detect_lan_ip() -> str:
-    sock = None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        return str(sock.getsockname()[0])
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        if sock is not None:
-            sock.close()
-
-
 def resolve_scene_builder(task_id: str):
     path = get_task_spec(task_id).scene_builder
     module_name, function_name = path.split(":", 1)
     return getattr(importlib.import_module(module_name), function_name)
-
-
-def load_task_control_profiles(task_id: str) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    values = dict(DEFAULT_HANDS)
-    home_poses: dict[str, np.ndarray] = {}
-    task_spec = get_task_spec(task_id)
-    if task_spec.scripted_config is not None and task_spec.scripted_config.is_file():
-        scripted = load_yaml(task_spec.scripted_config)
-        configured = scripted.get("hands", {})
-        for key in values:
-            if key in configured:
-                values[key] = configured[key]
-        configured_home = scripted.get("home_poses", {})
-        for key in ("left_arm", "right_arm"):
-            if key in configured_home:
-                home_poses[key] = np.asarray(configured_home[key], dtype=np.float32)
-        source = task_spec.scripted_config
-    else:
-        source = "teleoperation fallback"
-    profiles = {key: np.asarray(value, dtype=np.float32) for key, value in values.items()}
-    for key, value in profiles.items():
-        if value.shape != (6,) or not np.isfinite(value).all():
-            raise ValueError(f"Invalid {key} hand profile from {source}: {value}")
-    for key, value in home_poses.items():
-        if value.shape != (7,) or not np.isfinite(value).all():
-            raise ValueError(f"Invalid {key} home pose from {source}: {value}")
-    print(f"[TELEOP] hand profiles source={source}", flush=True)
-    return profiles, home_poses
 
 
 def make_scene_cfg(config: TeleopConfig) -> SceneBuildCfg:

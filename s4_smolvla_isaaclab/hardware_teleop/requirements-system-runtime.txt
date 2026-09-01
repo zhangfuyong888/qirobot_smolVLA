@@ -1,0 +1,12 @@
+# Project-local packages for Ubuntu 22.04 / ROS2 Humble system Python 3.10.
+#
+# Do not install this file globally. Use:
+#   bash run.sh teleop-hardware-system-prepare --install
+#
+# NumPy and Pinocchio are intentionally absent. The robot keeps its existing
+# NumPy 1.26.4 and ROS Humble Pinocchio 3.9.0.
+scipy==1.15.2
+aiohttp==3.14.3
+qpsolvers==4.12.0
+daqp==0.8.7
+quadprog==0.1.13

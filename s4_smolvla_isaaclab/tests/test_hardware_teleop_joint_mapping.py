@@ -7,7 +7,9 @@ import pytest
 
 from hardware_teleop.joint_mapping import (
     ARM_JOINT_NAMES,
+    apply_arm_q14,
     arms_to_bimanual_state,
+    bimanual_to_arm_q14,
     build_sign_map,
     limit_arm_step,
     teleop_to_robot_sign,
@@ -36,3 +38,15 @@ def test_arms_to_bimanual_state_shape() -> None:
     right_hand = np.ones(6, dtype=np.float32)
     state = arms_to_bimanual_state(arms, left_hand=left_hand, right_hand=right_hand)
     assert state.shape == (26,)
+
+
+def test_pink_q14_round_trip_preserves_hands_and_arm_order() -> None:
+    action = np.arange(26, dtype=np.float32) * 0.01
+    q14 = bimanual_to_arm_q14(action)
+    assert q14 == pytest.approx(np.r_[action[0:7], action[13:20]])
+
+    replacement = np.linspace(-0.7, 0.6, 14, dtype=np.float32)
+    result = apply_arm_q14(action, replacement)
+    assert bimanual_to_arm_q14(result) == pytest.approx(replacement)
+    assert result[7:13] == pytest.approx(action[7:13])
+    assert result[20:26] == pytest.approx(action[20:26])

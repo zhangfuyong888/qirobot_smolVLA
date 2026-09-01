@@ -30,6 +30,10 @@ export S4_OUTPUT_ROOT="${S4_OUTPUT_ROOT:-$PROJECT_ROOT/outputs}"
 export S4_CACHE_ROOT="${S4_CACHE_ROOT:-$PROJECT_ROOT/.cache}"
 export S4_ISAACLAB_ENV="${S4_ISAACLAB_ENV:-env_isaaclab}"
 export S4_SMOLVLA_ENV="${S4_SMOLVLA_ENV:-smolvla}"
+export S4_HW_TELEOP_ENV="${S4_HW_TELEOP_ENV:-s4_hardware_teleop}"
+export S4_HW_TELEOP_RUNTIME="${S4_HW_TELEOP_RUNTIME:-auto}"
+export S4_HW_TELEOP_SYSTEM_PYTHON="${S4_HW_TELEOP_SYSTEM_PYTHON:-/usr/bin/python3}"
+export S4_HW_TELEOP_SITE_PACKAGES="${S4_HW_TELEOP_SITE_PACKAGES:-$PROJECT_ROOT/.local/hardware_python}"
 
 CONDA_EXE_PATH="${CONDA_EXE:-$(command -v conda 2>/dev/null || true)}"
 CONDA_ROOT="${S4_CONDA_ROOT:-${CONDA_EXE_PATH%/bin/conda}}"
@@ -38,6 +42,7 @@ if [[ -z "$CONDA_ROOT" ]]; then
 fi
 export S4_ISAACLAB_PREFIX="${S4_ISAACLAB_PREFIX:-$CONDA_ROOT/envs/$S4_ISAACLAB_ENV}"
 export S4_SMOLVLA_PREFIX="${S4_SMOLVLA_PREFIX:-$CONDA_ROOT/envs/$S4_SMOLVLA_ENV}"
+export S4_HW_TELEOP_PREFIX="${S4_HW_TELEOP_PREFIX:-$CONDA_ROOT/envs/$S4_HW_TELEOP_ENV}"
 export S4_SMOLVLA_PYTHON="${S4_SMOLVLA_PYTHON:-$S4_SMOLVLA_PREFIX/bin/python}"
 ISAACLAB="$ISAACLAB_ROOT/isaaclab.sh"
 
@@ -66,6 +71,58 @@ use_smolvla_env() {
     export PATH="$S4_SMOLVLA_PREFIX/bin:$PATH"
     export CONDA_PREFIX="$S4_SMOLVLA_PREFIX"
     export PYTHONUNBUFFERED=1
+}
+
+use_hardware_teleop_env() {
+    local runtime="$S4_HW_TELEOP_RUNTIME"
+    if [[ "$runtime" == "auto" ]]; then
+        if [[ -x "$S4_HW_TELEOP_PREFIX/bin/python" ]]; then
+            runtime="conda"
+        else
+            runtime="system"
+        fi
+    fi
+    if [[ "$runtime" == "conda" ]]; then
+        if [[ ! -x "$S4_HW_TELEOP_PREFIX/bin/python" ]]; then
+            echo "[HW-PINK][ERROR] conda runtime requested but Python is missing: $S4_HW_TELEOP_PREFIX/bin/python" >&2
+            echo "[HW-PINK][ERROR] create it with: conda env create -f hardware_teleop/environment.yml" >&2
+            return 1
+        fi
+        local pyver
+        pyver="$($S4_HW_TELEOP_PREFIX/bin/python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+        export PATH="$S4_HW_TELEOP_PREFIX/bin:$PATH"
+        export CONDA_PREFIX="$S4_HW_TELEOP_PREFIX"
+        export LD_LIBRARY_PATH="$S4_HW_TELEOP_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+        local cmeel="$S4_HW_TELEOP_PREFIX/lib/python$pyver/site-packages/cmeel.prefix"
+        if [[ -d "$cmeel" ]]; then
+            export PYTHONPATH="$cmeel/lib/python$pyver/site-packages:${PYTHONPATH:-}"
+            export LD_LIBRARY_PATH="$cmeel/lib:$LD_LIBRARY_PATH"
+        fi
+        export S4_HW_TELEOP_PYTHON="$S4_HW_TELEOP_PREFIX/bin/python"
+    elif [[ "$runtime" == "system" ]]; then
+        if [[ ! -x "$S4_HW_TELEOP_SYSTEM_PYTHON" ]]; then
+            echo "[HW-PINK][ERROR] system Python is missing or not executable: $S4_HW_TELEOP_SYSTEM_PYTHON" >&2
+            return 1
+        fi
+        local pyver
+        pyver="$($S4_HW_TELEOP_SYSTEM_PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+        if [[ "$pyver" != "3.10" ]]; then
+            echo "[HW-PINK][ERROR] ROS2 Humble system runtime requires Python 3.10, got $pyver" >&2
+            return 1
+        fi
+        # Intentionally do not add a cmeel.prefix or Conda library path here.
+        # On the robot this preserves ROS Humble's Pinocchio ahead of the
+        # incompatible user-site PyPI Pinocchio installation.
+        export S4_HW_TELEOP_PYTHON="$S4_HW_TELEOP_SYSTEM_PYTHON"
+        export PYTHONPATH="$S4_HW_TELEOP_SITE_PACKAGES:${PYTHONPATH:-}"
+        unset CONDA_PREFIX || true
+    else
+        echo "[HW-PINK][ERROR] S4_HW_TELEOP_RUNTIME must be auto, conda or system; got $runtime" >&2
+        return 1
+    fi
+    export S4_HW_TELEOP_RUNTIME_RESOLVED="$runtime"
+    export PYTHONUNBUFFERED=1
+    echo "[HW-PINK][ENV] runtime=$runtime python=$S4_HW_TELEOP_PYTHON local_packages=$S4_HW_TELEOP_SITE_PACKAGES" >&2
 }
 
 print_context() {
@@ -162,7 +219,11 @@ Core commands:
   activate-task TASK                Select a task in .local/active_task
   sim [IsaacLab options]             Start the active task scene
   teleop [options]                   Control both arms with Meta Quest 3 (Isaac simulation)
-  teleop-hardware [options]          Control the real robot with Meta Quest 3 (headless IK)
+  teleop-hardware [options]          Control the real robot with pure Pink IK (no Isaac)
+  teleop-hardware-isaac [options]    Legacy headless Isaac/RMPflow hardware fallback
+  teleop-hardware-doctor [options]   Check lightweight Pink, QP and ROS2 runtime
+  teleop-hardware-replay FILE        Validate a recorded Pink shadow JSONL
+  teleop-hardware-system-prepare     Inspect/install project-local system-Python dependencies
   teleop-hardware-build              Build vendored qi ROS2 messages for hardware teleop
   teleop-hardware-env                Print command to source ROS2/DDS env in another shell
   teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
@@ -231,6 +292,17 @@ case "${1:-help}" in
             --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
         ;;
     teleop-hardware)
+        shift
+        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+            echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
+            bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
+        fi
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" hardware_teleop/pink_main.py "$@"
+        ;;
+    teleop-hardware-isaac)
         shift; print_context
         if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
             echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
@@ -240,7 +312,30 @@ case "${1:-help}" in
         source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
         use_isaaclab_env
         "$ISAACLAB" -p hardware_teleop/main.py --headless \
-            --kit_args "$ISAAC_LOCAL_KIT_ARGS" "$@"
+            --kit_args "$ISAAC_LOCAL_KIT_ARGS" --ik-backend rmpflow "$@"
+        ;;
+    teleop-hardware-doctor)
+        shift
+        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+            echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
+            bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
+        fi
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" -m hardware_teleop.env_check "$@"
+        ;;
+    teleop-hardware-replay)
+        shift
+        # System-Python replay still needs ROS Humble's Pinocchio path.
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" hardware_teleop/scripts/replay_pink.py "$@"
+        ;;
+    teleop-hardware-system-prepare)
+        shift
+        bash "$PROJECT_ROOT/hardware_teleop/scripts/prepare_system_runtime.sh" "$@"
         ;;
     teleop-hardware-build)
         shift
@@ -253,7 +348,13 @@ source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
 EOF
         ;;
     teleop-cert)
-        shift; "$S4_ISAACLAB_PREFIX/bin/python" -m teleoperation.certificate "$@"
+        shift
+        if [[ -x "$S4_ISAACLAB_PREFIX/bin/python" && "$S4_HW_TELEOP_RUNTIME" != "system" ]]; then
+            "$S4_ISAACLAB_PREFIX/bin/python" -m teleoperation.certificate "$@"
+        else
+            use_hardware_teleop_env
+            "$S4_HW_TELEOP_PYTHON" -m teleoperation.certificate "$@"
+        fi
         ;;
     record|record-hdf5) shift; print_context; record_command "$@" ;;
     collect-convert) shift; bash scripts/collect_convert.sh "$@" ;;

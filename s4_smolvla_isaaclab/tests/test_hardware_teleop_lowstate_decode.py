@@ -41,3 +41,20 @@ def test_decode_lowstate_rejects_empty() -> None:
     )
     assert arms is None
     assert not validation.accepted
+
+
+def test_joint_state_guard_rejects_single_frame_position_jump() -> None:
+    guard = JointStateFrameGuard(
+        ARM_JOINT_NAMES,
+        reject_zero_glitches=False,
+        max_position_jump=0.35,
+    )
+    initial = {name: 0.1 for name in ARM_JOINT_NAMES}
+    assert guard.validate(initial).accepted
+
+    jumped = dict(initial)
+    jumped[ARM_JOINT_NAMES[0]] = 0.6
+    validation = guard.validate(jumped)
+    assert not validation.accepted
+    assert ARM_JOINT_NAMES[0] in validation.reason
+    assert "jump" in validation.reason

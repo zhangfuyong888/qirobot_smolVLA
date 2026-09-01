@@ -4,6 +4,35 @@
 
 构建上下文会排除宿主机 `.env`，避免用户目录下的绝对路径覆盖容器路径。构建阶段还会把 checkpoint JSON 中由 LeRobot 保存的工作站路径重写为镜像内路径，并在残留路径时直接失败。ROS 的 `build/`、`install/` 和 `log/` 也会被排除，因为这些目录包含不可移植的宿主机软链接；ROS 源码仍然保留。
 
+从 `full-v3` 起，镜像在后部 runtime layer 安装 **Vulkan 加载器**（`libvulkan1`、`vulkan-tools`），并内置 headless **NVIDIA ICD**（`/etc/vulkan/icd.d/nvidia_icd_headless.json`，指向 `libEGL_nvidia.so.0`）。NVIDIA 驱动库（`libEGL_nvidia.so.0` 等）**不会** bake 进镜像，必须由 NVIDIA Container Toolkit 在容器启动时从宿主注入。运行时需 `--gpus all` 与 `NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility`（Compose 已默认设置）。
+
+## Full-v3 host requirements
+
+- x86_64 Linux（不支持 Jetson / ARM）
+- NVIDIA RTX GPU 工作站或服务器
+- NVIDIA 专有驱动（镜像与驱动版本无关；当前已在 RTX 4090 + driver 570.190 + CUDA 12.8 上实测）
+- Docker Engine
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+- Docker GPU 支持：`docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu22.04 nvidia-smi` 应成功
+- 启动容器时 `NVIDIA_DRIVER_CAPABILITIES` 必须包含 `graphics,compute,utility`
+- Headless Vulkan 使用 `VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json`
+
+若 `docker info` 的 `Runtimes` 中尚无 `nvidia`，管理员需执行：
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+docker info | grep -i runtime
+```
+
+诊断命令（无需 Compose，直接验证 runtime）：
+
+```bash
+bash docker/run.sh --gpus 0 verify
+```
+
+`s4-verify-runtime` 四级检查：CUDA → `vulkaninfo`（NVIDIA，禁止 llvmpipe）→ Isaac headless renderer（Kit 日志 fail-fast）→ camera RGB frame。
+
 ## 前置条件
 
 - Linux x86_64、Docker Engine、NVIDIA 驱动和 NVIDIA Container Toolkit；
@@ -60,29 +89,56 @@ bash docker/prepare_workspace.sh "${HOME}/IsaacLab"
 然后构建完整镜像：
 
 ```bash
-bash docker/build_full.sh s4-smolvla:full-v2
+bash docker/build_full.sh s4-smolvla:full-v3
 ```
 
 构建脚本会先确认场景、基础模型、至少一个 LeRobotDataset contract 和至少一个完整 checkpoint 都存在，然后在 `docker/release-manifest.env` 写入三个 Git commit、dirty 状态和 UTC 时间。该文件会复制进镜像的 `/workspace/release-manifest/versions.env`，但被 Git 忽略。
 
 ## 运行与验证
 
-镜像内部已经包含构建时的 `datasets/` 和 `outputs/`。推荐通过 Compose 启动：首次创建命名卷时，Docker 会自动把镜像中已有的数据集和训练输出复制到卷内；之后采集、转换、训练和 Rollout 产生的修改会保存在卷中，即使容器使用 `--rm` 删除也不会丢失。首次初始化约 14GB 数据，可能需要等待且暂时没有进度输出。容器每次启动还会幂等更新卷内 checkpoint 和评估 JSON 的路径元数据，以兼容旧命名卷；不会改动模型权重、数据集或训练状态。
-
-缓存和普通运行时文件写到宿主机 `docker/runtime/`。数据集和训练输出存放在 Docker 命名卷 `docker_s4-datasets` 与 `docker_s4-outputs` 中。
+镜像内部已经包含构建时的 `datasets/` 和 `outputs/`。推荐通过 **`docker/run.sh`** 启动，可统一指定宿主机 GPU：
 
 ```bash
 cd "${HOME}/smolVLA"
-docker compose -f docker/compose.yaml run --rm s4-smolvla bash
+
+# 单卡验证（物理 GPU 0）
+bash docker/run.sh --gpus 0 verify
+
+# 交互 shell（物理 GPU 3）
+bash docker/run.sh --gpus 3 bash
+
+# Compose + 命名卷（四卡训练前进入容器）
+bash docker/run.sh --gpus 0,1,2,3 --compose bash
 ```
+
+`--gpus` 接受宿主机 `nvidia-smi` 上的物理编号：`0`、`0,1,2,3` 或 `all`（默认）。容器内 GPU 始终从 `cuda:0` 重新编号；例如 `--gpus 4,5,6,7` 时，训练命令仍写 `--gpu-ids 0,1,2,3`。
+
+也可用环境变量：
+
+```bash
+S4_GPUS=2 bash docker/run.sh verify
+S4_GPUS=0,1,2,3 bash docker/run.sh --compose bash
+```
+
+Compose 直接启动（等价于 `docker/run.sh --compose`）：
+
+```bash
+S4_GPUS=0 docker compose -f docker/compose.yaml run --rm s4-smolvla s4-verify-runtime
+```
+
+镜像内部已经包含构建时的 `datasets/` 和 `outputs/`。Compose 模式下，首次创建命名卷时 Docker 会自动把镜像中已有的数据集和训练输出复制到卷内；之后采集、转换、训练和 Rollout 产生的修改会保存在卷中，即使容器使用 `--rm` 删除也不会丢失。首次初始化约 14GB 数据，可能需要等待且暂时没有进度输出。容器每次启动还会幂等更新卷内 checkpoint 和评估 JSON 的路径元数据，以兼容旧命名卷；不会改动模型权重、数据集或训练状态。
 
 容器内先校验：
 
 ```bash
 s4-verify-runtime
+# 或宿主机直接：
+bash docker/run.sh --gpus 0 verify
 ```
 
-验证会检查两个环境、CUDA、Isaac Sim、IsaacLab、LeRobot 源码、场景资产、基础模型、活动任务契约、内置数据集和 350000 checkpoint，并实际启动一次 Headless Rendering。只有此命令通过，才应开始训练或 Rollout。
+缓存和普通运行时文件写到宿主机 `docker/runtime/`。数据集和训练输出存放在 Docker 命名卷 `docker_s4-datasets` 与 `docker_s4-outputs` 中。
+
+验证会检查两个环境、四级 runtime（CUDA、NVIDIA Vulkan、Isaac headless renderer、camera RGB）、IsaacLab、LeRobot 源码、场景资产、基础模型、活动任务契约、内置数据集和 350000 checkpoint。只有此命令通过，才应开始训练或 Rollout。
 
 然后保持项目原有入口：
 
@@ -115,37 +171,78 @@ Isaac Sim 运行需接受 NVIDIA EULA；镜像和 Compose 已设置 `OMNI_KIT_AC
 在构建机导出：
 
 ```bash
-docker save s4-smolvla:full-v2 | zstd -T0 -19 -o s4-smolvla_full-v2.tar.zst
-sha256sum s4-smolvla_full-v2.tar.zst > s4-smolvla_full-v2.tar.zst.sha256
+docker save s4-smolvla:full-v3 | zstd -T0 -19 -o s4-smolvla_full-v3.tar.zst
+sha256sum s4-smolvla_full-v3.tar.zst > s4-smolvla_full-v3.tar.zst.sha256
 ```
 
 在服务器验证并导入：
 
 ```bash
-sha256sum -c s4-smolvla_full-v2.tar.zst.sha256
-zstd -dc s4-smolvla_full-v2.tar.zst | docker load
+sha256sum -c s4-smolvla_full-v3.tar.zst.sha256
+zstd -dc s4-smolvla_full-v3.tar.zst | docker load
 ```
 
-训练时选择四张可见 GPU 的示例：
+服务器上推荐用 **`docker/run.sh`** 指定 GPU 并验证：
 
 ```bash
-docker run --rm -it \
-  --gpus '"device=0,1,2,3"' \
-  --ipc=host \
-  --shm-size=64g \
-  --network=host \
-  -e ACCEPT_EULA=Y \
-  -e OMNI_KIT_ACCEPT_EULA=Y \
-  -e PRIVACY_CONSENT=Y \
-  -v "$PWD/docker/runtime:/workspace/runtime" \
-  -v docker_s4-datasets:/workspace/smolVLA/s4_smolvla_isaaclab/datasets \
-  -v docker_s4-outputs:/workspace/smolVLA/s4_smolvla_isaaclab/outputs \
-  s4-smolvla:full-v2 bash
+bash docker/run.sh --gpus 0 verify
+```
+
+或手动 `docker run`（等价）：
+
+```bash
+-e NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility
+-e NVIDIA_VISIBLE_DEVICES=0          # 多卡机器上指定空闲 GPU
+-e VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json
+```
+
+导入后先跑：
+
+```bash
+bash docker/run.sh --gpus 0 verify
+```
+
+手动等价命令：
+
+```bash
+docker run --rm --gpus all --ipc=host --shm-size=64g --network=host \
+  -e NVIDIA_DRIVER_CAPABILITIES=graphics,compute,utility \
+  -e NVIDIA_VISIBLE_DEVICES=0 \
+  -e VK_ICD_FILENAMES=/etc/vulkan/icd.d/nvidia_icd_headless.json \
+  -e ACCEPT_EULA=Y -e OMNI_KIT_ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+  -v /tmp/s4-runtime:/workspace/runtime \
+  s4-smolvla:full-v3 s4-verify-runtime
+```
+
+预期成功输出应包含：
+
+```text
+[OK] CUDA PASS: NVIDIA GeForce RTX 4090 cuda 12.8
+driverName = NVIDIA
+[OK] NVIDIA Vulkan renderer
+[OK] Isaac Sim headless renderer
+[OK] Isaac Sim camera RGB frame (1, 128, 128, 3)
+[OK] checkpoint tokenizer and processor pipeline
+[OK] complete runtime verification passed
+```
+
+以下任一出现则验证必须非零退出：`llvmpipe`、`ERROR_INCOMPATIBLE_DRIVER`、`GPU Foundation is not initialized`、`vkCreateInstance failed`。
+
+四卡训练示例（物理 GPU 0–3）：
+
+```bash
+bash docker/run.sh --gpus 0,1,2,3 --compose bash
 ```
 
 容器内：
 
 ```bash
-cd /workspace/smolVLA/s4_smolvla_isaaclab
 bash run.sh train --num-gpus 4 --gpu-ids 0,1,2,3 --batch-size 4 --num-workers 6 --master-port 29500
+```
+
+另一组四卡（物理 GPU 4–7）可开第二个容器：
+
+```bash
+bash docker/run.sh --gpus 4,5,6,7 --compose bash
+# 容器内同样 --gpu-ids 0,1,2,3
 ```

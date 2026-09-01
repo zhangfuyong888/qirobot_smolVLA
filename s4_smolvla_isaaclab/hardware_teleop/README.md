@@ -1,9 +1,9 @@
 # 真机 Quest 遥操作（hardware_teleop）
 
-本目录是 **S4 双臂真机遥操作** 的独立模块。遥操电脑作为 **控制服务器**：
+本目录是 **S4 双臂真机遥操作** 的独立模块。控制服务器既可运行在开发电脑，也可直接运行在机器人电脑：
 
 - 接收 Meta Quest 3 手柄输入（无视频流，controller-only）
-- 在本地做 IK 解算（默认 RMPflow，可选 Pinocchio）
+- 在本地用仓库内置 Pink + Pinocchio 做 FK/IK 解算
 - 通过 ROS2 DDS **直接发布** `lowcmd`（手臂）和 `/handscmd`（灵巧手）
 
 **不依赖** `qiling_s4`、MoveIt、数据采集或 VLA 训练代码。仿真遥操仍使用 `bash run.sh teleop`；真机遥操使用 `bash run.sh teleop-hardware`。
@@ -35,10 +35,10 @@
 
 ```
 ┌─────────────────┐     WebSocket/HTTPS      ┌──────────────────────────────────┐
-│  Meta Quest 3   │ ───────────────────────► │  hardware_teleop/main.py         │
+│  Meta Quest 3   │ ───────────────────────► │  hardware_teleop/pink_main.py    │
 │  (无视频流)      │   controller_frame      │  ├─ QuestWebServer (复用)         │
 └─────────────────┘                         │  ├─ BimanualTeleopMapper (复用)  │
-                                            │  ├─ headless Isaac + RMPflow IK  │
+                                            │  ├─ vendored Pink + Pinocchio IK │
                                             │  └─ HardwareRobotBridge          │
                                             └───────────┬──────────┬───────────┘
                                                         │          │
@@ -58,8 +58,8 @@
 
 | 项目       | 仿真 `run.sh teleop`          | 真机 `run.sh teleop-hardware` |
 | -------- | --------------------------- | --------------------------- |
-| Isaac 场景 | 完整任务场景 + 可选 viewport        | **仅加载机器人 URDF**（headless）   |
-| 物理步进     | 120 Hz 仿真                   | 无真实物理，仅同步关节状态做 FK/IK        |
+| Isaac 场景 | 完整任务场景 + 可选 viewport        | **不启动 Isaac**                  |
+| 物理步进     | 120 Hz 仿真                   | 无真实物理，直接用实测关节做 Pink FK/IK   |
 | 指令输出     | `set_joint_position_target` | `lowcmd` **+** `/handscmd`  |
 | 状态输入     | 仿真关节                        | `lowstate`**（默认）**          |
 | 控制频率     | ~120 Hz                     | **30 Hz**（与真机 MIT 控制一致）     |
@@ -72,7 +72,8 @@
 
 - **自包含**：qi 消息定义 vendored 在 `ros_ws/`，lowstate 解析逻辑在 `vendored/`
 - **隔离**：不修改 `record_dataset.py`、训练、rollout 等 VLA 链路
-- **可切换 IK**：默认 RMPflow（与仿真手感一致）；真机效果不佳时可换 Pinocchio
+- **同源 IK**：仿真和真机复用同一个 Pink solver、权重、TCP offset 与肘部 barrier
+- **可回退**：旧 headless Isaac/RMPflow 入口保留为 `teleop-hardware-isaac`
 
 ---
 
@@ -83,7 +84,10 @@
 ```
 hardware_teleop/
 ├── README.md                 # 本文档
-├── main.py                   # 真机遥操主入口
+├── pink_main.py              # 纯 Pink 真机遥操主入口（无 Isaac）
+├── main.py                   # 旧 headless Isaac/RMPflow 回退入口
+├── environment.yml           # Python 3.10 轻量真机环境
+├── requirements-system-runtime.txt # 真机系统 Python 的项目局部依赖版本
 ├── config_loader.py          # 加载 quest_hardware.yaml
 ├── joint_mapping.py          # 26D ↔ 14 臂关节、符号、步长限制
 ├── hand_mapping.py           # trigger 0..1 → 手部 uint16 0..255
@@ -91,15 +95,18 @@ hardware_teleop/
 │   ├── quest_hardware.yaml   # 真机 ROS 话题、增益、手部、IK 后端
 │   ├── ros_env.sh            # ROS2 + CycloneDDS 环境（常改：网卡名）
 │   ├── ros_env.example.sh    # 模板
+│   ├── ros_env.robot.example.sh # 已检查真机的 lo/Domain16/system-Python 模板
 │   └── ros_env.local.sh      # 可选本地覆盖（gitignore，不提交）
 ├── scripts/
 │   ├── source_ros_env.sh     # 统一 source 入口
+│   ├── prepare_system_runtime.sh # 仅向项目 .local 安装系统运行依赖
 │   └── build_ros_msgs.sh     # 编译 vendored qi 消息
 ├── ros/
 │   ├── robot_bridge.py       # 订阅状态、发布 lowcmd/handscmd
 │   └── env.py                # 本地 ROS 安装路径提示
 ├── ik/
-│   ├── rmpflow_headless.py   # 默认 IK（headless Isaac + Lula）
+│   ├── pink_backend.py       # 默认纯 Pink IK
+│   ├── rmpflow_headless.py   # 旧 headless Isaac + Lula 回退
 │   └── pinocchio_backend.py  # 备用 IK
 ├── scene/
 │   └── minimal.py            # 仅 spawn 机器人 articulation
@@ -131,10 +138,10 @@ hardware_teleop/
 
 | 组件        | 说明                                     |
 | --------- | -------------------------------------- |
-| OS        | Linux（与 Isaac Lab 环境一致）                |
+| OS        | Ubuntu 22.04 / Linux                     |
 | ROS2      | Humble，`/opt/ros/humble/setup.bash`    |
-| RMW       | `rmw_cyclonedds_cpp`                   |
-| Isaac Lab | `env_isaaclab` conda 环境（headless IK 用） |
+| RMW       | 自动选择已安装的 CycloneDDS 或 Fast DDS；可显式配置 |
+| Python    | 开发机可用 Conda；真机直接用 `/usr/bin/python3.10` + 项目局部 wheel |
 | 网络        | 与机器人在同一局域网；DDS 绑定 **接机器人的网卡**          |
 
 
@@ -147,7 +154,7 @@ hardware_teleop/
 | -------- | ------------------------------------------------ |
 | 上电 + SDK | 正常运行，持续发布 `lowstate`                             |
 | 接收指令     | 订阅 `lowcmd`（手臂）、`/handscmd`（手）                   |
-| **禁止并发** | 不要同时运行其他 `lowcmd` 发布者（如 `moveit_mit_arm_bridge`） |
+| 并发检查 | 正常拓扑必须恰有一个站立策略 `lowcmd` 源；多个源或旧 mode-5 遥操会被拒绝 |
 
 
 
@@ -165,6 +172,36 @@ hardware_teleop/
 ## 一次性准备
 
 在项目根目录 `s4_smolvla_isaaclab/` 下执行：
+
+### 0. 真机系统 Python 局部依赖（无 Conda、无 venv）
+
+真机已检查为 Ubuntu 22.04 x86_64、Python 3.10、ROS Pinocchio 3.9.0。先查看计划，不写文件：
+
+```bash
+bash run.sh teleop-hardware-system-prepare --check
+```
+
+用户确认安装后，依赖只写入 gitignore 的 `.local/hardware_python`，不会写 `/usr` 或 `~/.local`：
+
+```bash
+bash run.sh teleop-hardware-system-prepare --install
+```
+
+固定安装 `scipy 1.15.2`、`aiohttp 3.14.3`、`qpsolvers 4.12.0`、`daqp 0.8.7`、`quadprog 0.1.13`。脚本刻意不安装 NumPy 和 Pinocchio，真机继续使用已有 NumPy 1.26.4 与 `/opt/ros/humble` 的 Pinocchio 3.9.0。
+
+已检查的真机目前把上述五个包安装在 `~/.local`。机器人模板显式设置 `S4_HW_TELEOP_ALLOW_USER_SITE=1`，因此精确版本和 Pinocchio 来源检查通过后可以直接使用；项目局部目录仍是新安装时更隔离的首选。真机用户目录还存在 `pin/libpinocchio 4.1.0`，运行时必须看到 doctor 打印的实际 Pinocchio 路径位于 `/opt/ros/humble`。
+
+真机当前 `pip check` 会报告 `cmeel-boost 1.90.0` 希望使用 NumPy 2，以及 PyNaCl 缺少 cffi；这是 `~/.local` 中其他 PyPI 包留下的环境冲突。不要为了消除此提示升级系统 NumPy、Pinocchio 或 cmeel，否则可能破坏 ROS ABI。遥操入口会对实际导入路径和精确版本做门禁；后续若需彻底隔离，使用项目局部安装目录而不是继续改全局用户 site。
+
+### 真机 SDK 当前部署状态
+
+只读核查确认真机没有 `/usr/bin/sn_loco_server` 和 `/etc/qi-sdk`，所以源码树中的 `debian/start_sn_loco.sh` 当前不能直接使用。已经编译且包含 mode-5 策略腿融合的 ELF 位于：
+
+```text
+/home/coral/nanshan_south/qi_sdk_internal/install/qi_sdk/bin/sn_loco_server
+```
+
+它的配置位于 `qi_sdk_internal/install/config/`，默认 `lo`、Domain 16，动态库检查无缺失。应继续使用机器人现有、已经验证的 SDK/站立控制启动流程；不要把 `debian/start_sn_loco.sh` 当成已安装服务。遥操和在线 doctor 会核查**实际运行进程**的二进制，不限定它必须安装在 `/usr/bin`。
 
 ### 1. 编译 vendored qi ROS 消息
 
@@ -186,6 +223,15 @@ cp hardware_teleop/config/ros_env.example.sh hardware_teleop/config/ros_env.sh
 # 编辑这一行：
 # HW_TELEOP_NETWORK_INTERFACE=enp47s0
 ```
+
+直接在已检查的机器人电脑运行时，复制专用覆盖模板：
+
+```bash
+cp hardware_teleop/config/ros_env.robot.example.sh \
+   hardware_teleop/config/ros_env.local.sh
+```
+
+该模板使用 `lo`、ROS Domain 16、CycloneDDS 和 `/usr/bin/python3`；Quest HTTPS 仍通过 `wlp44s0` 的 `192.168.110.35` 访问。
 
 验证：
 
@@ -230,7 +276,7 @@ export HW_TELEOP_NETWORK_INTERFACE=wlan0
 | ------------------------------ | -------------------- | ---------------- |
 | `HW_TELEOP_ROS_DISTRO`         | `/opt/ros/humble`    | ROS2 安装路径        |
 | `HW_TELEOP_NETWORK_INTERFACE`  | `enp47s0`            | CycloneDDS 绑定的网卡 |
-| `HW_TELEOP_RMW_IMPLEMENTATION` | `rmw_cyclonedds_cpp` | RMW 实现           |
+| `HW_TELEOP_RMW_IMPLEMENTATION` | `auto` | 优先 CycloneDDS，未安装时使用 Fast DDS；也可显式指定 |
 
 
 `bash run.sh teleop-hardware` 会自动 source；手动调试 topic 时在终端执行：
@@ -268,27 +314,35 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `lowcmd_topic`            | `lowcmd`       | 手臂 MIT 指令话题                      |
 | `hands_cmd_topic`         | `/handscmd`    | 灵巧手指令话题                          |
 | `body_dof`                | `26`           | 12 腿 + 7 左臂 + 7 右臂               |
-| `arm_kp` / `arm_kd`       | `60.0` / `2.0` | lowcmd 手臂 PD 增益                  |
+| `arm_kp` / `arm_kd`       | `60.0` / `3.0` | 与已核查 qiling 桥一致的手臂 PD 增益       |
 | `reversed_joint_names`    | 见 yaml         | 与真机符号约定一致的 3 个翻转关节               |
-| `max_joint_step_rad`      | `0.065`        | 每周期最大关节变化（rad）                   |
+| `max_joint_step_rad`      | `0.020`        | 真机最终单周期关节限幅（30 Hz 下最大 0.6 rad/s） |
 | `initial_state_timeout_s` | `15.0`         | 等待首帧 lowstate 超时                 |
 | `stale_command_hold`      | `true`         | Quest 输入 stale 时停止手臂运动           |
-| `max_state_age_s`         | `0.5`          | lowstate 断流超过此时间则停止手臂运动          |
+| `max_state_age_s`         | `0.2`          | lowstate 断流超过此时间则停止发送 lowcmd       |
+| `max_state_joint_jump_rad` | `0.35`       | 拒绝单帧关节位置突跳                         |
+| `input_stale_timeout_s`   | `0.25`         | 真机 Quest 输入超时                         |
+| `max_tcp_translation_speed_m_s` | `0.50` | 真机 TCP 目标平移速度上限                    |
+| `max_tcp_rotation_speed_rad_s` | `1.50`  | 真机 TCP 目标旋转速度上限                    |
 
 
 #### `startup` 段
 
-启动后、等待 Quest 摇操之前，双臂会**缓慢插值**到任务 `home_pose`（来自 `load_task_control_profiles`），避免上电瞬间跳变。
+默认启动不会自动移动双臂。完成 shadow 和单臂验证后，才可按需启用任务 `home_pose` 插值。
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `move_to_home` | `true` | 是否执行启动 homing |
+| `move_to_home` | `false` | 是否执行启动 homing；首次真机保持关闭 |
 | `duration_s` | `4.0` | homing 最长时长（秒） |
-| `max_joint_step_rad` | `0.03` | homing 每周期最大关节步长（比遥操更慢） |
+| `max_joint_step_rad` | `0.01` | homing 每周期最大关节步长 |
 | `position_tolerance_rad` | `0.02` | 到达 home 的容差 |
-| `check_lowcmd_publishers` | `true` | 创建本节点 lowcmd 发布者**之前**检查是否已有其他发布者 |
+| `check_lowcmd_publishers` | `true` | 图中超过一个已有 lowcmd publisher 时拒绝启动 |
+| `require_policy_lowcmd` | `true` | 发 mode 5 前必须实际收到有效策略腿命令 |
+| `policy_min_valid_frames` | `3` | 启动所需连续有效非 mode-5 帧数 |
+| `max_policy_age_s` | `0.2` | 策略断流后停止发送 mode-5 的门限 |
+| `require_sdk_mode5_merge` | `true` | 校验运行中的 SDK 二进制含策略腿融合实现 |
 
-若检测到 `lowcmd` 上已有发布者（例如 `moveit_mit_arm_bridge`），进程会**拒绝启动**，避免多源指令冲突。
+真机站立时本来就应存在一个策略 `lowcmd` 源。程序不只看 ROS graph：还会订阅同一话题，确认连续收到 `mode_ctrl != 5`、26 电机齐全、12 个腿电机启用且数值有限的策略包。若启动前看到另一个 mode-5 包，则判定旧遥操仍在运行并拒绝启动。
 
 #### `gravity_compensation` 段
 
@@ -296,14 +350,14 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 是否启用重力补偿 |
+| `enabled` | `false` | 首次真机默认关闭；单臂确认方向和力矩后再启用 |
 | `urdf_path` | `assets/my_robot/urdf/s4_40dof_merged.urdf` | 动力学 URDF |
 | `scale` | `0.6` | 重力力矩缩放（与 qiling 真机默认一致） |
 | `tau_limit` | `12.0` | 单关节力矩限幅（N·m） |
 | `ramp_time` | `2.0` | 启动后重力补偿从 0 渐增到满量程的时间 |
 | `source` | `current` | 用 `current`（实测关节）或 `target`（指令关节）算重力 |
 
-Pinocchio 不可用时仅打印警告并继续（无重力补偿），不影响遥操主流程。
+重力补偿初始化失败时会打印警告并禁用前馈力矩；但 Pink 主流程本身仍要求 ROS Pinocchio 可用，doctor 不通过时禁止启动真机遥操。
 
 
 #### `hands` 段
@@ -325,15 +379,15 @@ Pinocchio 不可用时仅打印警告并继续（无重力补偿），不影响�
 
 | 字段        | 可选值           | 说明                                     |
 | --------- | ------------- | -------------------------------------- |
-| `backend` | `rmpflow`（默认） | headless Isaac + Lula，与仿真 RMPflow 参数一致 |
-|           | `pinocchio`   | Pinocchio DLS，便于真机侧重新调参                |
+| `backend` | `pink`（默认） | 仓库内置 Pink + Pinocchio，无 Isaac/GPU 依赖 |
+|           | `rmpflow` / `pinocchio` | 仅供旧 `teleop-hardware-isaac` 回退入口 |
 
 
 
 
 #### `scene` 段
 
-headless Isaac 仅用于加载机器人做 FK/IK，**不加载 drawer 等任务资产**。
+仅供旧 `teleop-hardware-isaac` 入口使用；纯 Pink 入口不会读取或创建 Isaac 场景。
 
 ### `configs/teleoperation/meta_quest3.yaml` — 映射与手感
 
@@ -344,7 +398,7 @@ headless Isaac 仅用于加载机器人做 FK/IK，**不加载 drawer 等任务�
 | ------------------------- | -------------------- |
 | `network.port`            | Quest 服务端口，默认 `8443` |
 | `network.stale_timeout_s` | 超过 1 s 无有效帧 → 冻结双臂   |
-| `mapping.position_scale`  | 手柄位移放大，默认 `2.2`      |
+| `mapping.position_scale`  | 手柄位移放大，当前为 `2.0`      |
 | `mapping.clutch`          | Grip 离合阈值            |
 | `safety.workspace_*`      | TCP 工作空间限制           |
 | `smoothing.arm_*`         | 手臂指令平滑               |
@@ -359,6 +413,15 @@ headless Isaac 仅用于加载机器人做 FK/IK，**不加载 drawer 等任务�
 
 
 ### 标准启动流程
+
+先做静态 doctor；机器人 SDK/站立策略启动并开始发状态后，再做只读在线检查：
+
+```bash
+bash run.sh teleop-hardware-doctor --robot-profile --require-daqp
+bash run.sh teleop-hardware-doctor --robot-profile --require-daqp --require-live-state
+```
+
+第二条不会创建任何 publisher，会打印 `/lowcmd` 现有 publisher，并核查运行中的 `sn_loco_server` 是否包含新版 mode-5 融合实现。真正启动时还会等待有效策略腿数据，不能只凭节点名放行。
 
 **终端 1 — 启动真机遥操（自动 source ROS 环境 + 编译检查）：**
 
@@ -375,7 +438,7 @@ source hardware_teleop/scripts/source_ros_env.sh
 
 ros2 topic list
 ros2 topic hz lowstate          # 机器人 SDK 发布，启动遥操前就应能看到
-ros2 topic hz lowcmd            # 遥操启动且收到 lowstate 后 ~30Hz
+ros2 topic hz lowcmd            # 启动遥操前就应看到站立策略；启动后为策略+30Hz mode-5 混合流
 ros2 topic echo /handscmd --once
 ```
 
@@ -392,12 +455,14 @@ ros2 topic echo /handscmd --once
 
 ```
 [HW-TELEOP][ENV] ready ros=/opt/ros/humble interface=enp47s0 rmw=rmw_cyclonedds_cpp
-[HW-TELEOP] runtime=hardware ik=rmpflow control_rate_hz=30.0 state=lowstate ...
-[HW-TELEOP] waiting for lowstate (timeout=15.0s)...
-[HW-TELEOP][BOOT] minimal headless robot scene ready (no task assets)
-[HW-TELEOP][RMPFLOW] ready: independent left/right policies ...
-[HW-TELEOP] Meta Quest controller server ready
-[HW-TELEOP] Quest URL: https://192.168.x.x:8443
+[HW-PINK] verified SDK mode5 merge: pid=... executable=...
+[HW-PINK] runtime=hardware_no_isaac control_rate_hz=30.0 state=lowstate ...
+[HW-PINK] waiting for lowstate (timeout=15.0s)...
+[HW-TELEOP] standing-policy lowcmd ready: 3 valid frames, age=...s
+[HW-PINK][IK] details={'backend': 'pink', 'runtime': 'hardware_no_isaac', ...}
+[HW-PINK][FK] initial_tcp_L=(...) initial_tcp_R=(...)
+[HW-PINK] Meta Quest controller server ready
+[HW-PINK] Quest URL: https://192.168.x.x:8443
 ```
 
 
@@ -439,11 +504,12 @@ bash run.sh teleop-hardware --max-runtime-s 30
 | 话题          | 类型            | 方向  | 发布者     | 何时可见               |
 | ----------- | ------------- | --- | ------- | ------------------ |
 | `lowstate`  | `qi/LowState` | 订阅  | 机器人 SDK | 机器人上电 + DDS 通      |
-| `lowcmd`    | `qi/LowCmd`   | 发布  | 本模块     | 遥操启动且收到 lowstate 后 |
+| `lowcmd`    | `qi/LowCmd`   | 订阅 + 发布 | 站立策略 + 本模块 | 策略持续发非 5，本模块发 mode 5 |
 | `/handscmd` | `qi/HandsCmd` | 发布  | 本模块     | 同上                 |
 
 
 > 注意：`lowcmd` 默认 **无** 前导 `/`；手部话题为 `/handscmd`。
+> SDK 配置中的原生 DDS 名称 `rt/lowstate`、`rt/lowcmd`、`rt/handscmd` 是 ROS2 自动添加 `rt/` 前缀后的名称；项目 YAML 不能再写一次 `rt/`。
 
 
 
@@ -486,17 +552,19 @@ bash run.sh teleop-hardware --max-runtime-s 30
 
 **启动阶段**（Quest 连接前）：
 
-1. 等待首帧 `lowstate`
-2. 检查 `lowcmd` 是否已有其他发布者
-3. 双臂按 `startup` 配置缓慢移动到任务 home pose
-4. 进入主循环，等待 Grip 离合遥操
+1. 在创建命令桥前，验证运行中的 SDK 二进制包含 mode-5 策略腿融合实现
+2. 检查 graph 中没有多个未知 `lowcmd` 源
+3. 等待并校验首批 `lowstate`
+4. 等待连续、有效、新鲜的站立策略腿命令，证明 SDK 腿缓存已建立
+5. 默认保持当前实测姿态，不自动 homing
+6. 进入主循环，等待 Grip 离合遥操
 
 每 **30 Hz** 循环一次：
 
 1. **spin ROS** — 处理 `lowstate` 回调，更新实测臂关节角
-2. **同步 headless 机器人** — 将真机关节写入 Isaac articulation（仅 FK/IK 用）
+2. **Pink FK** — 直接用符号转换后的 LA7+RA7 实测关节计算双臂 TCP
 3. **读取 Quest 帧** — `BimanualTeleopMapper` 输出 TCP 目标 + 手部 trigger
-4. **IK** — 仅在 clutch 按下侧调用 RMPflow/Pinocchio
+4. **IK** — clutch 按下时调用双臂 Pink QP（含肘部 barrier 与关节限制）
 5. **组 26D 指令** — 未 clutch 侧保持当前实测关节；手部始终跟 trigger
 6. **平滑 + 限幅** — `smooth_command` + `max_joint_step_rad`
 7. **发布** — `lowcmd`（臂）+ `/handscmd`（手）
@@ -509,15 +577,18 @@ bash run.sh teleop-hardware --max-runtime-s 30
 | 机制                   | 说明                              |
 | -------------------- | ------------------------------- |
 | 离合门控                 | 未按 Grip 不运动该臂                   |
-| stale 冻结             | Quest 断连 / 超 1 s 无有效帧 → 停止发新臂指令 |
-| 关节步长限制               | 每周期 `max_joint_step_rad`        |
-| workspace 限制         | mapper 内 TCP 边界 + 速度限制          |
-| JointStateFrameGuard | 拒绝 NaN、异常全零 lowstate 帧          |
+| stale 冻结             | Quest 超 0.25 s 无有效帧 → 释放离合并回锚实测姿态 |
+| 关节步长限制               | 最终每周期不超过 0.020 rad；首测建议 0.005 |
+| workspace 限制         | mapper 内 TCP 边界 + 真机 0.5 m/s、1.5 rad/s 目标速度限制 |
+| JointStateFrameGuard | 拒绝 NaN、异常全零和大于 0.35 rad 的单帧突跳 |
 | 初始状态等待               | 未收到 lowstate 不进入控制循环            |
-| lowcmd 冲突检测            | 启动前拒绝已有 lowcmd 发布者               |
-| 启动 homing              | 缓慢过渡到 home pose 再等待摇操           |
-| 重力补偿 ramp            | `motor.tau` 渐增，减轻上电冲击             |
-| lowstate 断流             | 超过 `max_state_age_s` 停止手臂运动并 hold |
+| 策略腿缓存门禁             | 无连续有效策略腿包时绝不发送 mode-5          |
+| SDK 版本门禁              | 运行二进制缺少融合标记时拒绝命令输出          |
+| 运行期 publisher 监控     | 外部 `lowcmd` 源增至两个以上时锁存故障并停止本模块输出 |
+| 反馈/策略断流             | 超过 0.2 s 停止发送 lowcmd，让 SDK 回到策略控制 |
+| 重启离合回锚              | Grip 松开或输入 stale 后，以实测关节重置步进基准 |
+| 启动 homing              | 默认关闭，完成分阶段验证后才启用              |
+| 重力补偿                  | 默认关闭，确认方向后再使用 ramp               |
 
 
 
@@ -528,7 +599,7 @@ bash run.sh teleop-hardware --max-runtime-s 30
 
 - 松开双手 Grip + 关闭遥操进程
 - 或切断机器人物理急停
-- 确保无其他节点并发发布 `lowcmd`
+- 正常保留一个站立策略 `lowcmd` 源，同时确保旧遥操、MoveIt 和 replay 控制器已停止
 
 ---
 
@@ -538,30 +609,28 @@ bash run.sh teleop-hardware --max-runtime-s 30
 
 
 
-### 默认：RMPflow（推荐先试）
+### 默认：Pink（无 Isaac）
 
-- headless Isaac 加载机器人 URDF，不渲染、不加载任务场景
-- 使用与仿真相同的 Lula RMPflow 配置（`configs/teleoperation/rmpflow/`）
-- 控制频率 30 Hz 下 `update_every_n_steps=1`
+- 直接读取真机 LA7+RA7 反馈做 Pinocchio FK
+- 复用仿真 Pink 权重、TCP offset、关节限制和肘部 PositionBarrier
+- QP 初次真机联调使用 `quadprog`，轻量环境同时固定兼容的 DAQP 版本
 
 ```bash
 bash run.sh teleop-hardware
-# 或在 quest_hardware.yaml 中 ik.backend: rmpflow
+# 或在 quest_hardware.yaml 中 ik.backend: pink
 ```
 
-
-
-### 备用：Pinocchio
-
-若真机上 RMPflow 跟踪手感不理想，可切换 DLS IK：
+只读 shadow（不会创建 lowcmd 或手部 publisher）：
 
 ```bash
-bash run.sh teleop-hardware --ik-backend pinocchio
+bash run.sh teleop-hardware --shadow --skip-homing --input-debug
 ```
 
-或在 `quest_hardware.yaml` 中设置 `ik.backend: pinocchio`。
+旧 Isaac/RMPflow 回退：
 
-Pinocchio 参数来自 `meta_quest3.yaml` 的 `ik:` 段（`posture_gain`, `damping`, `max_joint_delta_rad` 等）。
+```bash
+bash run.sh teleop-hardware-isaac
+```
 
 ---
 
@@ -575,13 +644,20 @@ Pinocchio 参数来自 `meta_quest3.yaml` 的 `ik:` 段（`posture_gain`, `dampi
 | 参数                               | 说明                                                        |
 | -------------------------------- | --------------------------------------------------------- |
 | `--hardware-config PATH`         | 硬件配置 yaml，默认 `hardware_teleop/config/quest_hardware.yaml` |
-| `--ik-backend rmpflow|pinocchio` | 覆盖 yaml 中的 IK 后端                                          |
+| `--ik-backend pink`             | 覆盖 yaml 中的纯运行时 IK 后端                                    |
 | `--host / --port`                | Quest 服务绑定地址（默认读 meta_quest3.yaml）                        |
 | `--insecure-http`                | 仅桌面调试，Quest WebXR 不可用                                     |
 | `--report-period-s 0.5`          | 状态日志周期                                                    |
 | `--max-runtime-s N`              | N 秒后自动退出，0 为一直运行                                          |
 | `--input-debug`                  | 打印详细输入/跟踪信息                                               |
-| `--headless`                     | 默认已启用（Isaac 无窗口）                                          |
+| `--shadow`                       | 只读状态和计算 IK，不创建任何命令 publisher                         |
+| `--enabled-arms left|right|both` | 分级联调时只允许指定手臂运动                                        |
+| `--disable-hands`                | 禁止发布手部命令                                                    |
+| `--skip-homing`                  | 跳过启动回零                                                        |
+| `--max-arm-step-rad N`           | 设置不大于 YAML 上限的更严格单周期关节步长                           |
+| `--allow-existing-lowcmd-publishers` | 仅在人工确认 graph 中多个 publisher 身份后放宽“最多一个”检查；策略数据门禁仍生效 |
+| `--allow-no-policy-lowcmd` | **危险**：绕过策略腿缓存门禁，仅限固定工装 |
+| `--allow-unverified-sdk-mode5-merge` | **危险**：绕过 SDK 融合版本校验，不用于正常站立真机 |
 
 
 ---
@@ -592,16 +668,16 @@ Pinocchio 参数来自 `meta_quest3.yaml` 的 `ik:` 段（`posture_gain`, `dampi
 
 按顺序执行，避免一上来就动真机：
 
-- [ ] **1. 机器人上电**，SDK 运行，无其他 `lowcmd` 发布者
+- [ ] **1. 机器人上电**，SDK 与站立策略正常运行
 - [ ] **2. 配置网卡** — 编辑 `config/ros_env.sh` 中 `HW_TELEOP_NETWORK_INTERFACE`
 - [ ] **3. source 环境** — `source hardware_teleop/scripts/source_ros_env.sh`
-- [ ] **4. 验证 lowstate** — `ros2 topic hz lowstate` 有稳定频率
+- [ ] **4. doctor 在线检查** — `--require-live-state` 有稳定 `/lowstate`，识别策略 publisher，并验证正在运行的 SDK 二进制
 - [ ] **5. 编译 qi 消息** — `bash run.sh teleop-hardware-build`（若未做过）
 - [ ] **6. 证书** — `bash run.sh teleop-cert --ip <Quest可访问的IP>`
-- [ ] **7. 短跑遥操** — `bash run.sh teleop-hardware --max-runtime-s 30`
-- [ ] **8. 验证 lowcmd** — 另一终端 `ros2 topic hz lowcmd` ≈ 30 Hz
+- [ ] **7. shadow 短跑** — `bash run.sh teleop-hardware --shadow --max-runtime-s 30`
+- [ ] **8. 验证 lowcmd** — 启动遥操前已存在稳定站立策略流；启动后是策略流叠加 30 Hz mode-5，不能按总频率等于 30 Hz 判断
 - [ ] **9. Quest 连接** — 打开 `https://<IP>:8443`，确认 session 日志
-- [ ] **10. 单臂小范围** — 按住一侧 Grip，小位移试动，确认方向与离合
+- [ ] **10. 单臂小范围** — `--enabled-arms left --disable-hands --max-arm-step-rad 0.005`，确认方向与离合
 - [ ] **11. 双手 + Trigger** — 验证手部 `/handscmd` 随 trigger 变化
 
 ---
@@ -647,7 +723,7 @@ bash run.sh teleop-hardware-build
 ### 手臂乱动 / 方向反了
 
 - 检查 `reversed_joint_names` 是否与真机一致
-- 确认无其他节点并发发 `lowcmd`
+- 保留唯一站立策略源，并确认没有旧遥操、MoveIt 或 replay 控制器并发发 `lowcmd`
 - 首次试动用小范围、低速度，单臂 clutch
 
 
@@ -695,7 +771,7 @@ python3 -m pytest tests/test_hardware_teleop_*.py -q
 
 ```bash
 python3 -m pytest tests/test_hardware_teleop_*.py tests/test_teleoperation_*.py -q
-python3 -m py_compile hardware_teleop/main.py hardware_teleop/ros/robot_bridge.py
+python3 -m py_compile hardware_teleop/pink_main.py hardware_teleop/ros/robot_bridge.py
 ```
 
 
@@ -706,7 +782,10 @@ python3 -m py_compile hardware_teleop/main.py hardware_teleop/ros/robot_bridge.p
 | 命令                                  | 作用                |
 | ----------------------------------- | ----------------- |
 | `bash run.sh teleop-hardware`       | 启动真机遥操            |
+| `bash run.sh teleop-hardware-isaac` | 旧 Isaac/RMPflow 回退   |
 | `bash run.sh teleop-hardware-build` | 编译 qi 消息          |
+| `bash run.sh teleop-hardware-system-prepare` | 检查/安装真机项目局部依赖 |
+| `bash run.sh teleop-hardware-doctor` | 检查 Python、Pink/QP、ROS/qi 和可选在线状态 |
 | `bash run.sh teleop-hardware-env`   | 打印 source 命令      |
 | `bash run.sh teleop-cert`           | 生成 Quest HTTPS 证书 |
 | `bash run.sh teleop`                | 仿真遥操（非本模块）        |
@@ -720,16 +799,25 @@ python3 -m py_compile hardware_teleop/main.py hardware_teleop/ros/robot_bridge.p
 
 ```bash
 # 一次性
+bash run.sh teleop-hardware-system-prepare --check
+# 用户确认后：
+bash run.sh teleop-hardware-system-prepare --install
 bash run.sh teleop-hardware-build
-bash run.sh teleop-cert --ip 192.168.x.x --overwrite
-# 编辑 hardware_teleop/config/ros_env.sh 中的网卡名
+cp hardware_teleop/config/ros_env.robot.example.sh hardware_teleop/config/ros_env.local.sh
+bash run.sh teleop-cert --ip 192.168.110.35 --overwrite
+
+# 静态检查；SDK 启动后再加 --require-live-state
+bash run.sh teleop-hardware-doctor --robot-profile --require-daqp
 
 # 每次 — 调试
 source hardware_teleop/scripts/source_ros_env.sh
 ros2 topic hz lowstate
 
-# 每次 — 启动
-bash run.sh teleop-hardware
+# 首次只读 shadow
+bash run.sh teleop-hardware --shadow --skip-homing --input-debug
+
+# 分级放开单臂小步长
+bash run.sh teleop-hardware --enabled-arms left --disable-hands --skip-homing --max-arm-step-rad 0.005
 
 # Quest
 # https://192.168.x.x:8443

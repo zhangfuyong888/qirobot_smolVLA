@@ -2,7 +2,7 @@
 set -euo pipefail
 
 workspace_root="$(cd "$(dirname "$0")/.." && pwd)"
-image_tag="${1:-s4-smolvla:full-v2}"
+image_tag="${1:-s4-smolvla:full-v3}"
 
 if [[ ! -x "$workspace_root/IsaacLab/isaaclab.sh" ]]; then
     echo "Missing $workspace_root/IsaacLab. Run: bash docker/prepare_workspace.sh \"${ISAACLAB_SOURCE:-$HOME/IsaacLab}\"" >&2
@@ -28,6 +28,7 @@ require_file "$workspace_root/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_i
 require_file "$workspace_root/docker/vendor/kit-exts/isaacsim.asset.importer.urdf-2.4.31+107.3.3.lx64.r.cp311/config/extension.toml"
 require_file "$workspace_root/docker/vendor/kit-exts/omni.kit.pip_archive-d38fa9ecd1fb6df4/config/extension.toml"
 require_file "$workspace_root/docker/sanitize_release_paths.py"
+require_file "$workspace_root/docker/vulkan/nvidia_icd_headless.json"
 
 shopt -s nullglob
 dataset_contracts=("$workspace_root"/s4_smolvla_isaaclab/datasets/lerobot_data/*/meta/s4_contract.json)
@@ -62,6 +63,12 @@ fi
     echo "project_dirty=$project_dirty"
     echo "lerobot_dirty=$lerobot_dirty"
     echo "image_tag=$image_tag"
+    echo "image_release=full-v3"
+    echo "cuda_userspace=12.8"
+    echo "isaacsim=5.1.0"
+    echo "vulkan_mode=headless-egl"
+    echo "vulkan_icd_library=libEGL_nvidia.so.0"
+    echo "required_arch=x86_64"
     echo "build_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } > "$workspace_root/docker/release-manifest.env"
 

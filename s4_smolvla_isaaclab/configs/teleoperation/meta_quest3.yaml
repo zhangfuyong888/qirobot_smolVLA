@@ -57,8 +57,8 @@ controller:
   # dense QP for differential IK; Isaac remains only the physics runtime.
   pink:
     urdf_file: assets/my_robot/urdf/s4_40dof_merged.urdf
-    # qpsolvers 4.12 + the currently locked daqp 0.7.2 are API-incompatible;
-    # quadprog is verified in this environment and is fast for this dense QP.
+    # DAQP was upgraded from the incompatible 0.7.2 to 0.8.7. Keep quadprog as
+    # the commissioned default; doctor probes both solvers on each runtime.
     solver: quadprog
     left_frame_name: left_wrist_yaw_link
     right_frame_name: right_wrist_yaw_link

@@ -1,6 +1,6 @@
 services:
   s4-smolvla:
-    image: s4-smolvla:full-v2
+    image: s4-smolvla:full-v3
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -15,6 +15,12 @@ services:
       OMNI_KIT_ACCEPT_EULA: "Y"
       PRIVACY_CONSENT: "Y"
       S4_KIT_OFFLINE: "1"
+      # Host GPU selection: all | 0 | 0,1,2,3 (physical indices from nvidia-smi).
+      # Prefer: bash docker/run.sh --gpus N ... (uses docker --gpus device=N).
+      S4_GPUS: ${S4_GPUS:-all}
+      XDG_RUNTIME_DIR: /workspace/runtime/xdg-runtime
+      NVIDIA_DRIVER_CAPABILITIES: graphics,compute,utility
+      VK_ICD_FILENAMES: /etc/vulkan/icd.d/nvidia_icd_headless.json
       S4_DATA_ROOT: /workspace/smolVLA/s4_smolvla_isaaclab/datasets
       S4_OUTPUT_ROOT: /workspace/smolVLA/s4_smolvla_isaaclab/outputs
       S4_ROLLOUT_CHECKPOINT: /workspace/smolVLA/s4_smolvla_isaaclab/outputs/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/350000/pretrained_model

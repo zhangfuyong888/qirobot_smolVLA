@@ -16,12 +16,26 @@ export S4_CACHE_ROOT="${S4_CACHE_ROOT:-/workspace/runtime/cache}"
 export S4_ROLLOUT_CHECKPOINT="${S4_ROLLOUT_CHECKPOINT:-${S4_OUTPUT_ROOT}/train/smolvla_drawer_insert_close_v4_12phase_serial_acquire/checkpoints/350000/pretrained_model}"
 export OMNI_KIT_ACCEPT_EULA="${OMNI_KIT_ACCEPT_EULA:-Y}"
 export S4_KIT_OFFLINE="${S4_KIT_OFFLINE:-1}"
+export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/etc/vulkan/icd.d/nvidia_icd_headless.json}"
+export NVIDIA_DRIVER_CAPABILITIES="${NVIDIA_DRIVER_CAPABILITIES:-graphics,compute,utility}"
 export PATH="${S4_CONDA_ROOT}/bin:${PATH}"
 export PYTHONUNBUFFERED=1
+
+if [[ ! -r "$VK_ICD_FILENAMES" ]]; then
+    echo "[FAIL] Vulkan ICD not readable: $VK_ICD_FILENAMES" >&2
+    exit 1
+fi
+
+gpu_selection="${NVIDIA_VISIBLE_DEVICES:-${S4_GPUS:-all}}"
+if [[ "$gpu_selection" != "all" ]]; then
+    echo "[S4] host GPU selection: NVIDIA_VISIBLE_DEVICES=$gpu_selection (container cuda indices start at 0)"
+fi
 
 mkdir -p "$S4_DATA_ROOT" "$S4_OUTPUT_ROOT" "$S4_CACHE_ROOT"
 mkdir -p /workspace/runtime/isaac-cache /workspace/runtime/compute-cache
 mkdir -p /workspace/runtime/isaac-logs /workspace/runtime/isaac-config
+mkdir -p /workspace/runtime/xdg-runtime
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/workspace/runtime/xdg-runtime}"
 
 # Named volumes survive image rebuilds and may contain checkpoints created on
 # the workstation or by an older container layout. Keep only the JSON metadata

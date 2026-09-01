@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from pathlib import Path
@@ -55,6 +56,7 @@ class HardwareRobotBridge:
         gravity_cfg: HardwareGravityCompConfig | None = None,
         project_root: Path | None = None,
         check_lowcmd_publishers: bool = True,
+        command_output_enabled: bool = True,
     ) -> None:
         rclpy, JointState, LowCmd, LowState, MotorCmd, HandCmd, HandsCmd = _require_ros_types()
         self._rclpy = rclpy
@@ -71,17 +73,30 @@ class HardwareRobotBridge:
         self._sign_by_name = build_sign_map(ros_cfg.reversed_joint_names)
         self._joint_order = list(REAL_ROBOT_BODY_JOINT_ORDER)
         self._arm_joint_names = set(ARM_JOINT_NAMES)
+        self._command_output_enabled = bool(command_output_enabled)
 
         self._gravity_comp: ArmGravityCompensator | None = None
         self._gravity_enabled = False
         self._gravity_ramp_start: float | None = None
-        if gravity_cfg is not None and gravity_cfg.enabled:
+        if self._command_output_enabled and gravity_cfg is not None and gravity_cfg.enabled:
             self._initialize_gravity_compensation(gravity_cfg, project_root)
 
-        self._guard = JointStateFrameGuard(tuple(ARM_JOINT_NAMES))
+        self._guard = JointStateFrameGuard(
+            tuple(ARM_JOINT_NAMES),
+            max_position_jump=ros_cfg.max_state_joint_jump_rad,
+        )
         self._positions: dict[str, float] = {}
         self._last_state_time = 0.0
         self._state_ready = False
+        self._state_rejection_count = 0
+        self._last_state_rejection = ""
+        self._valid_policy_frames = 0
+        self._last_policy_time = 0.0
+        self._last_policy_rejection = "not received"
+        self._mode5_seen_before_output = False
+        self._has_published_lowcmd = False
+        self._last_graph_check_time = 0.0
+        self._last_external_lowcmd_publishers: tuple[str, ...] = ()
         self._lock = threading.Lock()
 
         self._left_hand_rad = np.zeros(6, dtype=np.float32)
@@ -110,11 +125,24 @@ class HardwareRobotBridge:
         else:
             raise ValueError(f"unsupported hardware.state_source: {ros_cfg.state_source!r}")
 
-        if check_lowcmd_publishers:
-            self._assert_no_existing_lowcmd_publishers()
+        # Observe the shared lowcmd topic before creating our writer. A valid
+        # non-mode-5 packet proves the standing policy is actively feeding the
+        # SDK's leg-command cache. Merely seeing a graph publisher is not enough.
+        self._node.create_subscription(
+            LowCmd,
+            ros_cfg.lowcmd_topic,
+            self._on_observed_lowcmd,
+            50,
+        )
 
-        self._lowcmd_pub = self._node.create_publisher(LowCmd, ros_cfg.lowcmd_topic, 10)
-        self._hands_pub = self._node.create_publisher(HandsCmd, ros_cfg.hands_cmd_topic, 10)
+        if self._command_output_enabled and check_lowcmd_publishers:
+            self._check_lowcmd_publisher_count()
+
+        self._lowcmd_pub = None
+        self._hands_pub = None
+        if self._command_output_enabled:
+            self._lowcmd_pub = self._node.create_publisher(LowCmd, ros_cfg.lowcmd_topic, 10)
+            self._hands_pub = self._node.create_publisher(HandsCmd, ros_cfg.hands_cmd_topic, 10)
 
     def _initialize_gravity_compensation(
         self,
@@ -146,7 +174,7 @@ class HardwareRobotBridge:
             flush=True,
         )
 
-    def _assert_no_existing_lowcmd_publishers(self) -> None:
+    def _lowcmd_publisher_labels(self) -> tuple[str, ...]:
         topic = self._ros_cfg.lowcmd_topic
         candidates = [topic]
         if topic.startswith("/"):
@@ -167,12 +195,42 @@ class HardwareRobotBridge:
                 label = f"{info.node_namespace}/{info.node_name}".replace("//", "/")
                 if label not in seen:
                     seen.append(label)
-        if seen:
-            joined = ", ".join(seen)
+        return tuple(seen)
+
+    @staticmethod
+    def _external_lowcmd_publishers(labels: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(
+            label
+            for label in labels
+            if label.rsplit("/", 1)[-1] != "hardware_quest_teleop_bridge"
+        )
+
+    def _check_lowcmd_publisher_count(self) -> None:
+        topic = self._ros_cfg.lowcmd_topic
+        seen = list(self._external_lowcmd_publishers(self._lowcmd_publisher_labels()))
+        if len(seen) > 1:
             raise RuntimeError(
-                f"Refusing to start: lowcmd topic {topic!r} already has publisher(s): {joined}. "
-                "Stop moveit_mit_arm_bridge or any other lowcmd publisher before hardware teleop."
+                f"Refusing to start: lowcmd topic {topic!r} has multiple graph publishers: "
+                f"{', '.join(seen)}. Keep exactly one standing-policy source and stop every "
+                "old teleop, MoveIt or replay controller."
             )
+        if seen:
+            print(
+                f"[HW-TELEOP] existing lowcmd graph publisher (expected standing policy): {seen[0]}",
+                flush=True,
+            )
+
+    def is_lowcmd_graph_conflicted(self, check_period_s: float = 0.2) -> bool:
+        """Return whether more than one external lowcmd source is currently visible."""
+        now = time.monotonic()
+        with self._lock:
+            if now - self._last_graph_check_time < max(float(check_period_s), 0.0):
+                return len(self._last_external_lowcmd_publishers) > 1
+        labels = self._external_lowcmd_publishers(self._lowcmd_publisher_labels())
+        with self._lock:
+            self._last_graph_check_time = now
+            self._last_external_lowcmd_publishers = labels
+        return len(labels) > 1
 
     @property
     def state_ready(self) -> bool:
@@ -191,6 +249,18 @@ class HardwareRobotBridge:
             return False
         return self.last_state_age_s > max_age_s
 
+    @property
+    def last_policy_age_s(self) -> float:
+        with self._lock:
+            if self._last_policy_time <= 0.0:
+                return float("inf")
+            return max(time.monotonic() - self._last_policy_time, 0.0)
+
+    def is_policy_feed_stale(self, max_age_s: float) -> bool:
+        if max_age_s <= 0.0:
+            return False
+        return self.last_policy_age_s > max_age_s
+
     def spin_once(self, timeout_sec: float = 0.0) -> None:
         self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
 
@@ -208,6 +278,45 @@ class HardwareRobotBridge:
                 return
             time.sleep(0.01)
         raise TimeoutError(f"timed out waiting for robot state ({source}) on {topic}")
+
+    def wait_for_policy_lowcmd(
+        self,
+        timeout_s: float,
+        min_valid_frames: int,
+        max_age_s: float,
+    ) -> None:
+        """Require fresh policy-leg packets before any mode_ctrl=5 output."""
+        required = max(int(min_valid_frames), 1)
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        while time.monotonic() < deadline:
+            self.spin_once(timeout_sec=0.05)
+            with self._lock:
+                valid_frames = self._valid_policy_frames
+                mode5_seen = self._mode5_seen_before_output
+                rejection = self._last_policy_rejection
+            if mode5_seen:
+                raise RuntimeError(
+                    "another mode_ctrl=5 source was observed on lowcmd before this teleop "
+                    "published anything; stop the old teleop controller"
+                )
+            if self.is_lowcmd_graph_conflicted():
+                raise RuntimeError(
+                    "multiple external lowcmd publishers appeared while waiting for the "
+                    "standing policy: " + ", ".join(self._last_external_lowcmd_publishers)
+                )
+            policy_age = self.last_policy_age_s
+            if valid_frames >= required and policy_age <= max(float(max_age_s), 0.0):
+                print(
+                    f"[HW-TELEOP] standing-policy lowcmd ready: {valid_frames} valid frames, "
+                    f"age={policy_age:.3f}s",
+                    flush=True,
+                )
+                return
+        raise TimeoutError(
+            "timed out waiting for valid non-mode_ctrl=5 standing-policy lowcmd packets; "
+            f"received_valid={self._valid_policy_frames}/{required}, last={rejection!r}. "
+            "Start the standing controller before hardware teleop."
+        )
 
     def read_bimanual_state(self) -> np.ndarray:
         with self._lock:
@@ -251,6 +360,10 @@ class HardwareRobotBridge:
                 publish_targets = {
                     name: self._positions.get(name, limited[name]) for name in ARM_JOINT_NAMES
                 }
+                # Grip released or Quest stale with healthy feedback: re-anchor
+                # the next step limiter to the measured pose. Keeping an old
+                # command anchor can otherwise create a jump on re-engagement.
+                self._commanded_arms = dict(publish_targets)
         self._publish_lowcmd(publish_targets)
         return dict(publish_targets)
 
@@ -264,6 +377,8 @@ class HardwareRobotBridge:
         self._publish_lowcmd(targets)
 
     def publish_hands(self, left_trigger: float, right_trigger: float) -> None:
+        if not self._command_output_enabled:
+            return
         left_positions = left_hand_positions(self._hands_cfg, left_trigger)
         right_positions = right_hand_positions(self._hands_cfg, right_trigger)
         self._last_hand_trigger = (float(left_trigger), float(right_trigger))
@@ -288,6 +403,7 @@ class HardwareRobotBridge:
         hands[int(self._hands_cfg.left_hand_array_index)] = left
         hands[int(self._hands_cfg.right_hand_array_index)] = right
         msg.hands = hands
+        assert self._hands_pub is not None
         self._hands_pub.publish(msg)
 
     def close(self) -> None:
@@ -301,6 +417,7 @@ class HardwareRobotBridge:
             self._positions.update({name: float(arm_positions[name]) for name in ARM_JOINT_NAMES})
             self._last_state_time = time.monotonic()
             self._state_ready = True
+            self._last_state_rejection = ""
 
     def _on_lowstate(self, msg) -> None:
         arm_positions, validation = decode_lowstate_arm_positions(
@@ -311,6 +428,9 @@ class HardwareRobotBridge:
             arm_names=ARM_JOINT_NAMES,
         )
         if arm_positions is None:
+            with self._lock:
+                self._state_rejection_count += 1
+                self._last_state_rejection = validation.reason
             return
         self._accept_arm_positions(arm_positions)
 
@@ -318,6 +438,9 @@ class HardwareRobotBridge:
         positions = {name: float(value) for name, value in zip(msg.name, msg.position, strict=False)}
         validation = self._guard.validate(positions)
         if not validation.accepted:
+            with self._lock:
+                self._state_rejection_count += 1
+                self._last_state_rejection = validation.reason
             return
         try:
             arm_positions = {name: positions[name] for name in ARM_JOINT_NAMES}
@@ -325,7 +448,42 @@ class HardwareRobotBridge:
             return
         self._accept_arm_positions(arm_positions)
 
+    def _on_observed_lowcmd(self, msg) -> None:
+        """Track fresh, structurally valid standing-policy leg commands."""
+        if int(msg.mode_ctrl) == 5:
+            with self._lock:
+                if not self._has_published_lowcmd:
+                    self._mode5_seen_before_output = True
+            return
+
+        motors = list(msg.motors)
+        reason = ""
+        if int(msg.mode) <= 0:
+            reason = f"packet mode is disabled ({int(msg.mode)})"
+        elif len(motors) < len(self._joint_order):
+            reason = f"packet has only {len(motors)} motors"
+        else:
+            for index, motor in enumerate(motors[:12]):
+                values = (motor.q, motor.dq, motor.tau, motor.kp, motor.kd)
+                if int(motor.mode) <= 0:
+                    reason = f"leg motor {index} is disabled"
+                    break
+                if not all(math.isfinite(float(value)) for value in values):
+                    reason = f"leg motor {index} has non-finite command fields"
+                    break
+
+        with self._lock:
+            if reason:
+                self._valid_policy_frames = 0
+                self._last_policy_rejection = reason
+            else:
+                self._valid_policy_frames += 1
+                self._last_policy_time = time.monotonic()
+                self._last_policy_rejection = ""
+
     def _publish_lowcmd(self, arm_targets: Mapping[str, float]) -> None:
+        if not self._command_output_enabled:
+            return
         gravity_efforts = self._gravity_efforts_for_targets(arm_targets)
         msg = self._LowCmd()
         msg.mode = 1
@@ -352,6 +510,9 @@ class HardwareRobotBridge:
                 motor.kd = 0.0
             motors.append(motor)
         msg.motors = motors
+        assert self._lowcmd_pub is not None
+        with self._lock:
+            self._has_published_lowcmd = True
         self._lowcmd_pub.publish(msg)
 
     def _gravity_ramp_multiplier(self) -> float:
@@ -392,9 +553,20 @@ class HardwareRobotBridge:
                 "state_ready": self._state_ready,
                 "state_source": self._ros_cfg.state_source,
                 "state_age_s": state_age_s,
+                "state_rejection_count": self._state_rejection_count,
+                "last_state_rejection": self._last_state_rejection,
+                "policy_age_s": (
+                    max(time.monotonic() - self._last_policy_time, 0.0)
+                    if self._last_policy_time > 0.0
+                    else float("inf")
+                ),
+                "valid_policy_frames": self._valid_policy_frames,
+                "last_policy_rejection": self._last_policy_rejection,
+                "external_lowcmd_publishers": self._last_external_lowcmd_publishers,
                 "left_hand_trigger": self._last_hand_trigger[0],
                 "right_hand_trigger": self._last_hand_trigger[1],
                 "lowcmd_topic": self._ros_cfg.lowcmd_topic,
                 "hands_cmd_topic": self._ros_cfg.hands_cmd_topic,
                 "gravity_comp_enabled": self._gravity_enabled,
+                "command_output_enabled": self._command_output_enabled,
             }

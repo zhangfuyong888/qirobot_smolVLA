@@ -27,6 +27,24 @@ class HardwareIkBackend(Protocol):
     def diagnostics(self) -> dict[str, str | float]: ...
 
 
+@runtime_checkable
+class PureHardwareIkBackend(HardwareIkBackend, Protocol):
+    def forward(self, arm_q14: np.ndarray) -> tuple[TcpPose, TcpPose]: ...
+
+
+def create_pure_hardware_ik_backend(config: HardwareTeleopConfig) -> PureHardwareIkBackend:
+    """Create an IK backend that has no Isaac articulation dependency."""
+    backend = config.ik.backend.lower()
+    if backend == "pink":
+        from hardware_teleop.ik.pink_backend import PinkHardwareIkBackend
+
+        return PinkHardwareIkBackend(config)
+    raise ValueError(
+        f"hardware IK backend {backend!r} requires the legacy Isaac entry; "
+        "use backend='pink' for the pure hardware runtime"
+    )
+
+
 def create_hardware_ik_backend(
     config: HardwareTeleopConfig,
     robot: Any,

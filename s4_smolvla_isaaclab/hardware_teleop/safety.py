@@ -1,0 +1,75 @@
+"""Small fault latch for real-robot teleoperation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+
+
+SDK_MODE5_MERGE_MARKER = b"[Teleop+Policy] merged legs from cache"
+
+
+def find_verified_mode5_sdk_process(
+    proc_root: Path = Path("/proc"),
+    *,
+    process_names: tuple[str, ...] = ("sn_loco_server",),
+) -> tuple[int, Path]:
+    """Return a running SDK process whose executable has the safe merge implementation."""
+    candidates: list[str] = []
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, PermissionError, OSError):
+            continue
+        if comm not in process_names:
+            continue
+        try:
+            executable = (entry / "exe").resolve(strict=True)
+            payload = executable.read_bytes()
+        except (FileNotFoundError, PermissionError, OSError):
+            candidates.append(f"pid={entry.name} comm={comm} executable=unreadable")
+            continue
+        if SDK_MODE5_MERGE_MARKER in payload:
+            return int(entry.name), executable
+        candidates.append(f"pid={entry.name} comm={comm} executable={executable} marker=missing")
+    detail = "; ".join(candidates) if candidates else "no sn_loco_server process found"
+    raise RuntimeError(
+        "verified SDK mode_ctrl=5 policy-leg merge is required before command output: "
+        + detail
+    )
+
+
+@dataclass
+class TeleopFaultLatch:
+    """Hold motion after a controller fault until both grips are released."""
+
+    reason: str | None = None
+    trip_count: int = 0
+
+    @property
+    def active(self) -> bool:
+        return self.reason is not None
+
+    def trip(self, reason: str) -> bool:
+        """Latch a fault and return True only for a new fault transition."""
+        message = str(reason).strip() or "unknown controller fault"
+        if self.reason is not None:
+            return False
+        self.reason = message
+        self.trip_count += 1
+        return True
+
+    def clear_if_released(
+        self,
+        *,
+        left_clutch: bool,
+        right_clutch: bool,
+        state_feed_ok: bool,
+    ) -> bool:
+        """Clear only while both grips are released and feedback is healthy."""
+        if self.reason is None or left_clutch or right_clutch or not state_feed_ok:
+            return False
+        self.reason = None
+        return True
