@@ -1,14 +1,14 @@
-# 第三章：项目环境与完整部署
+# 6.3 项目环境与完整部署
 
-> 导航：[课程索引](index.md) · [第一章：核心原理](01-principles.md) · [第二章：项目实现](02-implementation.md) · **第三章**
-
-本章说明如何把当前项目迁移到另一台工作站或 NVIDIA 训练服务器，并建立从仿真、数据采集、训练到在线 Rollout 的可复现运行环境。当前仓库同时提供双 Conda 工作站路径和完整 Docker release 路径；操作系统级 NVIDIA driver 与 Container Toolkit 始终属于宿主，不进入应用镜像。
+::: info 本节要点
+本章讲的是"迁移"与"复现"：如何把当前项目搬上另一台工作站或 NVIDIA 训练服务器，一路上从仿真、数据采集、训练到在线 Rollout，都立起一条可复现的运行环境。仓库同时提供双 Conda 工作站路径和完整 Docker release 路径；操作系统级 NVIDIA driver 与 Container Toolkit 属于宿主，不进入应用镜像。固定下载来源、校验清单和更多宿主兼容矩阵，仍待后续补齐。
+:::
 
 > 部署原则：代码、外部仓库、场景资产、基础模型、数据集和训练输出是六类不同对象。它们必须分别锁定版本和位置，不能把“代码 clone 成功”理解为“项目已经可以运行”。
 
 ---
 
-## 3.1 部署对象与目录边界
+## 6.3.1 部署对象与目录边界
 
 推荐的工作区结构如下。目录名可以改变，但 `.env` 必须指向实际位置。
 
@@ -35,7 +35,7 @@ workspace/
 | 基础模型 | 否 | `SMOLVLA_MODEL_ROOT` | 模型目录与模型配置 |
 | 数据和输出 | 否 | `S4_DATA_ROOT`、`S4_OUTPUT_ROOT` | dataset contract、checkpoint config |
 
-## 3.2 当前已验证软件基线
+## 6.3.2 当前已验证软件基线
 
 `environment/versions.md` 记录了当前已知可工作的工作站快照：
 
@@ -60,9 +60,9 @@ bash environment/collect_versions.sh
 
 该命令只打印版本信息，不替代安装验证。目标机器的驱动与 CUDA 兼容性仍应按照 Isaac Sim 5.1 和 PyTorch 官方要求确认。
 
-## 3.3 获取代码与固定外部仓库
+## 6.3.3 获取代码与固定外部仓库
 
-### 3.3.1 克隆主仓库和 LeRobot
+### 6.3.3.1 克隆主仓库和 LeRobot
 
 顶层仓库把 `lerobot/` 作为 submodule 管理。新机器应递归克隆：
 
@@ -86,13 +86,13 @@ cd s4_smolvla_isaaclab
 
 不要在未经验证的情况下把 LeRobot submodule 更新到最新主分支。SmolVLA 的配置字段、processor、dataset API 和 checkpoint 格式都可能随 LeRobot 版本变化。
 
-### 3.3.2 准备外部 IsaacLab
+### 6.3.3.2 准备外部 IsaacLab
 
 IsaacLab 不嵌入本项目。应按 NVIDIA 官方流程获取与 Isaac Sim 5.1 匹配的 checkout，并记录 commit。当前项目通过 `ISAACLAB_ROOT/isaaclab.sh` 启动 IsaacLab。
 
 > 待后续完善：发布时应给出外部 IsaacLab 的固定获取地址、精确 tag/commit 和 Isaac Sim 安装渠道。目前仓库只记录了已验证快照，不能替代 NVIDIA 官方安装说明。
 
-## 3.4 创建双 Python 环境
+## 6.3.4 创建双 Python 环境
 
 项目故意使用两个环境，因为 Isaac Sim/IsaacLab 和当前 LeRobot/SmolVLA 的 Python 与依赖边界不同。
 
@@ -105,7 +105,7 @@ flowchart LR
     D <-->|JSON Lines| E
 ```
 
-### 3.4.1 IsaacLab 环境
+### 6.3.4.1 IsaacLab 环境
 
 在 `s4_smolvla_isaaclab/` 下执行：
 
@@ -119,7 +119,7 @@ cd "$ISAACLAB_ROOT"
 
 当前环境文件固定的核心依赖包括 Python 3.11、NumPy 1.26、h5py 3.16、OpenCV 4.11、Pinocchio 2.7 和 Pink 3.1。Isaac Sim 与 IsaacLab 本体仍由外部安装提供。
 
-### 3.4.2 SmolVLA 环境
+### 6.3.4.2 SmolVLA 环境
 
 ```bash
 cd /path/to/smolVLA/s4_smolvla_isaaclab
@@ -132,9 +132,9 @@ pip install -e "$LEROBOT_ROOT"
 
 > 不要在两个环境中分别随意升级 `torch`、`transformers`、`av` 或 `lerobot`。即使安装成功，也可能破坏模型加载、视频编码或 processor 契约。
 
-## 3.5 准备场景资产
+## 6.3.5 准备场景资产
 
-### 3.5.1 使用维护者分发的资产包
+### 6.3.5.1 使用维护者分发的资产包
 
 将资产包解压到项目内，使目录满足：
 
@@ -147,7 +147,7 @@ local_assets/isaac/5.1/
 
 至少应包含仓库场景、Sektion 抽屉、YCB 物体、IsaacLab 调试标记和相关 MDL/贴图依赖。`local_assets/` 被 Git 忽略，应由维护者通过云盘或其他大文件渠道单独分发。
 
-### 3.5.2 从完整 Isaac 资产库制作最小资产包
+### 6.3.5.2 从完整 Isaac 资产库制作最小资产包
 
 若维护者本机已有完整 Isaac 5.1 资产库，可执行：
 
@@ -168,7 +168,7 @@ ISAAC_ASSET_ROOT=/path/to/Assets/Isaac/5.1 \
 
 > 当前行为：程序不会自动联网下载场景资产。自动下载地址、权限、断点续传和校验策略属于后续部署优化项。
 
-## 3.6 准备 SmolVLA 基础模型
+## 6.3.6 准备 SmolVLA 基础模型
 
 当前训练配置使用本地 `SmolVLM2-500M-Video-Instruct`。模型目录由 `SMOLVLA_MODEL_ROOT` 定位，训练 YAML 再拼接具体模型子目录。
 
@@ -181,7 +181,7 @@ ISAAC_ASSET_ROOT=/path/to/Assets/Isaac/5.1 \
 
 > 待后续完善：仓库目前没有面向新用户的基础模型自动下载命令、固定 revision 清单和校验文件。发布部署包时应补充官方模型来源、下载方式、许可证提示和 SHA-256/Hub revision。
 
-## 3.7 配置 `.env`
+## 6.3.7 配置 `.env`
 
 从模板创建本机配置：
 
@@ -219,7 +219,7 @@ S4_SMOLVLA_ENV=smolvla
 
 `.env` 是本机配置，不应提交到 Git。提交的 JSON/YAML 应使用环境变量或项目相对路径，不能写入个人绝对路径。
 
-## 3.8 配置来源与优先级
+## 6.3.8 配置来源与优先级
 
 | 内容 | 唯一来源 |
 |---|---|
@@ -232,9 +232,9 @@ S4_SMOLVLA_ENV=smolvla
 
 部署时不要复制一份“当前配置”到其他目录再手工维护。`run.sh`、采集、转换、训练和 Rollout 都应读取相同的 active task 配置。
 
-## 3.9 分阶段部署验收
+## 6.3.9 分阶段部署验收
 
-### 3.9.1 静态入口检查
+### 6.3.9.1 静态入口检查
 
 ```bash
 bash run.sh help
@@ -242,7 +242,7 @@ bash run.sh list-tasks
 bash run.sh activate-task drawer_insert_close
 ```
 
-### 3.9.2 环境与路径检查
+### 6.3.9.2 环境与路径检查
 
 首次部署、尚无数据和 checkpoint 时运行：
 
@@ -264,7 +264,7 @@ bash docker/run.sh --gpus 0 verify
 
 `verify-train` 检查固定训练依赖、完整数据集与所选 GPU；显式选择多张物理卡时还会实际启动对应数量的 Accelerate rank。`verify-rollout` 检查 EGL Vulkan、checkpoint processor、Isaac renderer 和真实 RGB frame。GPU 在创建容器时确定，宿主物理 `4,5` 会在容器内重编号为 `0,1`。
 
-### 3.9.3 场景验收
+### 6.3.9.3 场景验收
 
 ```bash
 bash run.sh sim
@@ -278,7 +278,7 @@ bash run.sh sim
 - 三路相机和腕部视锥方向正确；
 - TCP、抽屉把手坐标系和关节初态合理。
 
-### 3.9.4 小规模数据链路验收
+### 6.3.9.4 小规模数据链路验收
 
 ```bash
 bash run.sh record \
@@ -296,7 +296,7 @@ bash run.sh dataset-check \
 
 这一步会实际启动仿真并写入数据，只应在环境验收后执行。使用独立 smoke 文件可避免覆盖正式 HDF5 或 LeRobotDataset；应同时查看失败日志和专家动作质量。
 
-### 3.9.5 正式采集、转换与检查
+### 6.3.9.5 正式采集、转换与检查
 
 ```bash
 bash run.sh collect-convert \
@@ -312,7 +312,7 @@ bash run.sh collect-convert \
 
 `--episodes 200` 表示目标成功 episode 总数，不是总尝试数。首次生成目标 LeRobotDataset 时不要传 `--overwrite`；只有明确替换已有转换结果时才使用它。需要保留现有 HDF5 并继续采集时，保持同一 `--hdf5-file` 并增加 `--resume`。完整、安全的分步命令见 `docs/PIPELINE.md`。
 
-### 3.9.6 训练与 checkpoint 检查
+### 6.3.9.6 训练与 checkpoint 检查
 
 ```bash
 bash run.sh train
@@ -333,7 +333,7 @@ bash run.sh dataset-check \
   --checkpoint outputs/train/<run>/checkpoints/<step>/pretrained_model
 ```
 
-### 3.9.7 离线检查与在线 Rollout
+### 6.3.9.7 离线检查与在线 Rollout
 
 ```bash
 PYTHONPATH="$PWD" bash run.sh preview \
@@ -372,7 +372,7 @@ bash run.sh rollout \
 bash run.sh diagnose outputs/eval/<run_dir>/ep001_actions.csv
 ```
 
-## 3.10 标准运行顺序与安全门
+## 6.3.10 标准运行顺序与安全门
 
 ```mermaid
 flowchart TD
@@ -398,7 +398,7 @@ flowchart TD
 - dataset/checkpoint feature 不匹配时不 Rollout；
 - 固定场景不能回归时，不直接扩大随机评估规模。
 
-## 3.11 生成物、磁盘与备份
+## 6.3.11 生成物、磁盘与备份
 
 | 目录 | 内容 | 建议策略 |
 |---|---|---|
@@ -411,7 +411,7 @@ flowchart TD
 
 这些目录默认不进入 Git。迁移工作站时，应分别传输代码、资产、基础模型、数据集和 checkpoint，不能只复制一个仓库目录就假定所有产物齐全。
 
-## 3.12 常见部署故障
+## 6.3.12 常见部署故障
 
 | 现象 | 优先检查 | 不应首先修改 |
 |---|---|---|
@@ -425,7 +425,7 @@ flowchart TD
 | Rollout 相机契约失败 | checkpoint image keys 与任务配置 | 不要交换左右腕图像 |
 | 动作尺度异常 | normalization、action semantics、26D 顺序 | 不要用 stiffness/damping 掩盖 |
 
-## 3.13 部署验收清单
+## 6.3.13 部署验收清单
 
 - [ ] 主仓库和 LeRobot submodule 位于预期 commit；
 - [ ] 外部 IsaacLab commit 和 Isaac Sim 版本已记录；
@@ -442,7 +442,7 @@ flowchart TD
 - [ ] 随机成功率实验记录 checkpoint、seed、范围和配置版本；
 - [ ] 数据、模型和输出已有独立备份策略。
 
-## 3.14 后续部署优化框架
+## 6.3.14 后续部署优化框架
 
 以下框架区分已经落地的能力和仍待完善的交付项：
 
@@ -471,8 +471,8 @@ flowchart TD
 
 > 设计边界：自动化部署应“显式下载、明确版本、校验后使用、失败即停止”。不应在启动仿真时后台静默获取资产或模型。
 
-## 3.15 本章小结
+## 6.3.15 本章小结
 
-完整部署不是把 Python 包安装成功，而是让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约和 checkpoint 同时对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、完整 Docker release、宿主 preflight、分 profile runtime verify、资产归纳、`doctor` 和数据检查；后续重点是完善固定下载来源、更多宿主兼容矩阵和发布自动化。
+完整部署，从来不只是"把 Python 包装上"那么轻巧——它要让代码、两个运行环境、外部仓库、场景资产、基础模型、数据契约与 checkpoint 同时咬合对齐。当前项目已经具备环境 YAML、统一 `run.sh`、`.env`、完整 Docker release、宿主 preflight、分 profile runtime verify、资产归纳、`doctor` 与数据检查；后续重点是完善固定下载来源、更多宿主兼容矩阵和发布自动化。
 
-部署完成后，应返回[第二章](02-implementation.md)按照“专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率”的顺序验证完整闭环。
+部署验收通过后，应回到[6.2](02-implementation.md)，依"专家数据 → 转换检查 → 训练 → 固定 Rollout → 随机成功率"的顺序，把完整闭环再走一遍。
