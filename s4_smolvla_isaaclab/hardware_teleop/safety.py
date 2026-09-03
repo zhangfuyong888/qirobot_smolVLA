@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,8 +14,10 @@ def find_verified_mode5_sdk_process(
     proc_root: Path = Path("/proc"),
     *,
     process_names: tuple[str, ...] = ("sn_loco_server",),
+    approved_sha256: tuple[str, ...] = (),
 ) -> tuple[int, Path]:
-    """Return a running SDK process whose executable has the safe merge implementation."""
+    """Return a running approved SDK binary with the safe merge implementation."""
+    approved = {value.lower() for value in approved_sha256}
     candidates: list[str] = []
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -32,6 +35,13 @@ def find_verified_mode5_sdk_process(
             candidates.append(f"pid={entry.name} comm={comm} executable=unreadable")
             continue
         if SDK_MODE5_MERGE_MARKER in payload:
+            digest = hashlib.sha256(payload).hexdigest()
+            if approved and digest not in approved:
+                candidates.append(
+                    f"pid={entry.name} comm={comm} executable={executable} "
+                    f"sha256={digest} not-approved"
+                )
+                continue
             return int(entry.name), executable
         candidates.append(f"pid={entry.name} comm={comm} executable={executable} marker=missing")
     detail = "; ".join(candidates) if candidates else "no sn_loco_server process found"

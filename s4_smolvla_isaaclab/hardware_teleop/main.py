@@ -122,7 +122,9 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
     server = QuestWebServer(store, host, port, cert, key, PROJECT_ROOT / "teleoperation/webxr")
 
     if config.startup.require_sdk_mode5_merge:
-        sdk_pid, sdk_executable = find_verified_mode5_sdk_process()
+        sdk_pid, sdk_executable = find_verified_mode5_sdk_process(
+            approved_sha256=config.startup.approved_sdk_sha256,
+        )
         print(
             f"[HW-TELEOP] verified SDK mode5 merge: pid={sdk_pid} executable={sdk_executable}",
             flush=True,
@@ -133,6 +135,7 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             config.hardware,
             config.hands,
             gravity_cfg=config.gravity,
+            startup_cfg=config.startup,
             project_root=config.project_root,
             check_lowcmd_publishers=config.startup.check_lowcmd_publishers,
         )
@@ -176,6 +179,7 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             config.startup.policy_initial_timeout_s,
             config.startup.policy_min_valid_frames,
             config.startup.max_policy_age_s,
+            config.startup.policy_stable_duration_s,
         )
 
     command_action = run_startup_homing(
@@ -369,7 +373,7 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
             and not bridge.is_lowcmd_graph_conflicted(check_period_s=0.0)
         ):
             try:
-                bridge.hold_current_arms()
+                bridge.release_to_policy("legacy teleop process shutdown")
             except Exception:
                 pass
         bridge.close()

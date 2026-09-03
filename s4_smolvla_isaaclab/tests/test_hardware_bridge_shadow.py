@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+import time
 
 import numpy as np
 
@@ -19,11 +20,28 @@ class _Message:
     pass
 
 
+class _Publisher:
+    def __init__(self) -> None:
+        self.messages = []
+
+    def publish(self, message) -> None:
+        self.messages.append(message)
+
+
+class _Clock:
+    class _Now:
+        nanoseconds = 123
+
+    def now(self):
+        return self._Now()
+
+
 class _Node:
     def __init__(self) -> None:
         self.subscription_count = 0
         self.publisher_count = 0
         self.publisher_infos = []
+        self.publishers = []
 
     def create_subscription(self, *_args, **_kwargs):
         self.subscription_count += 1
@@ -31,7 +49,12 @@ class _Node:
 
     def create_publisher(self, *_args, **_kwargs):
         self.publisher_count += 1
-        return object()
+        publisher = _Publisher()
+        self.publishers.append(publisher)
+        return publisher
+
+    def get_clock(self):
+        return _Clock()
 
     def get_publishers_info_by_topic(self, _topic: str):
         return list(self.publisher_infos)
@@ -109,7 +132,7 @@ class _LowCmdFrame:
         self.motors = [_Motor(mode=motor_mode) for _ in range(26)]
 
 
-def _make_bridge(monkeypatch):
+def _make_bridge(monkeypatch, *, strict_policy_health: bool = False):
     config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
     fake_rclpy = _Rclpy()
     monkeypatch.setattr(
@@ -121,11 +144,32 @@ def _make_bridge(monkeypatch):
         config.hardware,
         config.hands,
         gravity_cfg=replace(config.gravity, enabled=False),
+        startup_cfg=config.startup if strict_policy_health else None,
         project_root=config.project_root,
         check_lowcmd_publishers=False,
         command_output_enabled=False,
     )
     return config, bridge
+
+
+def test_policy_gate_requires_healthy_stable_robot_feedback(monkeypatch) -> None:
+    _config, bridge = _make_bridge(monkeypatch, strict_policy_health=True)
+    try:
+        bridge._last_state_time = time.monotonic()
+        bridge._state_leg_positions = (0.0,) * 12
+        bridge._state_health_rejection = "robot roll/pitch exceeds standing threshold"
+        bridge._on_observed_lowcmd(_LowCmdFrame(mode_ctrl=4))
+        assert bridge.diagnostics()["valid_policy_frames"] == 0
+        assert "roll/pitch" in str(bridge.diagnostics()["last_policy_rejection"])
+
+        bridge._state_health_rejection = ""
+        bridge._on_observed_lowcmd(_LowCmdFrame(mode_ctrl=4))
+        diagnostics = bridge.diagnostics()
+        assert diagnostics["valid_policy_frames"] == 1
+        assert diagnostics["policy_arm_target_ready"] is True
+        assert diagnostics["policy_stable_s"] >= 0.0
+    finally:
+        bridge.close()
 
 
 def test_policy_gate_accepts_only_enabled_non_mode5_leg_packets(monkeypatch) -> None:
@@ -177,5 +221,35 @@ def test_runtime_graph_monitor_rejects_second_external_lowcmd_source(monkeypatch
             "/robot/standing_policy",
             "/legacy/old_teleop",
         )
+    finally:
+        bridge.close()
+
+
+def test_controlled_release_slews_to_cached_policy_target(monkeypatch) -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    fake_rclpy = _Rclpy()
+    monkeypatch.setattr(
+        robot_bridge,
+        "_require_ros_types",
+        lambda: (fake_rclpy, _Message, _Message, _Message, _Message, _Message, _Message),
+    )
+    bridge = robot_bridge.HardwareRobotBridge(
+        replace(config.hardware, release_duration_s=0.2, release_tolerance_rad=0.001),
+        config.hands,
+        gravity_cfg=replace(config.gravity, enabled=False),
+        project_root=config.project_root,
+        check_lowcmd_publishers=False,
+        command_output_enabled=True,
+    )
+    try:
+        bridge._commanded_arms = {name: 0.012 for name in ARM_JOINT_NAMES}
+        bridge._policy_arm_targets = {name: 0.0 for name in ARM_JOINT_NAMES}
+        bridge._last_policy_time = time.monotonic()
+        bridge._has_published_lowcmd = True
+        assert bridge.release_to_policy("unit test")
+        assert bridge.diagnostics()["command_output_relinquished"] is True
+        assert len(fake_rclpy.node.publishers[0].messages) >= 2
+        with np.testing.assert_raises_regex(RuntimeError, "relinquished"):
+            bridge.publish_arm_command(bimanual_default_action())
     finally:
         bridge.close()

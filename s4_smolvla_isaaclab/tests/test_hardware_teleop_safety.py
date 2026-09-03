@@ -89,3 +89,11 @@ def test_sdk_mode5_merge_gate_rejects_old_binary(tmp_path: Path) -> None:
     _fake_process(proc_root, 456, executable, b"old SDK without merge")
     with pytest.raises(RuntimeError, match="marker=missing"):
         find_verified_mode5_sdk_process(proc_root)
+
+
+def test_sdk_mode5_merge_gate_rejects_unapproved_binary_hash(tmp_path: Path) -> None:
+    proc_root = tmp_path / "proc"
+    executable = tmp_path / "sn_loco_server"
+    _fake_process(proc_root, 789, executable, SDK_MODE5_MERGE_MARKER)
+    with pytest.raises(RuntimeError, match="not-approved"):
+        find_verified_mode5_sdk_process(proc_root, approved_sha256=("0" * 64,))

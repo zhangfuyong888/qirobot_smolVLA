@@ -304,8 +304,9 @@ case "${1:-help}" in
     teleop-hardware)
         shift
         if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
-            echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
-            bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
+            echo "[HW-TELEOP] local qi ROS messages are missing; refusing to build during a robot run" >&2
+            echo "[HW-TELEOP] run 'bash run.sh teleop-hardware-build' explicitly, then retry" >&2
+            exit 1
         fi
         # shellcheck disable=SC1091
         source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"

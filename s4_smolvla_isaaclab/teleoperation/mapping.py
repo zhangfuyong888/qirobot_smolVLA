@@ -191,6 +191,12 @@ class BimanualTeleopMapper:
             requested_position = state.tcp_reference_position + self.config.mapping.position_scale * (
                 basis @ (controller_position - state.controller_reference_position)
             )
+            clutch_delta = requested_position - state.tcp_reference_position
+            clutch_distance = float(np.linalg.norm(clutch_delta))
+            max_clutch_distance = self.config.mapping.max_clutch_translation_m
+            if clutch_distance > max_clutch_distance:
+                clutch_delta *= max_clutch_distance / clutch_distance
+                requested_position = state.tcp_reference_position + clutch_delta
             requested_position = np.clip(
                 requested_position,
                 self.config.safety.workspace_min,

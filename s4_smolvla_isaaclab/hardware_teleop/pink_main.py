@@ -76,12 +76,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read state and solve IK, but create no lowcmd or hand command publishers.",
     )
     parser.add_argument(
+        "--arm-output",
+        action="store_true",
+        help="Explicitly confirm that the supported real-robot command test may be armed.",
+    )
+    parser.add_argument(
         "--enabled-arms",
         choices=("left", "right", "both"),
-        default="both",
+        default="left",
         help="Limit which arm can move during staged commissioning.",
     )
-    parser.add_argument("--disable-hands", action="store_true")
+    hands = parser.add_mutually_exclusive_group()
+    hands.add_argument(
+        "--enable-hands",
+        action="store_true",
+        help="Enable hand commands after the initial no-hand commissioning stage.",
+    )
+    hands.add_argument("--disable-hands", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-homing", action="store_true")
     parser.add_argument(
         "--allow-existing-lowcmd-publishers",
@@ -175,8 +186,16 @@ def run_pink_hardware_teleop(
         ),
         safety=replace(
             config.teleop.safety,
+            workspace_min=np.asarray(config.hardware.commissioning_workspace_min),
+            workspace_max=np.asarray(config.hardware.commissioning_workspace_max),
             max_translation_speed_m_s=config.hardware.max_tcp_translation_speed_m_s,
             max_rotation_speed_rad_s=config.hardware.max_tcp_rotation_speed_rad_s,
+        ),
+        mapping=replace(
+            config.teleop.mapping,
+            position_scale=config.hardware.commissioning_position_scale,
+            orientation_enabled=config.hardware.commissioning_orientation_enabled,
+            max_clutch_translation_m=config.hardware.commissioning_max_clutch_translation_m,
         ),
     )
     configured_max_arm_step = min(
@@ -197,6 +216,12 @@ def run_pink_hardware_teleop(
     profiles, home_poses = load_task_control_profiles(project.dataset.task_id)
     mapper = BimanualTeleopMapper(teleop_cfg, **profiles)
 
+    if not args.shadow and not args.arm_output:
+        raise RuntimeError(
+            "real-robot command output is disarmed by default; complete the online doctor "
+            "and shadow test, support the robot, then restart with --arm-output"
+        )
+
     cert = None if args.insecure_http else args.cert.resolve()
     key = None if args.insecure_http else args.key.resolve()
     if cert is not None and (not cert.is_file() or not key.is_file()):
@@ -215,7 +240,9 @@ def run_pink_hardware_teleop(
         and config.startup.require_sdk_mode5_merge
         and not args.allow_unverified_sdk_mode5_merge
     ):
-        sdk_pid, sdk_executable = find_verified_mode5_sdk_process()
+        sdk_pid, sdk_executable = find_verified_mode5_sdk_process(
+            approved_sha256=config.startup.approved_sdk_sha256,
+        )
         print(
             f"[HW-PINK] verified SDK mode5 merge: pid={sdk_pid} executable={sdk_executable}",
             flush=True,
@@ -231,6 +258,7 @@ def run_pink_hardware_teleop(
             config.hardware,
             config.hands,
             gravity_cfg=config.gravity,
+            startup_cfg=config.startup,
             project_root=config.project_root,
             check_lowcmd_publishers=(
                 config.startup.check_lowcmd_publishers
@@ -276,6 +304,7 @@ def run_pink_hardware_teleop(
                 config.startup.policy_initial_timeout_s,
                 config.startup.policy_min_valid_frames,
                 config.startup.max_policy_age_s,
+                config.startup.policy_stable_duration_s,
             )
         except BaseException:
             _close_failed_initialization(
@@ -366,6 +395,8 @@ def run_pink_hardware_teleop(
     report_start_time = start_time
     report_steps = 0
     fault = TeleopFaultLatch()
+    left_hand_armed = False
+    right_hand_armed = False
     try:
         while True:
             now = time.monotonic()
@@ -382,6 +413,12 @@ def run_pink_hardware_teleop(
             actual_q14 = bimanual_to_arm_q14(actual_action)
             left_tcp, right_tcp = ik_backend.forward(actual_q14)
             mapped = mapper.update(store.snapshot(), left_tcp, right_tcp, mapping_dt, now)
+            left_hand_request = trigger_from_hand6(
+                profiles["left_open"], profiles["left_close"], mapped.left.hand6
+            )
+            right_hand_request = trigger_from_hand6(
+                profiles["right_open"], profiles["right_close"], mapped.right.hand6
+            )
             state_feed_stale = bridge.is_state_feed_stale(config.hardware.max_state_age_s)
             policy_feed_stale = require_policy and bridge.is_policy_feed_stale(
                 config.startup.max_policy_age_s
@@ -424,6 +461,15 @@ def run_pink_hardware_teleop(
             ):
                 ik_backend.set_posture_reference(actual_q14)
                 print("[HW-PINK][SAFETY] fault cleared after both grips were released", flush=True)
+
+            if mapped.stale or fault.active:
+                left_hand_armed = False
+                right_hand_armed = False
+            else:
+                if mapped.left.tracking_valid and left_hand_request <= 0.05:
+                    left_hand_armed = True
+                if mapped.right.tracking_valid and right_hand_request <= 0.05:
+                    right_hand_armed = True
 
             left_active = (
                 mapped.left.clutch
@@ -523,7 +569,8 @@ def run_pink_hardware_teleop(
 
             allow_arm_motion = (left_active or right_active) and not args.shadow
             command_transport_ok = (
-                not state_feed_stale
+                not mapped.stale
+                and not state_feed_stale
                 and not policy_feed_stale
                 and not lowcmd_graph_conflict
             )
@@ -537,14 +584,15 @@ def run_pink_hardware_teleop(
                     allow_motion=allow_arm_motion,
                     hold_commanded=False,
                 )
-                if not args.disable_hands and not mapped.stale:
-                    left_trigger = trigger_from_hand6(
-                        profiles["left_open"], profiles["left_close"], mapped.left.hand6
-                    )
-                    right_trigger = trigger_from_hand6(
-                        profiles["right_open"], profiles["right_close"], mapped.right.hand6
-                    )
-                    bridge.publish_hands(left_trigger, right_trigger)
+            hands_enabled = args.enable_hands and not args.disable_hands
+            if not args.shadow and hands_enabled:
+                left_trigger = (
+                    left_hand_request if left_hand_armed and left_active else 0.0
+                )
+                right_trigger = (
+                    right_hand_request if right_hand_armed and right_active else 0.0
+                )
+                bridge.publish_hands(left_trigger, right_trigger)
 
             report_steps += 1
             if now - last_report >= max(args.report_period_s, 0.1):
@@ -584,17 +632,9 @@ def run_pink_hardware_teleop(
         if recorder is not None:
             recorder.close()
         server.close()
-        if (
-            not args.shadow
-            and not bridge.is_state_feed_stale(config.hardware.max_state_age_s)
-            and (
-                not require_policy
-                or not bridge.is_policy_feed_stale(config.startup.max_policy_age_s)
-            )
-            and not bridge.is_lowcmd_graph_conflicted(check_period_s=0.0)
-        ):
+        if not args.shadow:
             try:
-                bridge.hold_current_arms()
+                bridge.release_to_policy("teleop process shutdown")
             except Exception:
                 pass
         bridge.close()
@@ -608,7 +648,7 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(config, ik=HardwareIkConfig(backend=str(args.ik_backend)))
         run_pink_hardware_teleop(config, args)
     except KeyboardInterrupt:
-        print("\n[HW-PINK] interrupted; holding current arm state", flush=True)
+        print("\n[HW-PINK] interrupted; mode_ctrl=5 released through safety ramp", flush=True)
         return 130
     except BaseException:
         print("[FATAL] Pink hardware Quest teleoperation failed:", flush=True)

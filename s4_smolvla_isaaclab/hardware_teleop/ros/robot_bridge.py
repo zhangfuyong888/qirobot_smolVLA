@@ -10,7 +10,12 @@ from typing import Mapping
 
 import numpy as np
 
-from hardware_teleop.config_loader import HardwareGravityCompConfig, HardwareHandsConfig, HardwareRosConfig
+from hardware_teleop.config_loader import (
+    HardwareGravityCompConfig,
+    HardwareHandsConfig,
+    HardwareRosConfig,
+    HardwareStartupConfig,
+)
 from hardware_teleop.hand_mapping import left_hand_positions, right_hand_positions
 from hardware_teleop.joint_mapping import (
     ARM_JOINT_NAMES,
@@ -54,6 +59,7 @@ class HardwareRobotBridge:
         hands_cfg: HardwareHandsConfig,
         *,
         gravity_cfg: HardwareGravityCompConfig | None = None,
+        startup_cfg: HardwareStartupConfig | None = None,
         project_root: Path | None = None,
         check_lowcmd_publishers: bool = True,
         command_output_enabled: bool = True,
@@ -70,6 +76,7 @@ class HardwareRobotBridge:
         self._ros_cfg = ros_cfg
         self._hands_cfg = hands_cfg
         self._gravity_cfg = gravity_cfg
+        self._startup_cfg = startup_cfg
         self._sign_by_name = build_sign_map(ros_cfg.reversed_joint_names)
         self._joint_order = list(REAL_ROBOT_BODY_JOINT_ORDER)
         self._arm_joint_names = set(ARM_JOINT_NAMES)
@@ -93,16 +100,29 @@ class HardwareRobotBridge:
         self._valid_policy_frames = 0
         self._last_policy_time = 0.0
         self._last_policy_rejection = "not received"
+        self._policy_stable_since = 0.0
+        self._policy_arm_targets: dict[str, float] = {}
+        self._state_health_rejection = "not received"
+        self._state_leg_positions: tuple[float, ...] = ()
         self._mode5_seen_before_output = False
         self._has_published_lowcmd = False
         self._last_graph_check_time = 0.0
         self._last_external_lowcmd_publishers: tuple[str, ...] = ()
         self._lock = threading.Lock()
+        self._spin_lock = threading.Lock()
+        self._command_lock = threading.RLock()
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
+        self._last_command_heartbeat = 0.0
+        self._release_active = False
+        self._output_relinquished = False
+        self._release_reason = ""
 
         self._left_hand_rad = np.zeros(6, dtype=np.float32)
         self._right_hand_rad = np.zeros(6, dtype=np.float32)
         self._commanded_arms: dict[str, float] = {}
         self._last_hand_trigger = (0.0, 0.0)
+        self._hands_ever_commanded = False
 
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -143,6 +163,12 @@ class HardwareRobotBridge:
         if self._command_output_enabled:
             self._lowcmd_pub = self._node.create_publisher(LowCmd, ros_cfg.lowcmd_topic, 10)
             self._hands_pub = self._node.create_publisher(HandsCmd, ros_cfg.hands_cmd_topic, 10)
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                name="hardware-command-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
 
     def _initialize_gravity_compensation(
         self,
@@ -262,7 +288,8 @@ class HardwareRobotBridge:
         return self.last_policy_age_s > max_age_s
 
     def spin_once(self, timeout_sec: float = 0.0) -> None:
-        self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
+        with self._spin_lock:
+            self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
 
     def wait_for_initial_state(self, timeout_s: float) -> None:
         deadline = time.monotonic() + max(timeout_s, 0.0)
@@ -284,6 +311,7 @@ class HardwareRobotBridge:
         timeout_s: float,
         min_valid_frames: int,
         max_age_s: float,
+        stable_duration_s: float = 0.0,
     ) -> None:
         """Require fresh policy-leg packets before any mode_ctrl=5 output."""
         required = max(int(min_valid_frames), 1)
@@ -294,6 +322,7 @@ class HardwareRobotBridge:
                 valid_frames = self._valid_policy_frames
                 mode5_seen = self._mode5_seen_before_output
                 rejection = self._last_policy_rejection
+                stable_since = self._policy_stable_since
             if mode5_seen:
                 raise RuntimeError(
                     "another mode_ctrl=5 source was observed on lowcmd before this teleop "
@@ -305,10 +334,19 @@ class HardwareRobotBridge:
                     "standing policy: " + ", ".join(self._last_external_lowcmd_publishers)
                 )
             policy_age = self.last_policy_age_s
-            if valid_frames >= required and policy_age <= max(float(max_age_s), 0.0):
+            stable_for = (
+                max(time.monotonic() - stable_since, 0.0)
+                if stable_since > 0.0
+                else 0.0
+            )
+            if (
+                valid_frames >= required
+                and policy_age <= max(float(max_age_s), 0.0)
+                and stable_for >= max(float(stable_duration_s), 0.0)
+            ):
                 print(
                     f"[HW-TELEOP] standing-policy lowcmd ready: {valid_frames} valid frames, "
-                    f"age={policy_age:.3f}s",
+                    f"age={policy_age:.3f}s stable={stable_for:.2f}s",
                     flush=True,
                 )
                 return
@@ -341,31 +379,37 @@ class HardwareRobotBridge:
         allow_motion: bool = True,
         hold_commanded: bool = False,
     ) -> dict[str, float]:
-        desired = bimanual_arm_targets(action)
-        with self._lock:
-            if not self._commanded_arms and self._state_ready:
-                self._commanded_arms = {name: self._positions[name] for name in ARM_JOINT_NAMES}
-            limited = limit_arm_step(
-                desired,
-                self._commanded_arms,
-                max_step_rad=self._ros_cfg.max_joint_step_rad,
-            )
-            if allow_motion:
-                self._commanded_arms = dict(limited)
-            if allow_motion:
-                publish_targets = dict(self._commanded_arms)
-            elif hold_commanded and self._commanded_arms:
-                publish_targets = {name: self._commanded_arms[name] for name in ARM_JOINT_NAMES}
-            else:
-                publish_targets = {
-                    name: self._positions.get(name, limited[name]) for name in ARM_JOINT_NAMES
-                }
-                # Grip released or Quest stale with healthy feedback: re-anchor
-                # the next step limiter to the measured pose. Keeping an old
-                # command anchor can otherwise create a jump on re-engagement.
-                self._commanded_arms = dict(publish_targets)
-        self._publish_lowcmd(publish_targets)
-        return dict(publish_targets)
+        with self._command_lock:
+            if self._output_relinquished or self._release_active:
+                raise RuntimeError("mode_ctrl=5 output was relinquished by the command watchdog")
+            desired = bimanual_arm_targets(action)
+            with self._lock:
+                if not self._commanded_arms and self._state_ready:
+                    self._commanded_arms = {
+                        name: self._positions[name] for name in ARM_JOINT_NAMES
+                    }
+                limited = limit_arm_step(
+                    desired,
+                    self._commanded_arms,
+                    max_step_rad=self._ros_cfg.max_joint_step_rad,
+                )
+                if allow_motion:
+                    self._commanded_arms = dict(limited)
+                if allow_motion:
+                    publish_targets = dict(self._commanded_arms)
+                elif hold_commanded and self._commanded_arms:
+                    publish_targets = {
+                        name: self._commanded_arms[name] for name in ARM_JOINT_NAMES
+                    }
+                else:
+                    publish_targets = {
+                        name: self._positions.get(name, limited[name])
+                        for name in ARM_JOINT_NAMES
+                    }
+                    self._commanded_arms = dict(publish_targets)
+            self._publish_lowcmd(publish_targets)
+            self._last_command_heartbeat = time.monotonic()
+            return dict(publish_targets)
 
     def hold_current_arms(self) -> None:
         """Publish one lowcmd frame holding the last measured arm pose (best-effort shutdown)."""
@@ -379,6 +423,13 @@ class HardwareRobotBridge:
     def publish_hands(self, left_trigger: float, right_trigger: float) -> None:
         if not self._command_output_enabled:
             return
+        with self._command_lock:
+            if self._output_relinquished:
+                return
+            self._hands_ever_commanded = True
+            self._publish_hands_unlocked(left_trigger, right_trigger)
+
+    def _publish_hands_unlocked(self, left_trigger: float, right_trigger: float) -> None:
         left_positions = left_hand_positions(self._hands_cfg, left_trigger)
         right_positions = right_hand_positions(self._hands_cfg, right_trigger)
         self._last_hand_trigger = (float(left_trigger), float(right_trigger))
@@ -406,7 +457,87 @@ class HardwareRobotBridge:
         assert self._hands_pub is not None
         self._hands_pub.publish(msg)
 
+    def release_to_policy(self, reason: str = "controlled shutdown") -> bool:
+        """Slew mode-5 arms to the live policy target, then relinquish output."""
+        if not self._command_output_enabled:
+            return True
+        with self._command_lock:
+            if self._output_relinquished:
+                return True
+            with self._lock:
+                has_lowcmd_output = self._has_published_lowcmd
+            if not has_lowcmd_output:
+                if self._hands_ever_commanded:
+                    self._publish_hands_unlocked(0.0, 0.0)
+                self._output_relinquished = True
+                return True
+            self._release_active = True
+            self._release_reason = reason
+            print(f"[HW-TELEOP][SAFETY] releasing command output: {reason}", flush=True)
+            deadline = time.monotonic() + self._ros_cfg.release_duration_s
+            reached = False
+            while time.monotonic() < deadline and not self._watchdog_stop.is_set():
+                self.spin_once(timeout_sec=0.0)
+                with self._lock:
+                    target = dict(self._policy_arm_targets)
+                    current = dict(self._commanded_arms or self._positions)
+                    policy_fresh = (
+                        self._last_policy_time > 0.0
+                        and time.monotonic() - self._last_policy_time
+                        <= (
+                            self._startup_cfg.max_policy_age_s
+                            if self._startup_cfg is not None
+                            else max(self._ros_cfg.max_state_age_s, 0.2)
+                        )
+                    )
+                if self._hands_ever_commanded:
+                    self._publish_hands_unlocked(0.0, 0.0)
+                if not target or not current or not policy_fresh:
+                    break
+                command = limit_arm_step(
+                    target,
+                    current,
+                    max_step_rad=self._ros_cfg.release_max_joint_step_rad,
+                )
+                with self._lock:
+                    self._commanded_arms = dict(command)
+                self._publish_lowcmd(command)
+                error = max(abs(command[name] - target[name]) for name in ARM_JOINT_NAMES)
+                if error <= self._ros_cfg.release_tolerance_rad:
+                    reached = True
+                    break
+                time.sleep(1.0 / self._ros_cfg.control_rate_hz)
+            if self._hands_ever_commanded:
+                self._publish_hands_unlocked(0.0, 0.0)
+            self._output_relinquished = True
+            self._release_active = False
+            status = "reached policy target" if reached else "released at bounded fallback"
+            print(f"[HW-TELEOP][SAFETY] mode_ctrl=5 {status}", flush=True)
+            return reached
+
+    def _watchdog_loop(self) -> None:
+        period = min(max(self._ros_cfg.command_watchdog_timeout_s / 4.0, 0.01), 0.05)
+        while not self._watchdog_stop.wait(period):
+            with self._lock:
+                has_output = self._has_published_lowcmd
+            if not has_output or self._output_relinquished or self._release_active:
+                continue
+            heartbeat = self._last_command_heartbeat
+            if heartbeat > 0.0 and time.monotonic() - heartbeat > self._ros_cfg.command_watchdog_timeout_s:
+                try:
+                    self.release_to_policy("command heartbeat timeout")
+                except Exception as exc:
+                    self._output_relinquished = True
+                    print(f"[HW-TELEOP][SAFETY] watchdog fallback failed: {exc}", flush=True)
+                return
+
     def close(self) -> None:
+        self._watchdog_stop.set()
+        if (
+            self._watchdog_thread is not None
+            and self._watchdog_thread is not threading.current_thread()
+        ):
+            self._watchdog_thread.join(timeout=1.0)
         if self._node is not None:
             self._node.destroy_node()
         if self._rclpy.ok():
@@ -420,6 +551,7 @@ class HardwareRobotBridge:
             self._last_state_rejection = ""
 
     def _on_lowstate(self, msg) -> None:
+        self._update_state_health(msg)
         arm_positions, validation = decode_lowstate_arm_positions(
             list(msg.motors),
             body_dof=self._ros_cfg.body_dof,
@@ -433,6 +565,48 @@ class HardwareRobotBridge:
                 self._last_state_rejection = validation.reason
             return
         self._accept_arm_positions(arm_positions)
+
+    def _update_state_health(self, msg) -> None:
+        motors = list(getattr(msg, "motors", ()))
+        imus = list(getattr(msg, "imus", ()))
+        reason = ""
+        leg_positions: tuple[float, ...] = ()
+        if len(motors) < 12:
+            reason = f"lowstate has only {len(motors)} motors"
+        else:
+            leg_positions = tuple(float(motor.q) for motor in motors[:12])
+            leg_velocities = tuple(float(motor.dq) for motor in motors[:12])
+            if not all(math.isfinite(value) for value in leg_positions + leg_velocities):
+                reason = "lowstate leg position/velocity is non-finite"
+            elif (
+                self._startup_cfg is not None
+                and max(abs(value) for value in leg_velocities)
+                > self._startup_cfg.max_leg_velocity_rad_s
+            ):
+                reason = "leg velocity exceeds standing threshold"
+        if not reason and self._startup_cfg is not None:
+            if not imus:
+                reason = "lowstate has no IMU"
+            else:
+                rpy = tuple(float(value) for value in imus[0].rpy)
+                gyro = tuple(float(value) for value in imus[0].gyroscope)
+                if len(rpy) < 2 or len(gyro) < 3 or not all(
+                    math.isfinite(value) for value in rpy + gyro
+                ):
+                    reason = "lowstate IMU is invalid"
+                elif (
+                    max(abs(rpy[0]), abs(rpy[1]))
+                    > self._startup_cfg.max_abs_roll_pitch_rad
+                ):
+                    reason = "robot roll/pitch exceeds standing threshold"
+                elif (
+                    max(abs(value) for value in gyro[:3])
+                    > self._startup_cfg.max_abs_imu_gyro_rad_s
+                ):
+                    reason = "IMU angular velocity exceeds standing threshold"
+        with self._lock:
+            self._state_leg_positions = leg_positions
+            self._state_health_rejection = reason
 
     def _on_joint_state(self, msg) -> None:
         positions = {name: float(value) for name, value in zip(msg.name, msg.position, strict=False)}
@@ -472,13 +646,51 @@ class HardwareRobotBridge:
                     reason = f"leg motor {index} has non-finite command fields"
                     break
 
+        policy_arm_targets: dict[str, float] = {}
+        if not reason:
+            for index, name in enumerate(self._joint_order[12:], start=12):
+                motor = motors[index]
+                if int(motor.mode) <= 0 or not math.isfinite(float(motor.q)):
+                    reason = f"arm motor {index} has invalid policy target"
+                    break
+                sign = teleop_to_robot_sign(name, self._sign_by_name)
+                policy_arm_targets[name] = float(sign * motor.q)
+
+        with self._lock:
+            state_health_rejection = self._state_health_rejection
+            state_leg_positions = self._state_leg_positions
+            state_age = (
+                time.monotonic() - self._last_state_time
+                if self._last_state_time > 0.0
+                else float("inf")
+            )
+        if not reason and self._startup_cfg is not None:
+            if state_age > self._ros_cfg.max_state_age_s:
+                reason = "robot state is not fresh"
+            elif state_health_rejection:
+                reason = state_health_rejection
+            elif len(state_leg_positions) < 12:
+                reason = "leg feedback is unavailable"
+            else:
+                tracking_error = max(
+                    abs(float(motors[index].q) - state_leg_positions[index])
+                    for index in range(12)
+                )
+                if tracking_error > self._startup_cfg.max_leg_tracking_error_rad:
+                    reason = f"leg tracking error {tracking_error:.3f} rad exceeds threshold"
+
         with self._lock:
             if reason:
                 self._valid_policy_frames = 0
+                self._policy_stable_since = 0.0
                 self._last_policy_rejection = reason
             else:
+                now = time.monotonic()
                 self._valid_policy_frames += 1
-                self._last_policy_time = time.monotonic()
+                self._last_policy_time = now
+                if self._policy_stable_since <= 0.0:
+                    self._policy_stable_since = now
+                self._policy_arm_targets = policy_arm_targets
                 self._last_policy_rejection = ""
 
     def _publish_lowcmd(self, arm_targets: Mapping[str, float]) -> None:
@@ -562,6 +774,15 @@ class HardwareRobotBridge:
                 ),
                 "valid_policy_frames": self._valid_policy_frames,
                 "last_policy_rejection": self._last_policy_rejection,
+                "policy_stable_s": (
+                    max(time.monotonic() - self._policy_stable_since, 0.0)
+                    if self._policy_stable_since > 0.0
+                    else 0.0
+                ),
+                "state_health_rejection": self._state_health_rejection,
+                "policy_arm_target_ready": (
+                    len(self._policy_arm_targets) == len(ARM_JOINT_NAMES)
+                ),
                 "external_lowcmd_publishers": self._last_external_lowcmd_publishers,
                 "left_hand_trigger": self._last_hand_trigger[0],
                 "right_hand_trigger": self._last_hand_trigger[1],
@@ -569,4 +790,6 @@ class HardwareRobotBridge:
                 "hands_cmd_topic": self._ros_cfg.hands_cmd_topic,
                 "gravity_comp_enabled": self._gravity_enabled,
                 "command_output_enabled": self._command_output_enabled,
+                "command_output_relinquished": self._output_relinquished,
+                "release_reason": self._release_reason,
             }

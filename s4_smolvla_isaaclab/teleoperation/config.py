@@ -29,6 +29,7 @@ class MappingConfig:
     controller_to_base_rotation: np.ndarray
     position_scale: float
     orientation_enabled: bool
+    max_clutch_translation_m: float
     clutch: ClutchConfig
 
 
@@ -197,6 +198,9 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     button_indices = tuple(int(value) for value in clutch.get("button_indices", [1]))
     if not button_indices or any(value < 0 or value >= 16 for value in button_indices):
         raise ValueError("mapping.clutch.button_indices must contain indices in [0, 15]")
+    max_clutch_translation_m = float(mapping.get("max_clutch_translation_m", float("inf")))
+    if max_clutch_translation_m <= 0.0:
+        raise ValueError("mapping.max_clutch_translation_m must be positive")
     workspace_min = _vec(safety, "workspace_min_base_m", 3)
     workspace_max = _vec(safety, "workspace_max_base_m", 3)
     if np.any(workspace_min >= workspace_max):
@@ -310,6 +314,7 @@ def load_teleop_config(path: Path) -> TeleopConfig:
             controller_to_base_rotation=basis,
             position_scale=float(mapping.get("position_scale", 1.0)),
             orientation_enabled=bool(mapping.get("orientation_enabled", True)),
+            max_clutch_translation_m=max_clutch_translation_m,
             clutch=ClutchConfig(engage, release, button_indices),
         ),
         safety=SafetyConfig(

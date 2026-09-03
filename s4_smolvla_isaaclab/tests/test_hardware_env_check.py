@@ -102,5 +102,8 @@ def test_existing_lowcmd_override_requires_explicit_cli_flag() -> None:
     assert override_args.allow_existing_lowcmd_publishers is True
     assert default_args.allow_no_policy_lowcmd is False
     assert default_args.allow_unverified_sdk_mode5_merge is False
+    assert default_args.arm_output is False
+    assert default_args.enabled_arms == "left"
+    assert default_args.enable_hands is False
     dangerous_args = build_parser().parse_args(["--allow-no-policy-lowcmd"])
     assert dangerous_args.allow_no_policy_lowcmd is True

@@ -347,6 +347,7 @@ def run_checks(
             config.hardware,
             config.hands,
             gravity_cfg=config.gravity,
+            startup_cfg=config.startup,
             project_root=config.project_root,
             check_lowcmd_publishers=False,
             command_output_enabled=False,
@@ -358,6 +359,7 @@ def run_checks(
                     config.startup.policy_initial_timeout_s,
                     config.startup.policy_min_valid_frames,
                     config.startup.max_policy_age_s,
+                    config.startup.policy_stable_duration_s,
                 )
             print(f"[HW-PINK][DOCTOR] live_packets={bridge.diagnostics()}")
         finally:
@@ -365,7 +367,9 @@ def run_checks(
         if robot_profile and config.startup.require_sdk_mode5_merge:
             from hardware_teleop.safety import find_verified_mode5_sdk_process
 
-            sdk_pid, sdk_executable = find_verified_mode5_sdk_process()
+            sdk_pid, sdk_executable = find_verified_mode5_sdk_process(
+                approved_sha256=config.startup.approved_sdk_sha256,
+            )
             print(
                 f"[HW-PINK][DOCTOR] sdk_mode5_merge=verified pid={sdk_pid} "
                 f"executable={sdk_executable}"

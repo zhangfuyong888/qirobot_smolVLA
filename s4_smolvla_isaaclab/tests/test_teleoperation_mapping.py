@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -88,6 +89,23 @@ def test_stale_frame_releases_clutches_and_freezes_target() -> None:
     )
     assert not released.left.clutch
     assert reengaged.left.clutch and reengaged.right.clutch
+
+
+def test_clutch_translation_is_bounded_per_engagement() -> None:
+    control = mapper()
+    control.config = replace(
+        control.config,
+        mapping=replace(control.config.mapping, max_clutch_translation_m=0.05),
+    )
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    control.update(frame(sample(squeeze=1.0), sample()), pose, pose, 0.01, 1.0)
+    moved = frame(
+        sample(position=(1.0, 2.0, 1.0), squeeze=1.0),
+        sample(),
+        received=1.01,
+    )
+    result = control.update(moved, pose, pose, 1.0, 1.01)
+    assert np.linalg.norm(result.left.target.position - pose.position) == pytest.approx(0.05)
 
 
 def test_trigger_interpolates_six_hand_controls() -> None:

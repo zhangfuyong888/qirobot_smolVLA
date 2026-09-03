@@ -39,8 +39,8 @@ hardware:
     - left_wrist_roll_joint
     - left_wrist_yaw_joint
     - right_shoulder_yaw_joint
-  # Hardware-only final limit: 0.02 rad at 30 Hz = 0.6 rad/s maximum.
-  max_joint_step_rad: 0.020
+  # Conservative commissioning limit: 0.003 rad at 30 Hz = 0.09 rad/s.
+  max_joint_step_rad: 0.003
   require_initial_state: true
   initial_state_timeout_s: 15.0
   stale_command_hold: true
@@ -51,9 +51,20 @@ hardware:
   max_state_joint_jump_rad: 0.35
   # Stricter than simulation: a headset pause must stop target integration
   # quickly, and TCP target slew is limited before IK.
-  input_stale_timeout_s: 0.25
-  max_tcp_translation_speed_m_s: 0.50
-  max_tcp_rotation_speed_rad_s: 1.50
+  input_stale_timeout_s: 0.12
+  max_tcp_translation_speed_m_s: 0.08
+  max_tcp_rotation_speed_rad_s: 0.30
+  commissioning_position_scale: 0.50
+  commissioning_orientation_enabled: false
+  commissioning_workspace_min_base_m: [0.10, -0.55, 0.00]
+  commissioning_workspace_max_base_m: [0.70, 0.55, 0.60]
+  commissioning_max_clutch_translation_m: 0.05
+  # If the main loop stops feeding commands, the watchdog opens both hands,
+  # ramps toward the live policy arm target, then relinquishes mode_ctrl=5.
+  command_watchdog_timeout_s: 0.10
+  release_duration_s: 10.0
+  release_max_joint_step_rad: 0.006
+  release_tolerance_rad: 0.03
 
 startup:
   # No automatic arm motion merely from starting the process. Enable only
@@ -66,12 +77,21 @@ startup:
   # mode_ctrl=5 contains meaningful arms but placeholder legs. The SDK can
   # merge it safely only after receiving fresh non-5 standing-policy packets.
   require_policy_lowcmd: true
-  policy_initial_timeout_s: 5.0
-  policy_min_valid_frames: 3
+  policy_initial_timeout_s: 8.0
+  policy_min_valid_frames: 90
   max_policy_age_s: 0.2
+  policy_stable_duration_s: 3.0
+  max_abs_roll_pitch_rad: 0.35
+  max_abs_imu_gyro_rad_s: 0.50
+  max_leg_velocity_rad_s: 1.0
+  max_leg_tracking_error_rad: 0.35
   # Older SDK servers do not merge mode_ctrl=5 arms with standing-policy legs.
   # Refuse command output unless the running binary contains the verified merge.
   require_sdk_mode5_merge: true
+  # Approved build-path SDK inspected on this robot. A rebuild fails closed
+  # until its new digest is reviewed and explicitly added here.
+  approved_sdk_sha256:
+    - 39e11f69338e6e3505af223f20c7ab47b48a87d5142bb6e7f251702dc106c09e
 
 gravity_compensation:
   # Keep feed-forward torque off until its sign and scale are validated on a

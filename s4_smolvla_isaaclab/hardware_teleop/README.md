@@ -258,7 +258,7 @@ bash run.sh teleop-cert --ip 192.168.110.63 --overwrite
 
 ```bash
 # hardware_teleop/config/ros_env.local.sh
-export HW_TELEOP_NETWORK_INTERFACE=wlan0
+export HW_TELEOP_NETWORK_INTERFACE=wlp44s0
 ```
 
 ---
@@ -316,14 +316,16 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `body_dof`                | `26`           | 12 腿 + 7 左臂 + 7 右臂               |
 | `arm_kp` / `arm_kd`       | `60.0` / `3.0` | 与已核查 qiling 桥一致的手臂 PD 增益       |
 | `reversed_joint_names`    | 见 yaml         | 与真机符号约定一致的 3 个翻转关节               |
-| `max_joint_step_rad`      | `0.020`        | 真机最终单周期关节限幅（30 Hz 下最大 0.6 rad/s） |
+| `max_joint_step_rad`      | `0.003`        | 首测单周期关节限幅（30 Hz 下最大 0.09 rad/s） |
 | `initial_state_timeout_s` | `15.0`         | 等待首帧 lowstate 超时                 |
 | `stale_command_hold`      | `true`         | Quest 输入 stale 时停止手臂运动           |
 | `max_state_age_s`         | `0.2`          | lowstate 断流超过此时间则停止发送 lowcmd       |
 | `max_state_joint_jump_rad` | `0.35`       | 拒绝单帧关节位置突跳                         |
-| `input_stale_timeout_s`   | `0.25`         | 真机 Quest 输入超时                         |
-| `max_tcp_translation_speed_m_s` | `0.50` | 真机 TCP 目标平移速度上限                    |
-| `max_tcp_rotation_speed_rad_s` | `1.50`  | 真机 TCP 目标旋转速度上限                    |
+| `input_stale_timeout_s`   | `0.12`         | 真机 Quest 输入超时                         |
+| `max_tcp_translation_speed_m_s` | `0.08` | 首测 TCP 目标平移速度上限                    |
+| `max_tcp_rotation_speed_rad_s` | `0.30`  | 首测 TCP 目标旋转速度上限                    |
+| `command_watchdog_timeout_s` | `0.10` | 主循环无心跳后触发策略目标回退 |
+| `release_duration_s` | `10.0` | mode 5 平滑释放的最长时间 |
 
 
 #### `startup` 段
@@ -340,9 +342,11 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `position_tolerance_rad` | `0.02` | 到达 home 的容差 |
 | `check_lowcmd_publishers` | `true` | 图中超过一个已有 lowcmd publisher 时拒绝启动 |
 | `require_policy_lowcmd` | `true` | 发 mode 5 前必须实际收到有效策略腿命令 |
-| `policy_min_valid_frames` | `3` | 启动所需连续有效非 mode-5 帧数 |
+| `policy_min_valid_frames` | `90` | 启动所需连续有效非 mode-5 帧数 |
 | `max_policy_age_s` | `0.2` | 策略断流后停止发送 mode-5 的门限 |
+| `policy_stable_duration_s` | `3.0` | IMU、腿速和跟踪误差必须连续稳定的时间 |
 | `require_sdk_mode5_merge` | `true` | 校验运行中的 SDK 二进制含策略腿融合实现 |
+| `approved_sdk_sha256` | 见 yaml | 只允许已审查的 SDK 可执行文件摘要 |
 
 真机站立时本来就应存在一个策略 `lowcmd` 源。程序不只看 ROS graph：还会订阅同一话题，确认连续收到 `mode_ctrl != 5`、26 电机齐全、12 个腿电机启用且数值有限的策略包。若启动前看到另一个 mode-5 包，则判定旧遥操仍在运行并拒绝启动。
 
@@ -656,8 +660,9 @@ bash run.sh teleop-hardware-isaac
 | `--max-runtime-s N`              | N 秒后自动退出，0 为一直运行                                          |
 | `--input-debug`                  | 打印详细输入/跟踪信息                                               |
 | `--shadow`                       | 只读状态和计算 IK，不创建任何命令 publisher                         |
+| `--arm-output`                   | 完成预检后显式允许真机 mode-5 输出                                  |
 | `--enabled-arms left|right|both` | 分级联调时只允许指定手臂运动                                        |
-| `--disable-hands`                | 禁止发布手部命令                                                    |
+| `--enable-hands`                 | 显式启用手部命令；默认关闭                                          |
 | `--skip-homing`                  | 跳过启动回零                                                        |
 | `--max-arm-step-rad N`           | 设置不大于 YAML 上限的更严格单周期关节步长                           |
 | `--record-state-jsonl PATH`      | 记录 q14、FK、目标和命令，供离线 Pink replay                         |
@@ -684,8 +689,9 @@ bash run.sh teleop-hardware-isaac
 - [ ] **7. shadow 短跑** — `bash run.sh teleop-hardware --shadow --max-runtime-s 30`
 - [ ] **8. 验证 lowcmd** — 启动遥操前已存在稳定站立策略流；启动后是策略流叠加 30 Hz mode-5，不能按总频率等于 30 Hz 判断
 - [ ] **9. Quest 连接** — 打开 `https://<IP>:8443`，确认 session 日志
-- [ ] **10. 单臂小范围** — `--enabled-arms left --disable-hands --max-arm-step-rad 0.005`，确认方向与离合
-- [ ] **11. 双手 + Trigger** — 验证手部 `/handscmd` 随 trigger 变化
+- [ ] **10. 单臂小范围** — `--arm-output --enabled-arms left --max-arm-step-rad 0.003`，确认方向与离合
+- [ ] **11. 故障注入** — 断开 Quest、停止浏览器和 Ctrl-C，确认看门狗平滑释放 mode 5
+- [ ] **12. 双手 + Trigger** — 单臂验证完成后再使用 `--enable-hands`
 
 ---
 
@@ -824,7 +830,7 @@ ros2 topic hz lowstate
 bash run.sh teleop-hardware --shadow --skip-homing --input-debug
 
 # 分级放开单臂小步长
-bash run.sh teleop-hardware --enabled-arms left --disable-hands --skip-homing --max-arm-step-rad 0.005
+bash run.sh teleop-hardware --arm-output --enabled-arms left --skip-homing --max-arm-step-rad 0.003
 
 # Quest
 # https://192.168.x.x:8443
