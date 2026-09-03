@@ -16,8 +16,9 @@ class _PublisherInfo:
 
 
 class _GraphNode:
-    def __init__(self, *, include_state: bool = True) -> None:
+    def __init__(self, *, include_state: bool = True, include_command_source: bool = False) -> None:
         self.include_state = include_state
+        self.include_command_source = include_command_source
         self.destroyed = False
         self.publisher_queries: list[str] = []
 
@@ -29,7 +30,9 @@ class _GraphNode:
 
     def get_publishers_info_by_topic(self, topic: str):
         self.publisher_queries.append(topic)
-        return [_PublisherInfo("/robot", "standing_policy")]
+        if self.include_command_source:
+            return [_PublisherInfo("/legacy", "old_teleop")]
+        return []
 
     def destroy_node(self) -> None:
         self.destroyed = True
@@ -67,16 +70,16 @@ def test_path_containment_does_not_accept_similar_prefix(tmp_path: Path) -> None
     assert not _is_relative_to(tmp_path / "packages-other/scipy/__init__.py", parent)
 
 
-def test_live_graph_check_is_read_only_and_reports_existing_publisher() -> None:
+def test_live_graph_check_is_read_only_and_accepts_free_arm_topic() -> None:
     node = _GraphNode()
     rclpy = _FakeRclpy(node)
     _check_live_ros_graph(
         rclpy,
         lowstate_topic="lowstate",
-        lowcmd_topic="lowcmd",
+        arm_command_topic="/lowcmd_replay",
         discovery_timeout_s=0.001,
     )
-    assert node.publisher_queries == ["/lowcmd"]
+    assert node.publisher_queries == ["/lowcmd_replay"]
     assert node.destroyed
     assert rclpy.shutdown_called
 
@@ -88,22 +91,33 @@ def test_live_graph_check_rejects_missing_state_and_still_cleans_up() -> None:
         _check_live_ros_graph(
             rclpy,
             lowstate_topic="lowstate",
-            lowcmd_topic="lowcmd",
+            arm_command_topic="/lowcmd_replay",
             discovery_timeout_s=0.001,
         )
     assert node.destroyed
     assert rclpy.shutdown_called
 
 
-def test_existing_lowcmd_override_requires_explicit_cli_flag() -> None:
+def test_live_graph_check_rejects_existing_arm_command_source() -> None:
+    node = _GraphNode(include_command_source=True)
+    rclpy = _FakeRclpy(node)
+    with pytest.raises(RuntimeError, match="already has publisher"):
+        _check_live_ros_graph(
+            rclpy,
+            lowstate_topic="lowstate",
+            arm_command_topic="/lowcmd_replay",
+            discovery_timeout_s=0.001,
+        )
+    assert node.destroyed
+    assert rclpy.shutdown_called
+
+
+def test_hardware_cli_has_no_safety_gate_bypass() -> None:
     default_args = build_parser().parse_args([])
-    override_args = build_parser().parse_args(["--allow-existing-lowcmd-publishers"])
-    assert default_args.allow_existing_lowcmd_publishers is False
-    assert override_args.allow_existing_lowcmd_publishers is True
-    assert default_args.allow_no_policy_lowcmd is False
-    assert default_args.allow_unverified_sdk_mode5_merge is False
     assert default_args.arm_output is False
-    assert default_args.enabled_arms == "left"
+    assert default_args.enabled_arms == "both"
     assert default_args.enable_hands is False
-    dangerous_args = build_parser().parse_args(["--allow-no-policy-lowcmd"])
-    assert dangerous_args.allow_no_policy_lowcmd is True
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--allow-unverified-sdk-arm-replay"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--allow-existing-arm-command-publishers"])

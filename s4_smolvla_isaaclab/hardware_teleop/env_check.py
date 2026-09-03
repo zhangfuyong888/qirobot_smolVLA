@@ -224,7 +224,7 @@ def _check_live_ros_graph(
     rclpy: Any,
     *,
     lowstate_topic: str,
-    lowcmd_topic: str,
+    arm_command_topic: str,
     discovery_timeout_s: float = 2.0,
 ) -> None:
     initialized_here = not rclpy.ok()
@@ -237,7 +237,11 @@ def _check_live_ros_graph(
             rclpy.spin_once(node, timeout_sec=0.1)
         topics = dict(node.get_topic_names_and_types())
         normalized_state = lowstate_topic if lowstate_topic.startswith("/") else f"/{lowstate_topic}"
-        normalized_cmd = lowcmd_topic if lowcmd_topic.startswith("/") else f"/{lowcmd_topic}"
+        normalized_cmd = (
+            arm_command_topic
+            if arm_command_topic.startswith("/")
+            else f"/{arm_command_topic}"
+        )
         if normalized_state not in topics:
             raise RuntimeError(
                 f"live robot state topic is missing: {normalized_state}; visible={sorted(topics)}"
@@ -253,17 +257,12 @@ def _check_live_ros_graph(
         )
         print(
             f"[HW-PINK][DOCTOR] live_state={normalized_state} type=qi/msg/LowState "
-            f"lowcmd_publishers={labels}"
+            f"arm_command_publishers={labels}"
         )
-        if len(labels) == 1:
-            print(
-                "[HW-PINK][DOCTOR] one lowcmd graph publisher is present; this is the "
-                "expected standing-policy topology, but packet contents are checked next."
-            )
-        elif len(labels) > 1:
-            print(
-                "[HW-PINK][DOCTOR][WARN] multiple lowcmd publishers are present. Identify "
-                "and stop old teleop, MoveIt or replay controllers before command output."
+        if labels:
+            raise RuntimeError(
+                f"dedicated arm command topic {normalized_cmd} already has publisher(s): "
+                f"{', '.join(labels)}; stop old teleop/replay processes"
             )
     finally:
         node.destroy_node()
@@ -313,7 +312,8 @@ def run_checks(
         )
     print(
         f"[HW-PINK][DOCTOR] ros_topics state={topics.lowstate_topic!r} "
-        f"command={topics.lowcmd_topic!r} hands={topics.hands_cmd_topic!r}; "
+        f"arm_command={topics.arm_command_topic!r} "
+        f"mode_ctrl={topics.arm_command_mode_ctrl} hands={topics.hands_cmd_topic!r}; "
         "CycloneDDS native names receive the rt/ prefix automatically"
     )
 
@@ -339,7 +339,7 @@ def run_checks(
         _check_live_ros_graph(
             rclpy,
             lowstate_topic=topics.lowstate_topic,
-            lowcmd_topic=topics.lowcmd_topic,
+            arm_command_topic=topics.arm_command_topic,
         )
         from hardware_teleop.ros import HardwareRobotBridge
 
@@ -347,31 +347,23 @@ def run_checks(
             config.hardware,
             config.hands,
             gravity_cfg=config.gravity,
-            startup_cfg=config.startup,
             project_root=config.project_root,
-            check_lowcmd_publishers=False,
+            check_arm_command_publishers=False,
             command_output_enabled=False,
         )
         try:
             bridge.wait_for_initial_state(config.hardware.initial_state_timeout_s)
-            if config.startup.require_policy_lowcmd:
-                bridge.wait_for_policy_lowcmd(
-                    config.startup.policy_initial_timeout_s,
-                    config.startup.policy_min_valid_frames,
-                    config.startup.max_policy_age_s,
-                    config.startup.policy_stable_duration_s,
-                )
             print(f"[HW-PINK][DOCTOR] live_packets={bridge.diagnostics()}")
         finally:
             bridge.close()
-        if robot_profile and config.startup.require_sdk_mode5_merge:
-            from hardware_teleop.safety import find_verified_mode5_sdk_process
+        if robot_profile and config.startup.require_sdk_arm_replay:
+            from hardware_teleop.safety import find_verified_arm_replay_sdk_process
 
-            sdk_pid, sdk_executable = find_verified_mode5_sdk_process(
+            sdk_pid, sdk_executable = find_verified_arm_replay_sdk_process(
                 approved_sha256=config.startup.approved_sdk_sha256,
             )
             print(
-                f"[HW-PINK][DOCTOR] sdk_mode5_merge=verified pid={sdk_pid} "
+                f"[HW-PINK][DOCTOR] sdk_arm_replay=verified pid={sdk_pid} "
                 f"executable={sdk_executable}"
             )
     print("[HW-PINK][DOCTOR] PASS")

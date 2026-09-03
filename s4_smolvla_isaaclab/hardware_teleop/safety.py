@@ -7,16 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-SDK_MODE5_MERGE_MARKER = b"[Teleop+Policy] merged legs from cache"
+SDK_ARM_REPLAY_MARKERS = (b"rt/lowcmd_replay", b"Arms command - mode_ctrl")
 
 
-def find_verified_mode5_sdk_process(
+def find_verified_arm_replay_sdk_process(
     proc_root: Path = Path("/proc"),
     *,
     process_names: tuple[str, ...] = ("sn_loco_server",),
     approved_sha256: tuple[str, ...] = (),
 ) -> tuple[int, Path]:
-    """Return a running approved SDK binary with the safe merge implementation."""
+    """Return a running approved SDK binary with the arm-only replay handler."""
     approved = {value.lower() for value in approved_sha256}
     candidates: list[str] = []
     for entry in proc_root.iterdir():
@@ -34,7 +34,7 @@ def find_verified_mode5_sdk_process(
         except (FileNotFoundError, PermissionError, OSError):
             candidates.append(f"pid={entry.name} comm={comm} executable=unreadable")
             continue
-        if SDK_MODE5_MERGE_MARKER in payload:
+        if all(marker in payload for marker in SDK_ARM_REPLAY_MARKERS):
             digest = hashlib.sha256(payload).hexdigest()
             if approved and digest not in approved:
                 candidates.append(
@@ -43,10 +43,12 @@ def find_verified_mode5_sdk_process(
                 )
                 continue
             return int(entry.name), executable
-        candidates.append(f"pid={entry.name} comm={comm} executable={executable} marker=missing")
+        candidates.append(
+            f"pid={entry.name} comm={comm} executable={executable} arm-replay-marker=missing"
+        )
     detail = "; ".join(candidates) if candidates else "no sn_loco_server process found"
     raise RuntimeError(
-        "verified SDK mode_ctrl=5 policy-leg merge is required before command output: "
+        "verified SDK arm-only replay support is required before command output: "
         + detail
     )
 

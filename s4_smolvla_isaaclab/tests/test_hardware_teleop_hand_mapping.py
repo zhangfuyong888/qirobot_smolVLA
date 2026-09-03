@@ -8,7 +8,7 @@ from hardware_teleop.hand_mapping import blend_uint16, trigger_from_hand6
 
 def test_blend_uint16_open_close() -> None:
     open_values = (255, 255, 255, 255, 255, 255)
-    close_values = (60, 128, 200, 200, 150, 90)
+    close_values = (150, 80, 120, 120, 120, 120)
     assert blend_uint16(open_values, close_values, 0.0) == list(open_values)
     assert blend_uint16(open_values, close_values, 1.0) == list(close_values)
     mid = blend_uint16(open_values, close_values, 0.5)
@@ -21,3 +21,17 @@ def test_trigger_from_hand6_recovers_blend() -> None:
     hand6 = open_profile + 0.4 * (close_profile - open_profile)
     trigger = trigger_from_hand6(open_profile, close_profile, hand6)
     assert trigger == pytest.approx(0.4, abs=0.05)
+
+
+def test_command_hand_trigger_follows_analog_without_arming() -> None:
+    from hardware_teleop.hand_mapping import command_hand_trigger
+
+    assert command_hand_trigger(
+        tracking_valid=True, stale=False, fault_active=False, trigger=0.8
+    ) == pytest.approx(0.8)
+    assert command_hand_trigger(
+        tracking_valid=False, stale=False, fault_active=False, trigger=0.8
+    ) == pytest.approx(0.0)
+    assert command_hand_trigger(
+        tracking_valid=True, stale=True, fault_active=False, trigger=0.8
+    ) == pytest.approx(0.0)

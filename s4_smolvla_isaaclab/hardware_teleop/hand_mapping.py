@@ -26,6 +26,23 @@ def right_hand_positions(config: HardwareHandsConfig, trigger: float) -> list[in
     return blend_uint16(config.right_open_uint16, config.right_close_uint16, trigger)
 
 
+def command_hand_trigger(
+    *,
+    tracking_valid: bool,
+    stale: bool,
+    fault_active: bool,
+    trigger: float,
+) -> float:
+    """Publish the analog trigger whenever that controller is tracked.
+
+    Do not require a prior trigger-release arming step. Resting a finger on
+    the trigger while clutching used to keep the published value at 0.
+    """
+    if stale or fault_active or not tracking_valid:
+        return 0.0
+    return float(np.clip(trigger, 0.0, 1.0))
+
+
 def trigger_from_hand6(open_profile: np.ndarray, close_profile: np.ndarray, hand6: np.ndarray) -> float:
     """Recover an approximate 0..1 trigger from smoothed hand6 radians."""
     open_values = np.asarray(open_profile, dtype=np.float64)

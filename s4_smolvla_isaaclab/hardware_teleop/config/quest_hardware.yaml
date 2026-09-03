@@ -1,5 +1,5 @@
 # Self-contained real-robot Quest teleoperation server.
-# This project publishes lowcmd/handscmd directly over ROS2 DDS; no qiling_s4 code is required.
+# This project publishes arm-replay/hand commands directly over ROS2 DDS; no deploy is required.
 #
 # One-time setup:
 #   bash hardware_teleop/scripts/build_ros_msgs.sh
@@ -15,8 +15,7 @@
 #   - Robot SDK publishing lowstate on the configured topic (default: lowstate)
 #
 # Do not run another arm controller (e.g. moveit_mit_arm_bridge) concurrently.
-# The robot standing policy may already publish lowcmd by design; identify it
-# with doctor before explicitly allowing that publisher at startup.
+# The dedicated replay command topic must have no other ROS publisher.
 
 teleop_config: configs/teleoperation/meta_quest3.yaml
 
@@ -27,7 +26,8 @@ hardware:
   state_source: lowstate
   lowstate_topic: lowstate
   joint_states_topic: /joint_states
-  lowcmd_topic: lowcmd
+  arm_command_topic: /lowcmd_replay
+  arm_command_mode_ctrl: 4
   hands_cmd_topic: /handscmd
   # These are ROS topic names. Do not write native DDS names such as
   # rt/lowstate: ROS2 adds the rt/ DDS prefix automatically.
@@ -39,66 +39,70 @@ hardware:
     - left_wrist_roll_joint
     - left_wrist_yaw_joint
     - right_shoulder_yaw_joint
-  # Conservative commissioning limit: 0.003 rad at 30 Hz = 0.09 rad/s.
-  max_joint_step_rad: 0.003
+  # 0.040 rad at 30 Hz = 1.20 rad/s. Still below the simulation 0.065 cap.
+  max_joint_step_rad: 0.040
   require_initial_state: true
   initial_state_timeout_s: 15.0
   stale_command_hold: true
   # Stop arm motion if lowstate/joint_states has not updated for this long.
   max_state_age_s: 0.2
   # Reject a single feedback-frame jump larger than this. A rejected stream
-  # becomes stale and command output is relinquished to the standing policy.
+  # becomes stale and arm-replay command output is relinquished.
   max_state_joint_jump_rad: 0.35
   # Stricter than simulation: a headset pause must stop target integration
   # quickly, and TCP target slew is limited before IK.
   input_stale_timeout_s: 0.12
-  max_tcp_translation_speed_m_s: 0.08
-  max_tcp_rotation_speed_rad_s: 0.30
-  commissioning_position_scale: 0.50
-  commissioning_orientation_enabled: false
-  commissioning_workspace_min_base_m: [0.10, -0.55, 0.00]
-  commissioning_workspace_max_base_m: [0.70, 0.55, 0.60]
-  commissioning_max_clutch_translation_m: 0.05
+  max_tcp_translation_speed_m_s: 0.50
+  max_tcp_rotation_speed_rad_s: 1.00
+  commissioning_position_scale: 2.00
+  commissioning_orientation_enabled: true
+  commissioning_orientation_cost: 0.15
+  commissioning_position_cost: 0.90
+  # Home elbows sit at ~±0.36 m. 0.25 m still keeps hands off the torso.
+  commissioning_elbow_avoidance_enabled: true
+  commissioning_elbow_min_lateral_distance_base_m: 0.25
+  commissioning_input_filter_tau_s: 0.04
+  # Must contain the parked TCP (~x=0.32, y=±0.40, z≈0.07) or clutch clips into a
+  # fixed corner and mapping direction cannot be judged.
+  commissioning_workspace_min_base_m: [-0.25, -0.65, -0.30]
+  commissioning_workspace_max_base_m: [0.90, 0.65, 0.75]
+  commissioning_max_clutch_translation_m: 0.35
+  # Last on-robot test: full XYZ invert made Z (up/down) wrong. Keep robot Z,
+  # flip only the horizontal plane. That is a proper rotation, so the same
+  # signs also reverse forearm-roll / wrist-pitch sense (palm vs back).
+  # Do not use invert_translation (that would also flip Z) or invert_orientation.
+  commissioning_invert_translation: false
+  commissioning_invert_orientation: false
+  commissioning_translation_sign: [-1.0, -1.0, 1.0]
   # If the main loop stops feeding commands, the watchdog opens both hands,
-  # ramps toward the live policy arm target, then relinquishes mode_ctrl=5.
+  # briefly repeats the measured arm pose, then stops this process publishing.
   command_watchdog_timeout_s: 0.10
-  release_duration_s: 10.0
-  release_max_joint_step_rad: 0.006
-  release_tolerance_rad: 0.03
+  shutdown_hold_duration_s: 0.5
 
 startup:
-  # No automatic arm motion merely from starting the process. Enable only
-  # after the shadow and single-arm commissioning stages are complete.
-  move_to_home: false
-  duration_s: 4.0
-  max_joint_step_rad: 0.01
-  position_tolerance_rad: 0.02
-  check_lowcmd_publishers: true
-  # mode_ctrl=5 contains meaningful arms but placeholder legs. The SDK can
-  # merge it safely only after receiving fresh non-5 standing-policy packets.
-  require_policy_lowcmd: true
-  policy_initial_timeout_s: 8.0
-  policy_min_valid_frames: 90
-  max_policy_age_s: 0.2
-  policy_stable_duration_s: 3.0
-  max_abs_roll_pitch_rad: 0.35
-  max_abs_imu_gyro_rad_s: 0.50
-  max_leg_velocity_rad_s: 1.0
-  max_leg_tracking_error_rad: 0.35
-  # Older SDK servers do not merge mode_ctrl=5 arms with standing-policy legs.
-  # Refuse command output unless the running binary contains the verified merge.
-  require_sdk_mode5_merge: true
+  # Quintic rest-to-rest move to a human-like ready pose, then Quest teleop
+  # takes over from that hold. Pass --skip-homing to stay at the measured pose.
+  move_to_home: true
+  duration_s: 5.0
+  max_joint_step_rad: 0.05
+  position_tolerance_rad: 0.05
+  home_left_arm: [-0.25, 0.45, -0.34, -0.52, -0.65, -0.33, 0.19]
+  home_right_arm: [-0.25, -0.45, -0.34, -0.52, 0.65, -0.33, 0.19]
+  check_arm_command_publishers: true
+  # Refuse output unless the running SDK contains its dedicated arm-only
+  # rt/lowcmd_replay handler. No standing-policy/deploy packets are consumed.
+  require_sdk_arm_replay: true
   # Approved build-path SDK inspected on this robot. A rebuild fails closed
   # until its new digest is reviewed and explicitly added here.
   approved_sdk_sha256:
     - 39e11f69338e6e3505af223f20c7ab47b48a87d5142bb6e7f251702dc106c09e
 
 gravity_compensation:
-  # Keep feed-forward torque off until its sign and scale are validated on a
-  # supported single arm. Position PD remains active without it.
+  # Temporarily off so Quest mapping direction can be judged without
+  # feed-forward torque. Re-enable after XYZ/orientation are confirmed.
   enabled: false
   urdf_path: assets/my_robot/urdf/s4_40dof_merged.urdf
-  scale: 0.6
+  scale: 0.4
   sign: 1.0
   tau_limit: 12.0
   ramp_time: 2.0
@@ -111,11 +115,15 @@ ik:
   backend: pink
 
 hands:
+  # Analog Trigger on /handscmd. Left Trigger -> left hand, right Trigger -> right
+  # hand. Grip only moves the arm. --disable-hands turns this off for a run.
+  enabled: true
   left_open_uint16: [255, 255, 255, 255, 255, 255]
-  left_close_uint16: [60, 128, 200, 200, 150, 90]
+  left_close_uint16: [150, 80, 120, 120, 120, 120]
   right_open_uint16: [255, 255, 255, 255, 255, 255]
-  right_close_uint16: [60, 128, 200, 200, 150, 90]
-  duration_ms: 200
+  right_close_uint16: [150, 80, 120, 120, 120, 120]
+  # CAN duration byte is 0..255 speed (higher is faster), not milliseconds.
+  duration_ms: 255
   left_hand_id: 0
   right_hand_id: 1
   left_hand_array_index: 0

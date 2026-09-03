@@ -31,6 +31,12 @@ class MappingConfig:
     orientation_enabled: bool
     max_clutch_translation_m: float
     clutch: ClutchConfig
+    controller_filter_time_constant_s: float = 0.0
+    invert_translation: bool = False
+    invert_orientation: bool = False
+    # Per-axis sign applied after the rotation basis. (-1,-1,+1) keeps
+    # robot Z (up) while flipping the horizontal plane.
+    translation_sign: tuple[float, float, float] = (1.0, 1.0, 1.0)
 
 
 @dataclass(frozen=True)
@@ -201,6 +207,16 @@ def load_teleop_config(path: Path) -> TeleopConfig:
     max_clutch_translation_m = float(mapping.get("max_clutch_translation_m", float("inf")))
     if max_clutch_translation_m <= 0.0:
         raise ValueError("mapping.max_clutch_translation_m must be positive")
+    controller_filter_time_constant_s = float(
+        mapping.get("controller_filter_time_constant_s", 0.0)
+    )
+    if controller_filter_time_constant_s < 0.0:
+        raise ValueError("mapping.controller_filter_time_constant_s must be non-negative")
+    translation_sign = np.asarray(mapping.get("translation_sign", [1.0, 1.0, 1.0]), dtype=np.float64)
+    if translation_sign.shape != (3,) or not np.isfinite(translation_sign).all():
+        raise ValueError("mapping.translation_sign must contain 3 finite values")
+    if not np.all(np.isin(translation_sign, (-1.0, 1.0))):
+        raise ValueError("mapping.translation_sign entries must be +1 or -1")
     workspace_min = _vec(safety, "workspace_min_base_m", 3)
     workspace_max = _vec(safety, "workspace_max_base_m", 3)
     if np.any(workspace_min >= workspace_max):
@@ -316,6 +332,14 @@ def load_teleop_config(path: Path) -> TeleopConfig:
             orientation_enabled=bool(mapping.get("orientation_enabled", True)),
             max_clutch_translation_m=max_clutch_translation_m,
             clutch=ClutchConfig(engage, release, button_indices),
+            controller_filter_time_constant_s=controller_filter_time_constant_s,
+            invert_translation=bool(mapping.get("invert_translation", False)),
+            invert_orientation=bool(mapping.get("invert_orientation", False)),
+            translation_sign=(
+                float(translation_sign[0]),
+                float(translation_sign[1]),
+                float(translation_sign[2]),
+            ),
         ),
         safety=SafetyConfig(
             workspace_min=workspace_min,

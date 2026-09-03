@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 
 from hardware_teleop.safety import (
-    SDK_MODE5_MERGE_MARKER,
+    SDK_ARM_REPLAY_MARKERS,
     TeleopFaultLatch,
-    find_verified_mode5_sdk_process,
+    find_verified_arm_replay_sdk_process,
 )
 from hardware_teleop.pink_main import _close_failed_initialization
 
@@ -52,7 +52,7 @@ def test_fault_latch_can_trip_again_after_recovery() -> None:
     assert latch.trip_count == 2
 
 
-def test_failed_initialization_never_emits_mode5_hold() -> None:
+def test_failed_initialization_never_emits_arm_hold() -> None:
     bridge = _FakeBridge()
     _close_failed_initialization(bridge, command_output_enabled=True)
     assert bridge.hold_calls == 0
@@ -74,26 +74,27 @@ def _fake_process(proc_root: Path, pid: int, executable: Path, payload: bytes) -
     (process / "exe").symlink_to(executable)
 
 
-def test_sdk_mode5_merge_gate_accepts_verified_running_binary(tmp_path: Path) -> None:
+def test_sdk_arm_replay_gate_accepts_verified_running_binary(tmp_path: Path) -> None:
     proc_root = tmp_path / "proc"
     executable = tmp_path / "sn_loco_server"
-    _fake_process(proc_root, 123, executable, b"prefix" + SDK_MODE5_MERGE_MARKER + b"suffix")
-    pid, resolved = find_verified_mode5_sdk_process(proc_root)
+    payload = b"prefix" + b"::".join(SDK_ARM_REPLAY_MARKERS) + b"suffix"
+    _fake_process(proc_root, 123, executable, payload)
+    pid, resolved = find_verified_arm_replay_sdk_process(proc_root)
     assert pid == 123
     assert resolved == executable
 
 
-def test_sdk_mode5_merge_gate_rejects_old_binary(tmp_path: Path) -> None:
+def test_sdk_arm_replay_gate_rejects_old_binary(tmp_path: Path) -> None:
     proc_root = tmp_path / "proc"
     executable = tmp_path / "sn_loco_server_old"
     _fake_process(proc_root, 456, executable, b"old SDK without merge")
     with pytest.raises(RuntimeError, match="marker=missing"):
-        find_verified_mode5_sdk_process(proc_root)
+        find_verified_arm_replay_sdk_process(proc_root)
 
 
-def test_sdk_mode5_merge_gate_rejects_unapproved_binary_hash(tmp_path: Path) -> None:
+def test_sdk_arm_replay_gate_rejects_unapproved_binary_hash(tmp_path: Path) -> None:
     proc_root = tmp_path / "proc"
     executable = tmp_path / "sn_loco_server"
-    _fake_process(proc_root, 789, executable, SDK_MODE5_MERGE_MARKER)
+    _fake_process(proc_root, 789, executable, b"::".join(SDK_ARM_REPLAY_MARKERS))
     with pytest.raises(RuntimeError, match="not-approved"):
-        find_verified_mode5_sdk_process(proc_root, approved_sha256=("0" * 64,))
+        find_verified_arm_replay_sdk_process(proc_root, approved_sha256=("0" * 64,))

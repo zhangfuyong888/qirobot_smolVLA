@@ -36,6 +36,10 @@ def test_meta_quest_config_has_proper_coordinate_basis() -> None:
     assert config.simulation.spawn_rgb_cameras is False
     assert config.runtime.mode == "simulation"
     assert config.mapping.position_scale == 2.0
+    assert config.mapping.controller_filter_time_constant_s == 0.0
+    assert config.mapping.invert_translation is False
+    assert config.mapping.invert_orientation is False
+    assert config.mapping.translation_sign == (1.0, 1.0, 1.0)
     assert config.safety.max_translation_speed_m_s == 1.6
     assert config.safety.max_rotation_speed_rad_s == 5.5
     assert config.smoothing.arm_max_joint_step_rad == 0.065
