@@ -318,14 +318,15 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `body_dof`                | `26`           | 12 腿 + 7 左臂 + 7 右臂               |
 | `arm_kp` / `arm_kd`       | `60.0` / `3.0` | 与已核查 qiling 桥一致的手臂 PD 增益       |
 | `reversed_joint_names`    | 见 yaml         | 与真机符号约定一致的 3 个翻转关节               |
-| `max_joint_step_rad`      | `0.003`        | 首测单周期关节限幅（30 Hz 下最大 0.09 rad/s） |
+| `max_joint_step_rad`      | `0.032`        | 最终单周期关节限幅（30 Hz 下最大 0.96 rad/s） |
 | `initial_state_timeout_s` | `15.0`         | 等待首帧 lowstate 超时                 |
 | `stale_command_hold`      | `true`         | Quest 输入 stale 时停止手臂运动           |
 | `max_state_age_s`         | `0.2`          | lowstate 断流超过此时间则停止发送手臂指令       |
 | `max_state_joint_jump_rad` | `0.35`       | 拒绝单帧关节位置突跳                         |
 | `input_stale_timeout_s`   | `0.12`         | 真机 Quest 输入超时                         |
-| `max_tcp_translation_speed_m_s` | `0.08` | 首测 TCP 目标平移速度上限                    |
-| `max_tcp_rotation_speed_rad_s` | `0.30`  | 首测 TCP 目标旋转速度上限                    |
+| `max_tcp_translation_speed_m_s` | `0.40` | TCP 目标平移速度上限                         |
+| `max_tcp_rotation_speed_rad_s` | `0.80`  | TCP 目标旋转速度上限                         |
+| `commissioning_input_filter_tau_s` | `0.06` | 手柄目标一阶滤波时间常数                  |
 | `command_watchdog_timeout_s` | `0.10` | 主循环无心跳后触发当前实测姿态保持 |
 | `shutdown_hold_duration_s` | `0.5` | 停机前重复发送实测手臂姿态的时间 |
 
@@ -339,14 +340,16 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `move_to_home` | `false` | 是否执行启动 homing；首次真机保持关闭 |
-| `duration_s` | `4.0` | homing 最长时长（秒） |
-| `max_joint_step_rad` | `0.01` | homing 每周期最大关节步长 |
+| `duration_s` | `6.0` | 五次 homing 计划时长；必要时按步长自动延长 |
+| `max_joint_step_rad` | `0.025` | homing 每周期最大关节步长 |
 | `position_tolerance_rad` | `0.02` | 到达 home 的容差 |
 | `check_arm_command_publishers` | `true` | `/lowcmd_replay` 已有发布者时拒绝启动 |
 | `require_sdk_arm_replay` | `true` | 校验运行中的 SDK 二进制含 arm-only replay 实现 |
 | `approved_sdk_sha256` | 见 yaml | 只允许已审查的 SDK 可执行文件摘要 |
 
 本模块完全不订阅 deploy 的 `lowcmd`，也不判断腿部、IMU 或站立策略状态。`/lowcmd_replay` 必须没有其他 ROS publisher；SDK 二进制必须通过摘要和 arm-replay 标记校验。
+
+`ik` 段的 `max_joint_velocity_rad_s=0.90` 是 Pink QP 内部速度上限。弱限位回中项在关节进入行程外侧 20% 后平滑启用，最大 cost 为 `0.002`、gain 为 `0.20`。真机额外把左右肘上限设为 `-0.08 rad`，防止穿过直臂奇异点形成反肘；肩 roll/yaw 相对每次 Grip 起始构型最多偏移 `0.85 rad`。肩部和肘部速度分别限制为 `0.55/0.65 rad/s`，并在近端命令与反馈偏差超过 `0.18 rad` 时停止继续积分。这些约束只用于真机 Pink 后端，不改变仿真求解器或原始 URDF。
 
 #### `gravity_compensation` 段
 

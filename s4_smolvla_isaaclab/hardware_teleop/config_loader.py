@@ -54,6 +54,17 @@ class HardwareRosConfig:
 @dataclass(frozen=True)
 class HardwareIkConfig:
     backend: str
+    max_joint_velocity_rad_s: float = 0.9
+    joint_limit_avoidance_cost: float = 0.002
+    joint_limit_activation_ratio: float = 0.8
+    joint_limit_avoidance_gain: float = 0.2
+    elbow_max_angle_rad: float = -0.08
+    shoulder_posture_cost: float = 0.006
+    elbow_posture_cost: float = 0.010
+    shoulder_max_velocity_rad_s: float = 0.55
+    elbow_max_velocity_rad_s: float = 0.65
+    shoulder_max_reference_deviation_rad: float = 0.85
+    max_proximal_tracking_error_rad: float = 0.18
 
 
 @dataclass(frozen=True)
@@ -178,6 +189,61 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
     if backend not in {"pink", "rmpflow", "pinocchio"}:
         raise ValueError("ik.backend must be 'pink', 'rmpflow' or 'pinocchio'")
 
+    ik_max_joint_velocity_rad_s = float(
+        ik.get("max_joint_velocity_rad_s", 0.9)
+    )
+    joint_limit_avoidance_cost = float(
+        ik.get("joint_limit_avoidance_cost", 0.002)
+    )
+    joint_limit_activation_ratio = float(
+        ik.get("joint_limit_activation_ratio", 0.8)
+    )
+    joint_limit_avoidance_gain = float(
+        ik.get("joint_limit_avoidance_gain", 0.2)
+    )
+    elbow_max_angle_rad = float(ik.get("elbow_max_angle_rad", -0.08))
+    shoulder_posture_cost = float(ik.get("shoulder_posture_cost", 0.006))
+    elbow_posture_cost = float(ik.get("elbow_posture_cost", 0.010))
+    shoulder_max_velocity_rad_s = float(
+        ik.get("shoulder_max_velocity_rad_s", 0.55)
+    )
+    elbow_max_velocity_rad_s = float(
+        ik.get("elbow_max_velocity_rad_s", 0.65)
+    )
+    shoulder_max_reference_deviation_rad = float(
+        ik.get("shoulder_max_reference_deviation_rad", 0.85)
+    )
+    max_proximal_tracking_error_rad = float(
+        ik.get("max_proximal_tracking_error_rad", 0.18)
+    )
+    if ik_max_joint_velocity_rad_s <= 0.0:
+        raise ValueError("ik.max_joint_velocity_rad_s must be positive")
+    if joint_limit_avoidance_cost < 0.0:
+        raise ValueError("ik.joint_limit_avoidance_cost must be non-negative")
+    if not 0.0 < joint_limit_activation_ratio < 1.0:
+        raise ValueError("ik.joint_limit_activation_ratio must be in (0, 1)")
+    if not 0.0 < joint_limit_avoidance_gain <= 1.0:
+        raise ValueError("ik.joint_limit_avoidance_gain must be in (0, 1]")
+    if not -0.5 < elbow_max_angle_rad < 0.0:
+        raise ValueError("ik.elbow_max_angle_rad must be in (-0.5, 0)")
+    if shoulder_posture_cost < 0.0 or elbow_posture_cost < 0.0:
+        raise ValueError("ik proximal posture costs must be non-negative")
+    for field, value in (
+        ("shoulder_max_velocity_rad_s", shoulder_max_velocity_rad_s),
+        ("elbow_max_velocity_rad_s", elbow_max_velocity_rad_s),
+    ):
+        if not 0.0 < value <= ik_max_joint_velocity_rad_s:
+            raise ValueError(
+                f"ik.{field} must be positive and no greater than "
+                "ik.max_joint_velocity_rad_s"
+            )
+    if not 0.0 < shoulder_max_reference_deviation_rad < math.pi:
+        raise ValueError(
+            "ik.shoulder_max_reference_deviation_rad must be in (0, pi)"
+        )
+    if max_proximal_tracking_error_rad <= 0.0:
+        raise ValueError("ik.max_proximal_tracking_error_rad must be positive")
+
     project_root = _resolve_project_root(path)
     teleop_path = (project_root / str(teleop_rel)).resolve()
     teleop = load_teleop_config(teleop_path)
@@ -280,6 +346,15 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
         if "home_right_arm" in startup
         else ()
     )
+    for field, home in (
+        ("startup.home_left_arm", home_left_arm),
+        ("startup.home_right_arm", home_right_arm),
+    ):
+        if home and home[3] > elbow_max_angle_rad:
+            raise ValueError(
+                f"{field} elbow angle {home[3]:.3f} exceeds "
+                f"ik.elbow_max_angle_rad {elbow_max_angle_rad:.3f}"
+            )
     for field, value in (
         (
             "commissioning_max_clutch_translation_m",
@@ -382,7 +457,22 @@ def load_hardware_teleop_config(path: Path) -> HardwareTeleopConfig:
             command_watchdog_timeout_s=command_watchdog_timeout_s,
             shutdown_hold_duration_s=shutdown_hold_duration_s,
         ),
-        ik=HardwareIkConfig(backend=backend),
+        ik=HardwareIkConfig(
+            backend=backend,
+            max_joint_velocity_rad_s=ik_max_joint_velocity_rad_s,
+            joint_limit_avoidance_cost=joint_limit_avoidance_cost,
+            joint_limit_activation_ratio=joint_limit_activation_ratio,
+            joint_limit_avoidance_gain=joint_limit_avoidance_gain,
+            elbow_max_angle_rad=elbow_max_angle_rad,
+            shoulder_posture_cost=shoulder_posture_cost,
+            elbow_posture_cost=elbow_posture_cost,
+            shoulder_max_velocity_rad_s=shoulder_max_velocity_rad_s,
+            elbow_max_velocity_rad_s=elbow_max_velocity_rad_s,
+            shoulder_max_reference_deviation_rad=(
+                shoulder_max_reference_deviation_rad
+            ),
+            max_proximal_tracking_error_rad=max_proximal_tracking_error_rad,
+        ),
         hands=HardwareHandsConfig(
             enabled=bool(hands.get("enabled", False)),
             left_open_uint16=_uint16_list(hands.get("left_open_uint16"), field="hands.left_open_uint16"),

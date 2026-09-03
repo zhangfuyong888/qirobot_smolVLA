@@ -110,8 +110,17 @@ def run_startup_homing(
         print(f"[HW-TELEOP] already at home pose (err={error:.4f} rad)", flush=True)
         return home_action
 
-    duration_s = max(float(startup_cfg.duration_s), control_dt)
+    requested_duration_s = max(float(startup_cfg.duration_s), control_dt)
     start_action = np.asarray(actual, dtype=np.float32).copy()
+    max_step = max(float(startup_cfg.max_joint_step_rad), 0.0)
+    requested_steps = max(1, int(np.ceil(requested_duration_s / control_dt)))
+    # A quintic's peak slope is 1.875. Increase duration when necessary so
+    # the safety step limiter does not flatten the curve around its midpoint.
+    step_limited_steps = (
+        int(np.ceil(1.875 * error / max_step)) if max_step > 0.0 else 1
+    )
+    total_steps = max(requested_steps, step_limited_steps)
+    duration_s = total_steps * control_dt
     print(
         f"[HW-TELEOP] startup homing: quintic rest-to-rest over {duration_s:.1f}s "
         f"start_err={error:.3f} rad "
@@ -125,11 +134,10 @@ def run_startup_homing(
     )
 
     command = start_action.copy()
-    started = time.monotonic()
-    max_step = max(float(startup_cfg.max_joint_step_rad), 0.0)
-    while True:
+    next_deadline = time.monotonic()
+    for step_index in range(total_steps + 1):
         spin_once()
-        tau = (time.monotonic() - started) / duration_s
+        tau = step_index / total_steps
         desired = interpolate_home_quintic(start_action, home_action, tau)
         if max_step > 0.0:
             command = interpolate_toward_home(command, desired, max_step_rad=max_step)
@@ -138,7 +146,7 @@ def run_startup_homing(
         else:
             command = desired
         publish_step(command)
-        if tau >= 1.0:
+        if step_index == total_steps:
             actual = read_state()
             final_err = arm_home_error(actual, home_action)
             print(
@@ -148,4 +156,9 @@ def run_startup_homing(
                 flush=True,
             )
             return command
-        time.sleep(control_dt)
+        next_deadline += control_dt
+        sleep_s = next_deadline - time.monotonic()
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
+        else:
+            next_deadline = time.monotonic()

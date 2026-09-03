@@ -66,6 +66,45 @@ def test_interpolate_home_quintic_only_moves_arms() -> None:
     np.testing.assert_allclose(mid[ACTION_SLICES.left_hand], 0.4)
 
 
+def test_startup_homing_publishes_uniform_quintic_samples(monkeypatch) -> None:
+    clock = [0.0]
+    monkeypatch.setattr("hardware_teleop.startup.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "hardware_teleop.startup.time.sleep",
+        lambda duration: clock.__setitem__(0, clock[0] + duration),
+    )
+    actual = _zero_action()
+    samples: list[float] = []
+    startup_cfg = HardwareStartupConfig(
+        move_to_home=True,
+        duration_s=0.05,
+        max_joint_step_rad=1.0,
+        position_tolerance_rad=0.001,
+        check_arm_command_publishers=True,
+        require_sdk_arm_replay=True,
+    )
+    run_startup_homing(
+        startup_cfg=startup_cfg,
+        control_dt=0.01,
+        read_state=lambda: actual.copy(),
+        publish_step=lambda action: samples.append(
+            float(action[ACTION_SLICES.left_arm][0])
+        ),
+        spin_once=lambda: None,
+        home_poses={"left_arm": np.ones(7, dtype=np.float32)},
+        profiles={
+            "left_open": np.zeros(6, dtype=np.float32),
+            "right_open": np.zeros(6, dtype=np.float32),
+        },
+    )
+
+    np.testing.assert_allclose(
+        samples,
+        [quintic_unit(index / 5.0) for index in range(6)],
+        atol=1.0e-6,
+    )
+
+
 def test_merge_startup_home_poses_overrides_task_home() -> None:
     merged = merge_startup_home_poses(
         HardwareStartupConfig(

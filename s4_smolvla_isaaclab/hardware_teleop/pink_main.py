@@ -18,7 +18,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from hardware_teleop.config_loader import (  # noqa: E402
-    HardwareIkConfig,
     HardwareTeleopConfig,
     load_hardware_teleop_config,
 )
@@ -114,6 +113,24 @@ def _arm_enabled(mode: str, side: str) -> bool:
     return mode == "both" or mode == side
 
 
+def _max_active_proximal_tracking_error(
+    actual_q14: np.ndarray,
+    command_q14: np.ndarray,
+    *,
+    left_active: bool,
+    right_active: bool,
+) -> float:
+    """Return max shoulder/elbow command-feedback error for active arms."""
+    actual = np.asarray(actual_q14, dtype=np.float64)
+    command = np.asarray(command_q14, dtype=np.float64)
+    errors: list[float] = []
+    if left_active:
+        errors.append(float(np.max(np.abs(command[:4] - actual[:4]))))
+    if right_active:
+        errors.append(float(np.max(np.abs(command[7:11] - actual[7:11]))))
+    return max(errors, default=0.0)
+
+
 def _validate_no_isaac_imports() -> None:
     forbidden = sorted(
         name
@@ -157,6 +174,7 @@ def run_pink_hardware_teleop(
     pink_cfg = replace(
         config.teleop.controller.pink,
         position_cost=config.hardware.commissioning_position_cost,
+        max_joint_velocity_rad_s=config.ik.max_joint_velocity_rad_s,
         orientation_cost=(
             config.hardware.commissioning_orientation_cost
             if config.hardware.commissioning_orientation_enabled
@@ -259,6 +277,7 @@ def run_pink_hardware_teleop(
         f"[HW-PINK] runtime=hardware_no_isaac control_rate_hz={config.hardware.control_rate_hz:.1f} "
         f"state={config.hardware.state_source} shadow={args.shadow} enabled_arms={args.enabled_arms} "
         f"max_arm_step={max_arm_step:.4f}rad "
+        f"ik_joint_speed={config.ik.max_joint_velocity_rad_s:.2f}rad/s "
         f"clutch_cap={config.hardware.commissioning_max_clutch_translation_m:.2f}m "
         f"tcp_speed={config.hardware.max_tcp_translation_speed_m_s:.2f}m/s "
         f"rot_speed={config.hardware.max_tcp_rotation_speed_rad_s:.2f}rad/s "
@@ -268,6 +287,7 @@ def run_pink_hardware_teleop(
         f"orientation={int(config.hardware.commissioning_orientation_enabled)} "
         f"orientation_cost={pink_cfg.orientation_cost:.2f} "
         f"position_cost={pink_cfg.position_cost:.2f} "
+        f"joint_limit_cost={config.ik.joint_limit_avoidance_cost:.4f} "
         f"invert_t={int(config.hardware.commissioning_invert_translation)} "
         f"invert_r={int(config.hardware.commissioning_invert_orientation)} "
         f"t_sign=({config.hardware.commissioning_translation_sign[0]:+.0f},"
@@ -433,6 +453,26 @@ def run_pink_hardware_teleop(
                 and not fault.active
             )
 
+            proximal_tracking_error = _max_active_proximal_tracking_error(
+                actual_q14,
+                command_q14,
+                left_active=left_active,
+                right_active=right_active,
+            )
+            if proximal_tracking_error > config.ik.max_proximal_tracking_error_rad:
+                if fault.trip(
+                    "proximal command-feedback error "
+                    f"{proximal_tracking_error:.3f} rad exceeds "
+                    f"{config.ik.max_proximal_tracking_error_rad:.3f} rad"
+                ):
+                    print(
+                        f"[HW-PINK][SAFETY] {fault.reason}; release both grips "
+                        "and wait for the arm to catch up",
+                        flush=True,
+                    )
+                left_active = False
+                right_active = False
+
             if (mapped.left.clutch_rising and _arm_enabled(args.enabled_arms, "left")) or (
                 mapped.right.clutch_rising and _arm_enabled(args.enabled_arms, "right")
             ):
@@ -593,6 +633,7 @@ def run_pink_hardware_teleop(
                     f"hands={int(hands_enabled)} "
                     f"track(L/R)={int(mapped.left.tracking_valid)}/{int(mapped.right.tracking_valid)} "
                     f"fault={fault.reason!r} "
+                    f"proximal_track_err={proximal_tracking_error:.3f}rad "
                     f"tcp_err(L/R)={left_error:.3f}/{right_error:.3f}m "
                     f"state_age={bridge.last_state_age_s:.3f}s "
                     f"grav_sign={diag['gravity_sign']:+.1f} "
@@ -647,7 +688,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_hardware_teleop_config(args.hardware_config)
         if args.ik_backend is not None:
-            config = replace(config, ik=HardwareIkConfig(backend=str(args.ik_backend)))
+            config = replace(config, ik=replace(config.ik, backend=str(args.ik_backend)))
         run_pink_hardware_teleop(config, args)
     except KeyboardInterrupt:
         print("\n[HW-PINK] interrupted; arm-replay output relinquished", flush=True)

@@ -369,9 +369,10 @@ if __name__ == "__main__":
         if args_cli.ik_backend is not None:
             from dataclasses import replace
 
-            from hardware_teleop.config_loader import HardwareIkConfig
-
-            hw_config = replace(hw_config, ik=HardwareIkConfig(backend=str(args_cli.ik_backend)))
+            hw_config = replace(
+                hw_config,
+                ik=replace(hw_config.ik, backend=str(args_cli.ik_backend)),
+            )
         run_hardware_teleop(hw_config, args_cli)
     except BaseException:
         print("[FATAL] hardware Quest teleoperation failed:", flush=True)

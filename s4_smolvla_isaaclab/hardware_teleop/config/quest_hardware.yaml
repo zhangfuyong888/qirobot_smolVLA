@@ -39,8 +39,8 @@ hardware:
     - left_wrist_roll_joint
     - left_wrist_yaw_joint
     - right_shoulder_yaw_joint
-  # 0.040 rad at 30 Hz = 1.20 rad/s. Still below the simulation 0.065 cap.
-  max_joint_step_rad: 0.040
+  # Final actuator-side guard. Pink is capped slightly lower at 0.90 rad/s.
+  max_joint_step_rad: 0.032
   require_initial_state: true
   initial_state_timeout_s: 15.0
   stale_command_hold: true
@@ -52,8 +52,8 @@ hardware:
   # Stricter than simulation: a headset pause must stop target integration
   # quickly, and TCP target slew is limited before IK.
   input_stale_timeout_s: 0.12
-  max_tcp_translation_speed_m_s: 0.50
-  max_tcp_rotation_speed_rad_s: 1.00
+  max_tcp_translation_speed_m_s: 0.40
+  max_tcp_rotation_speed_rad_s: 0.80
   commissioning_position_scale: 2.00
   commissioning_orientation_enabled: true
   commissioning_orientation_cost: 0.15
@@ -61,7 +61,7 @@ hardware:
   # Home elbows sit at ~±0.36 m. 0.25 m still keeps hands off the torso.
   commissioning_elbow_avoidance_enabled: true
   commissioning_elbow_min_lateral_distance_base_m: 0.25
-  commissioning_input_filter_tau_s: 0.04
+  commissioning_input_filter_tau_s: 0.06
   # Must contain the parked TCP (~x=0.32, y=±0.40, z≈0.07) or clutch clips into a
   # fixed corner and mapping direction cannot be judged.
   commissioning_workspace_min_base_m: [-0.25, -0.65, -0.30]
@@ -83,8 +83,8 @@ startup:
   # Quintic rest-to-rest move to a human-like ready pose, then Quest teleop
   # takes over from that hold. Pass --skip-homing to stay at the measured pose.
   move_to_home: true
-  duration_s: 5.0
-  max_joint_step_rad: 0.05
+  duration_s: 6.0
+  max_joint_step_rad: 0.025
   position_tolerance_rad: 0.05
   home_left_arm: [-0.25, 0.45, -0.34, -0.52, -0.65, -0.33, 0.19]
   home_right_arm: [-0.25, -0.45, -0.34, -0.52, 0.65, -0.33, 0.19]
@@ -113,6 +113,24 @@ ik:
   # Pure Pinocchio/Pink runtime. The weights, TCP offset, joint limits and
   # elbow barriers are shared with simulation through teleop_config above.
   backend: pink
+  # Hardware-only QP tuning. The limit term fades in only inside the outer
+  # 20% of each joint range, so normal Cartesian tracking remains dominant.
+  max_joint_velocity_rad_s: 0.90
+  joint_limit_avoidance_cost: 0.002
+  joint_limit_activation_ratio: 0.80
+  joint_limit_avoidance_gain: 0.20
+  # Both elbow home angles are negative. Keep a small bend so the solver
+  # cannot cross the straight-arm singularity into a reversed elbow branch.
+  elbow_max_angle_rad: -0.08
+  # Preserve the shoulder/elbow configuration captured on each Grip press.
+  # These remain far weaker than the 0.90 Cartesian position task.
+  shoulder_posture_cost: 0.006
+  elbow_posture_cost: 0.010
+  shoulder_max_velocity_rad_s: 0.55
+  elbow_max_velocity_rad_s: 0.65
+  shoulder_max_reference_deviation_rad: 0.85
+  # Stop open-loop IK integration if the proximal command outruns feedback.
+  max_proximal_tracking_error_rad: 0.18
 
 hands:
   # Analog Trigger on /handscmd. Left Trigger -> left hand, right Trigger -> right
