@@ -114,6 +114,13 @@ def _arm_enabled(mode: str, side: str) -> bool:
     return mode == "both" or mode == side
 
 
+def _request_arm_enabled(cli_mode: str, request_mode: str | None, side: str) -> bool:
+    """Apply a per-tick arm cap without allowing hooks to widen the CLI limit."""
+    return _arm_enabled(cli_mode, side) and (
+        request_mode is None or _arm_enabled(request_mode, side)
+    )
+
+
 def _max_active_proximal_tracking_error(
     actual_q14: np.ndarray,
     command_q14: np.ndarray,
@@ -452,7 +459,7 @@ def run_pink_hardware_teleop(
             left_active = (
                 request.allow_teleop
                 and mapped.left.clutch
-                and _arm_enabled(args.enabled_arms, "left")
+                and _request_arm_enabled(args.enabled_arms, request.enabled_arms, "left")
                 and not mapped.stale
                 and state_feed_ok
                 and not fault.active
@@ -460,7 +467,7 @@ def run_pink_hardware_teleop(
             right_active = (
                 request.allow_teleop
                 and mapped.right.clutch
-                and _arm_enabled(args.enabled_arms, "right")
+                and _request_arm_enabled(args.enabled_arms, request.enabled_arms, "right")
                 and not mapped.stale
                 and state_feed_ok
                 and not fault.active
@@ -486,8 +493,14 @@ def run_pink_hardware_teleop(
                 left_active = False
                 right_active = False
 
-            if (mapped.left.clutch_rising and _arm_enabled(args.enabled_arms, "left")) or (
-                mapped.right.clutch_rising and _arm_enabled(args.enabled_arms, "right")
+            if (
+                mapped.left.clutch_rising
+                and request.allow_teleop
+                and _request_arm_enabled(args.enabled_arms, request.enabled_arms, "left")
+            ) or (
+                mapped.right.clutch_rising
+                and request.allow_teleop
+                and _request_arm_enabled(args.enabled_arms, request.enabled_arms, "right")
             ):
                 ik_backend.set_posture_reference(command_q14)
 

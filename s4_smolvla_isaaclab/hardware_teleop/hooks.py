@@ -12,6 +12,7 @@ from teleoperation.protocol import ControllerFrame
 @dataclass
 class TickRequest:
     allow_teleop: bool = True
+    enabled_arms: str | None = None
     command_override: np.ndarray | None = None
     hand_triggers: tuple[float, float] | None = None
     publish_arms: bool = True

@@ -1,5 +1,6 @@
 # Single-arm drawer policy contract. The hardware teleop config is the only
-# source of Home targets; the inactive arm remains held by the existing bridge.
+# source of Home targets. READY allows two-arm setup; after A, only this arm and
+# hand can be controlled and recorded.
 active_arm: right
 control_hz: 30
 state:

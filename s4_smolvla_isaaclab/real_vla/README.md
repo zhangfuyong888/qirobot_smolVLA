@@ -34,9 +34,9 @@ sudo -E bash run.sh real-collect --arm-output --input-debug
 
 Quest 仍打开 `https://192.168.110.35:8443`。
 
-流程：自动 Home → A 再次确认 Home 后开始采集 → 右手 Grip 遥操、Trigger 抓握 → 拉开抽屉 → 推回关闭 → 松手并撤开 → B 停止人工遥操 → 系统继续记录自动回 Home → 看 QUALITY → X 保存或 Y 长按丢弃。
+流程：自动 Home → READY 阶段可用双手 Grip/Trigger 调整双臂双手 → A 再次确认 Home 后开始采集 → 采集中只允许右手 Grip 遥操、Trigger 抓握 → 拉开抽屉 → 推回关闭 → 松手并撤开 → B 停止人工遥操 → 系统继续记录自动回 Home → 看 QUALITY → X 保存或 Y 长按丢弃。
 
-只有显式传入 `--arm-output` 才允许真机输出。采集只开放 `robot.yaml` 指定的活动臂，另一只手臂保持在已有命令位置。state/action 任一失效、控制 fault、低维丢样或视频帧数不一致都会令 episode 变为 `QUALITY INVALID`，invalid episode 不能按 X 保存。
+只有显式传入 `--arm-output` 才允许真机输出。READY 阶段开放双臂双手；A 被接受后只开放 `robot.yaml` 指定的活动臂和手，非活动侧回 Home 并保持张开。state/action 任一失效、控制 fault、低维丢样或视频帧数不一致都会令 episode 变为 `QUALITY INVALID`，invalid episode 不能按 X 保存。
 
 每个 episode 同时保存采集配置快照、Git commit、dirty 标志、采集代码 SHA256，以及 `collection_phase`（`0=teleop`、`1=return_home`）。异常退出会在下次启动时跨 session 回收 pending episode。
 

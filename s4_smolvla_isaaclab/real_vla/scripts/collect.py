@@ -172,15 +172,18 @@ class CollectionHooks(TeleopHooks):
             active_trigger = left_analog if self.config.active_arm == "left" else right_analog
             gripper = self.gripper.update(active_trigger)
             if self.config.active_arm == "left":
-                hand_triggers = (float(gripper), right_analog)
+                hand_triggers = (float(gripper), float(OPEN))
             else:
-                hand_triggers = (left_analog, float(gripper))
+                hand_triggers = (float(OPEN), float(gripper))
         elif self.machine.state in home_states:
             self.gripper.reset(OPEN)
             hand_triggers = (float(OPEN), float(OPEN))
-        else:
+        elif self.machine.state == CollectionState.READY:
             self.gripper.reset(OPEN)
             hand_triggers = None
+        else:
+            self.gripper.reset(OPEN)
+            hand_triggers = (float(OPEN), float(OPEN))
         hud = self._hud()
         hud_out = None
         try:
@@ -197,6 +200,11 @@ class CollectionHooks(TeleopHooks):
             self._last_hud_send = now_s
         return TickRequest(
             allow_teleop=allow_teleop,
+            enabled_arms=(
+                "both"
+                if self.machine.state == CollectionState.READY
+                else self.config.active_arm
+            ),
             command_override=command_override,
             hand_triggers=hand_triggers,
             publish_arms=True,
@@ -342,7 +350,10 @@ class CollectionHooks(TeleopHooks):
                 }
             return {
                 "title": "READY",
-                "detail": f"Use {self.config.active_arm} Grip. A homes, then starts recording.",
+                "detail": (
+                    "Both arms/hands enabled for setup. "
+                    f"A homes, then records {self.config.active_arm} only."
+                ),
                 "kind": "ready",
             }
         if state == CollectionState.RECORDING:
@@ -530,7 +541,10 @@ def main(argv: list[str] | None = None) -> int:
     # Pink's URDF range. Skipping it seeds IK from the measured pose and can
     # crash before HomeManager ever runs.
     teleop_args.skip_homing = False
-    teleop_args.enabled_arms = collection.active_arm
+    # READY is a setup phase where both arms and hands may be positioned.
+    # CollectionHooks narrows control to the recorded arm as soon as A starts
+    # the homing-to-record sequence.
+    teleop_args.enabled_arms = "both"
     if not teleop_args.shadow and not teleop_args.arm_output:
         print("[REAL-VLA] refusing live collection without explicit --arm-output", flush=True)
         return 2
@@ -560,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[REAL-VLA] session={session_dir}", flush=True)
     print(
         f"[REAL-VLA] task={collection.task.text!r} "
-        f"record_arm={collection.active_arm} teleop_arms={collection.active_arm}",
+        f"record_arm={collection.active_arm} teleop_before_record=both",
         flush=True,
     )
     config = load_hardware_teleop_config(teleop_args.hardware_config)

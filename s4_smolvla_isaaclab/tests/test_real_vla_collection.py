@@ -14,6 +14,7 @@ from real_vla.config_loader import load_collection_config
 from real_vla.input.quest_buttons import QuestButtonDecoder
 from real_vla.robot.gripper_adapter import BinaryGripper, GRASP, OPEN
 from real_vla.robot.home_manager import HomeManager
+from hardware_teleop.pink_main import _request_arm_enabled
 from teleoperation.protocol import ControllerFrame, ControllerSample
 
 
@@ -65,6 +66,14 @@ def test_collection_config_loads() -> None:
     assert "pull the drawer open" in config.task.text
     assert "push it fully closed" in config.task.text
     assert "return home" in config.task.text
+
+
+def test_tick_arm_cap_can_narrow_but_not_widen_cli_limit() -> None:
+    assert _request_arm_enabled("both", "both", "left") is True
+    assert _request_arm_enabled("both", "right", "left") is False
+    assert _request_arm_enabled("both", "right", "right") is True
+    assert _request_arm_enabled("right", "both", "left") is False
+    assert _request_arm_enabled("right", None, "right") is True
 
 
 def test_webxr_has_one_shot_collection_haptics() -> None:
