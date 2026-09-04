@@ -146,6 +146,26 @@ def test_hardware_shoulder_flip_limit_tracks_clutch_reference() -> None:
         ] == pytest.approx(0.55)
 
 
+def test_hardware_wrist_pitch_yaw_are_lightly_stabilized_and_rate_limited() -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    backend = create_pure_hardware_ik_backend(config)
+    controller = backend._controller
+    stabilized = (
+        "left_wrist_pitch_joint",
+        "left_wrist_yaw_joint",
+        "right_wrist_pitch_joint",
+        "right_wrist_yaw_joint",
+    )
+    for name in stabilized:
+        v_index = controller._v_index_by_name[name]
+        assert backend._stabilization_posture_task.cost[v_index] == pytest.approx(0.003)
+        assert controller.velocity_limit.maximum[v_index] == pytest.approx(0.50)
+    for name in ("left_wrist_roll_joint", "right_wrist_roll_joint"):
+        v_index = controller._v_index_by_name[name]
+        assert backend._stabilization_posture_task.cost[v_index] == pytest.approx(0.0)
+        assert controller.velocity_limit.maximum[v_index] == pytest.approx(0.90)
+
+
 def test_hardware_shoulder_flip_limit_drives_overshoot_back_inward() -> None:
     config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
     backend = create_pure_hardware_ik_backend(config)

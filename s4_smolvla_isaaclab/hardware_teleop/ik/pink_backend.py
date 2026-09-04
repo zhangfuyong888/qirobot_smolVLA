@@ -17,6 +17,12 @@ from teleoperation.pink.pink.tasks import PostureTask
 
 _HARD_LIMIT_MARGIN_RAD = 2.0e-6
 _ELBOW_JOINT_NAMES = ("left_elbow_joint", "right_elbow_joint")
+_WRIST_PITCH_YAW_JOINT_NAMES = (
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+)
 _SHOULDER_JOINT_NAMES = (
     "left_shoulder_pitch_joint",
     "left_shoulder_roll_joint",
@@ -96,7 +102,11 @@ class PinkHardwareIkBackend:
             posture_cost[self._controller._v_index_by_name[name]] = float(
                 config.ik.elbow_posture_cost
             )
-        self._proximal_posture_task = PostureTask(
+        for name in _WRIST_PITCH_YAW_JOINT_NAMES:
+            posture_cost[self._controller._v_index_by_name[name]] = float(
+                config.ik.wrist_pitch_yaw_posture_cost
+            )
+        self._stabilization_posture_task = PostureTask(
             cost=posture_cost,
             gain=self._controller.config.task_gain,
         )
@@ -152,6 +162,12 @@ class PinkHardwareIkBackend:
                 controller.velocity_limit.maximum[v_index],
                 float(config.ik.elbow_max_velocity_rad_s),
             )
+        for name in _WRIST_PITCH_YAW_JOINT_NAMES:
+            v_index = controller._v_index_by_name[name]
+            controller.velocity_limit.maximum[v_index] = min(
+                controller.velocity_limit.maximum[v_index],
+                float(config.ik.wrist_pitch_yaw_max_velocity_rad_s),
+            )
 
     def forward(self, arm_q14: np.ndarray) -> tuple[TcpPose, TcpPose]:
         return self._controller.forward(arm_q14)
@@ -175,7 +191,7 @@ class PinkHardwareIkBackend:
         controller.left_task.set_target(controller._target_se3(left_target))
         controller.right_task.set_target(controller._target_se3(right_target))
         controller.posture_task.set_target(controller._posture_reference)
-        self._proximal_posture_task.set_target(controller._posture_reference)
+        self._stabilization_posture_task.set_target(controller._posture_reference)
         self._update_joint_limit_task()
 
         start = time.perf_counter()
@@ -185,7 +201,7 @@ class PinkHardwareIkBackend:
                 controller.left_task,
                 controller.right_task,
                 controller.posture_task,
-                self._proximal_posture_task,
+                self._stabilization_posture_task,
                 self._limit_task,
             ],
             solve_dt,
@@ -258,6 +274,16 @@ class PinkHardwareIkBackend:
         details["elbow_max_angle_rad"] = float(
             self._controller._arm_upper_limits[
                 ARM_JOINT_NAMES.index("left_elbow_joint")
+            ]
+        )
+        details["wrist_pitch_yaw_posture_cost"] = float(
+            self._stabilization_posture_task.cost[
+                self._controller._v_index_by_name["left_wrist_pitch_joint"]
+            ]
+        )
+        details["wrist_pitch_yaw_max_velocity_rad_s"] = float(
+            self._controller.velocity_limit.maximum[
+                self._controller._v_index_by_name["left_wrist_pitch_joint"]
             ]
         )
         return details

@@ -288,6 +288,8 @@ def run_pink_hardware_teleop(
         f"orientation_cost={pink_cfg.orientation_cost:.2f} "
         f"position_cost={pink_cfg.position_cost:.2f} "
         f"joint_limit_cost={config.ik.joint_limit_avoidance_cost:.4f} "
+        f"wrist_py_cost={config.ik.wrist_pitch_yaw_posture_cost:.4f} "
+        f"wrist_py_speed={config.ik.wrist_pitch_yaw_max_velocity_rad_s:.2f}rad/s "
         f"invert_t={int(config.hardware.commissioning_invert_translation)} "
         f"invert_r={int(config.hardware.commissioning_invert_orientation)} "
         f"t_sign=({config.hardware.commissioning_translation_sign[0]:+.0f},"

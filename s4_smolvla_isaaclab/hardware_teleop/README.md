@@ -349,7 +349,7 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 
 本模块完全不订阅 deploy 的 `lowcmd`，也不判断腿部、IMU 或站立策略状态。`/lowcmd_replay` 必须没有其他 ROS publisher；SDK 二进制必须通过摘要和 arm-replay 标记校验。
 
-`ik` 段的 `max_joint_velocity_rad_s=0.90` 是 Pink QP 内部速度上限。弱限位回中项在关节进入行程外侧 20% 后平滑启用，最大 cost 为 `0.002`、gain 为 `0.20`。真机额外把左右肘上限设为 `-0.08 rad`，防止穿过直臂奇异点形成反肘；肩 roll/yaw 相对每次 Grip 起始构型最多偏移 `0.85 rad`。肩部和肘部速度分别限制为 `0.55/0.65 rad/s`，并在近端命令与反馈偏差超过 `0.18 rad` 时停止继续积分。这些约束只用于真机 Pink 后端，不改变仿真求解器或原始 URDF。
+`ik` 段的 `max_joint_velocity_rad_s=0.90` 是 Pink QP 内部速度上限。弱限位回中项在关节进入行程外侧 20% 后平滑启用，最大 cost 为 `0.002`、gain 为 `0.20`。真机额外把左右肘上限设为 `-0.08 rad`，防止穿过直臂奇异点形成反肘；肩 roll/yaw 相对每次 Grip 起始构型最多偏移 `0.85 rad`。肩部和肘部速度分别限制为 `0.55/0.65 rad/s`。左右腕 pitch/yaw 使用 `0.003` 的弱姿态代价保留每次 Grip 按下时的构型，并限制为 `0.50 rad/s`；腕 roll 保持原有自由度与 `0.90 rad/s` 全局上限。近端命令与反馈偏差超过 `0.18 rad` 时会停止继续积分。这些约束只用于真机 Pink 后端，不改变仿真求解器或原始 URDF。
 
 #### `gravity_compensation` 段
 

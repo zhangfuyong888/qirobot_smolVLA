@@ -126,8 +126,11 @@ ik:
   # These remain far weaker than the 0.90 Cartesian position task.
   shoulder_posture_cost: 0.006
   elbow_posture_cost: 0.010
+  # Lightly retain Grip-time wrist pitch/yaw while leaving wrist roll free.
+  wrist_pitch_yaw_posture_cost: 0.003
   shoulder_max_velocity_rad_s: 0.55
   elbow_max_velocity_rad_s: 0.65
+  wrist_pitch_yaw_max_velocity_rad_s: 0.50
   shoulder_max_reference_deviation_rad: 0.85
   # Stop open-loop IK integration if the proximal command outruns feedback.
   max_proximal_tracking_error_rad: 0.18

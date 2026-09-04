@@ -48,8 +48,10 @@ def test_hardware_config_loads() -> None:
     assert config.ik.elbow_max_angle_rad == pytest.approx(-0.08)
     assert config.ik.shoulder_posture_cost == pytest.approx(0.006)
     assert config.ik.elbow_posture_cost == pytest.approx(0.010)
+    assert config.ik.wrist_pitch_yaw_posture_cost == pytest.approx(0.003)
     assert config.ik.shoulder_max_velocity_rad_s == pytest.approx(0.55)
     assert config.ik.elbow_max_velocity_rad_s == pytest.approx(0.65)
+    assert config.ik.wrist_pitch_yaw_max_velocity_rad_s == pytest.approx(0.50)
     assert config.ik.shoulder_max_reference_deviation_rad == pytest.approx(0.85)
     assert config.ik.max_proximal_tracking_error_rad == pytest.approx(0.18)
     assert len(config.hands.left_open_uint16) == 6
@@ -61,7 +63,7 @@ def test_hardware_config_loads() -> None:
     assert config.startup.move_to_home is True
     assert config.startup.duration_s == pytest.approx(6.0)
     assert config.startup.home_left_arm == pytest.approx(
-        (0.395399, 0.485809, -0.233272, -1.614595, 0.235180, -0.264553, -0.042916)
+        (0.437743, 0.680362, -0.232509, -1.193446, 0.181773, -0.530060, -0.129129)
     )
     assert config.startup.home_right_arm == pytest.approx(
         (0.437743, -0.680362, -0.232509, -1.193446, -0.181773, -0.530060, -0.129129)
@@ -95,8 +97,8 @@ def test_hardware_config_rejects_reverse_elbow_home(
         encoding="utf-8"
     )
     bad = source.replace(
-        "home_left_arm: [0.395399, 0.485809, -0.233272, -1.614595, 0.235180, -0.264553, -0.042916]",
-        "home_left_arm: [0.395399, 0.485809, -0.233272, 0.00, 0.235180, -0.264553, -0.042916]",
+        "home_left_arm: [0.437743, 0.680362, -0.232509, -1.193446, 0.181773, -0.530060, -0.129129]",
+        "home_left_arm: [0.437743, 0.680362, -0.232509, 0.00, 0.181773, -0.530060, -0.129129]",
     )
     path = tmp_path / "quest_hardware_reverse_elbow_home.yaml"
     path.write_text(bad, encoding="utf-8")
