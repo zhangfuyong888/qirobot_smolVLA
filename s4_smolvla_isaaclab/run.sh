@@ -237,6 +237,10 @@ Core commands:
   teleop-hardware-build              Build vendored qi ROS2 messages for hardware teleop
   teleop-hardware-env                Print command to source ROS2/DDS env in another shell
   teleop-cert [--ip ADDRESS]         Generate the local HTTPS certificate
+  real-collect [options]             Real-robot VLA collection (Quest ABXY, no Isaac)
+  real-collect-cameras               Snapshot RealSense serials for left/right wrist labeling
+  real-inspect-episode DIR           Print one saved real_vla episode
+  real-validate-episode DIR          Re-run quality checks on one episode
   record [--episodes N] [--resume]    Record/continue successful HDF5 demonstrations
   collect-convert [options]           Collect, validate and convert; never train
   collect-train [options]             Guarded collect, convert, check, then train
@@ -304,8 +308,9 @@ case "${1:-help}" in
     teleop-hardware)
         shift
         if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
-            echo "[HW-TELEOP] local qi ROS messages not built; running build_ros_msgs.sh" >&2
-            bash "$PROJECT_ROOT/hardware_teleop/scripts/build_ros_msgs.sh"
+            echo "[HW-TELEOP] local qi ROS messages are missing; refusing to build during a robot run" >&2
+            echo "[HW-TELEOP] run 'bash run.sh teleop-hardware-build' explicitly, then retry" >&2
+            exit 1
         fi
         # shellcheck disable=SC1091
         source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
@@ -356,6 +361,32 @@ case "${1:-help}" in
 # Source ROS2 / CycloneDDS env for hardware teleop (edit hardware_teleop/config/ros_env.sh):
 source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
 EOF
+        ;;
+    real-collect)
+        shift
+        if [[ ! -f "$PROJECT_ROOT/hardware_teleop/ros_ws/install/setup.bash" ]]; then
+            echo "[REAL-VLA] local qi ROS messages are missing; run 'bash run.sh teleop-hardware-build'" >&2
+            exit 1
+        fi
+        # shellcheck disable=SC1091
+        source "$PROJECT_ROOT/hardware_teleop/scripts/source_ros_env.sh"
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" real_vla/scripts/collect.py "$@"
+        ;;
+    real-collect-cameras)
+        shift
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" real_vla/scripts/camera_test.py "$@"
+        ;;
+    real-inspect-episode)
+        shift
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" real_vla/scripts/inspect_episode.py "$@"
+        ;;
+    real-validate-episode)
+        shift
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" real_vla/scripts/validate_episode.py "$@"
         ;;
     teleop-cert)
         shift

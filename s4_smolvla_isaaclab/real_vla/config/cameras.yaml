@@ -1,0 +1,27 @@
+# Identify RealSense cameras by librealsense serial, not /dev/videoN.
+# Confirm left vs right wrist with: bash run.sh real-collect-cameras
+backend: realsense
+warmup_s: 1.5
+writer_queue_frames: 12
+head:
+  enabled: true
+  serial: "135122070003"
+  model: D435I
+  width: 640
+  height: 480
+  fps: 30
+wrist_left:
+  enabled: true
+  serial: "352122273604"
+  model: D405
+  width: 640
+  height: 480
+  fps: 30
+wrist_right:
+  enabled: true
+  serial: "409122273836"
+  model: D405
+  width: 640
+  height: 480
+  fps: 30
+active_wrist: auto

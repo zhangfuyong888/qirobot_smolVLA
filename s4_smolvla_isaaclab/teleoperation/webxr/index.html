@@ -16,6 +16,25 @@
     button { border: 0; border-radius: 6px; padding: 14px 18px; font-size: 17px; font-weight: 650; background: #2f81f7; color: white; }
     button:disabled { opacity: .5; }
     code { color: #d2e6ff; }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 48px 24px 0;
+      background: transparent;
+    }
+    #hud {
+      max-width: 720px;
+      padding: 16px 20px;
+      border-radius: 12px;
+      background: rgba(12, 16, 20, 0.72);
+      text-align: center;
+    }
+    #hud-title { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    #hud-detail { font-size: 20px; color: #d7dde3; line-height: 1.4; }
   </style>
 </head>
 <body>
@@ -24,31 +43,111 @@
   <p>Controller data only. No camera image is transmitted to the headset.</p>
   <div id="status" class="status">Connecting to IsaacLab...</div>
   <button id="start" disabled>Enter Passthrough Teleoperation</button>
-  <p><code>Grip/Squeeze</code>: clutch each arm independently.<br><code>Trigger</code>: continuously close the corresponding dexterous hand.</p>
+  <p><code>Right Grip</code>: move the configured collection arm (READY and RECORDING).<br>
+     <code>A</code>: return home, then start recording.<br>
+     <code>Trigger</code>: grasp. <code>B</code>: record return Home and end. <code>X</code>: save. Hold <code>Y</code>: discard.</p>
 </main>
+<div id="overlay">
+  <div id="hud">
+    <div id="hud-title">Connecting</div>
+    <div id="hud-detail">Open this page, enter passthrough, then wait for READY.</div>
+  </div>
+</div>
 <script>
 (() => {
   const statusNode = document.getElementById('status');
   const startButton = document.getElementById('start');
+  const overlayRoot = document.getElementById('overlay');
+  const hudTitle = document.getElementById('hud-title');
+  const hudDetail = document.getElementById('hud-detail');
+  let lastHud = null;
   let socket = null;
   let xrSession = null;
   let referenceSpace = null;
+  let referenceSpaceType = 'unknown';
   let gl = null;
   let sequence = 0;
   let sessionMode = null;
   let wakeLock = null;
   let referenceResetFreezeFrames = 0;
+  let sessionId = '';
+  let calibrationId = 0;
+  let calibrationViewerOrientation = null;
+  let lastBoundarySafe = true;
+  let enteringXr = false;
+  let lastHapticId = '';
+  let hapticTimers = [];
+  const boundaryGuardMarginM = 0.35;
   const squeezePressed = { left: false, right: false };
-  const sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const hapticPatterns = {
+    recording: [[0, 0.85, 180]],
+    ending: [[0, 0.75, 100], [180, 0.75, 100]],
+    saved: [[0, 0.65, 80], [140, 0.75, 80], [280, 0.90, 120]],
+    discarded: [[0, 0.80, 450]],
+  };
 
   function setStatus(text, kind = '') {
     statusNode.textContent = text;
     statusNode.className = `status ${kind}`;
   }
 
+  function applyHud(title, detail, kind = 'ready') {
+    lastHud = { title, detail, kind };
+    hudTitle.textContent = title;
+    hudDetail.textContent = detail;
+    setStatus(`${title}\n${detail}`, kind);
+  }
+
+  function pulseControllers(intensity, durationMs) {
+    if (!xrSession) return;
+    for (const source of xrSession.inputSources) {
+      const gamepad = source.gamepad;
+      if (!gamepad) continue;
+      const actuator = gamepad.hapticActuators && gamepad.hapticActuators[0];
+      try {
+        if (actuator && typeof actuator.pulse === 'function') {
+          Promise.resolve(actuator.pulse(intensity, durationMs)).catch(() => {});
+        } else if (gamepad.vibrationActuator &&
+                   typeof gamepad.vibrationActuator.playEffect === 'function') {
+          Promise.resolve(gamepad.vibrationActuator.playEffect('dual-rumble', {
+            duration: durationMs,
+            strongMagnitude: intensity,
+            weakMagnitude: intensity,
+          })).catch(() => {});
+        }
+      } catch (_) {
+        // Haptics are best-effort and must never interrupt controller streaming.
+      }
+    }
+  }
+
+  function playHapticCue(cue, cueId) {
+    if (!cueId || cueId === lastHapticId ||
+        !Object.prototype.hasOwnProperty.call(hapticPatterns, cue)) return;
+    lastHapticId = cueId;
+    for (const timer of hapticTimers) clearTimeout(timer);
+    hapticTimers = hapticPatterns[cue].map(([delayMs, intensity, durationMs]) =>
+      setTimeout(() => pulseControllers(intensity, durationMs), delayMs)
+    );
+  }
+
+  function errorText(error) {
+    if (!error) return 'unknown error';
+    const name = error.name ? `${error.name}: ` : '';
+    return `${name}${error.message || error}`;
+  }
+
   function sendLog(level, message) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type: 'client_log', level, message: String(message).slice(0, 300) }));
+  }
+
+  function invalidateCalibration(reason) {
+    calibrationViewerOrientation = null;
+    squeezePressed.left = false;
+    squeezePressed.right = false;
+    sendLog('warning', `${reason}; release both Grips for heading calibration`);
+    setStatus(`${reason}. Release both Grips and face the intended robot-forward direction.`, 'error');
   }
 
   async function requestWakeLock() {
@@ -58,7 +157,7 @@
       wakeLock.addEventListener('release', () => sendLog('warning', 'Screen wake lock released'));
       sendLog('info', 'Screen wake lock acquired');
     } catch (error) {
-      sendLog('warning', `Screen wake lock unavailable: ${error && error.message ? error.message : error}`);
+      sendLog('warning', `Screen wake lock unavailable: ${errorText(error)}`);
     }
   }
 
@@ -70,11 +169,10 @@
     session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
   }
 
-  function renderXrFrame(frame) {
+  function renderXrFrame(frame, pose) {
     const layer = xrSession.renderState.baseLayer;
     if (!gl || !layer) return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-    const pose = frame.getViewerPose(referenceSpace);
     if (!pose) return;
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -85,6 +183,9 @@
   }
 
   function connect() {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(`${scheme}://${location.host}/ws`);
     socket.onopen = async () => {
@@ -99,10 +200,22 @@
         setStatus('Neither immersive-ar nor immersive-vr is supported by this browser.', 'error');
         return;
       }
-      startButton.disabled = false;
-      setStatus(`Connected. Ready for ${sessionMode}.`, 'ready');
+      startButton.disabled = enteringXr;
+      applyHud('Connected', 'Enter passthrough, then wait for READY. A starts recording.', 'ready');
+    };
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg && msg.type === 'hud') {
+          applyHud(String(msg.title || ''), String(msg.detail || ''), String(msg.kind || 'ready'));
+          playHapticCue(String(msg.haptic || ''), String(msg.haptic_id || ''));
+        }
+      } catch (_) {
+        // Ignore non-JSON control messages.
+      }
     };
     socket.onclose = () => {
+      if (xrSession) invalidateCalibration('Controller connection lost');
       startButton.disabled = true;
       setStatus('Connection closed. Retrying...', 'error');
       setTimeout(connect, 1000);
@@ -115,22 +228,17 @@
   }
 
   async function requestStableReferenceSpace(session) {
-    for (const type of ['bounded-floor', 'local-floor', 'local']) {
+    // Prefer local-floor so lab teleop does not depend on Guardian.
+    for (const type of ['local-floor', 'local', 'bounded-floor']) {
       try {
         const space = await session.requestReferenceSpace(type);
         if (space.addEventListener) {
           space.addEventListener('reset', () => {
-            // Publish invalid controller frames long enough for the server to
-            // enter requires_release. This prevents a Guardian relocalization
-            // from being interpreted as a large robot command.
             referenceResetFreezeFrames = 30;
-            squeezePressed.left = false;
-            squeezePressed.right = false;
-            sendLog('warning', `XR reference-space reset (${type}); release both Grips and re-clutch`);
-            setStatus('Tracking origin changed. Release both Grips, then re-clutch.', 'error');
+            invalidateCalibration(`XR reference-space reset (${type})`);
           });
         }
-        return space;
+        return { space, type };
       } catch (_) {
         // Try the next less persistent reference-space type.
       }
@@ -152,9 +260,6 @@
       position: [p.x, p.y, p.z],
       orientation_xyzw: [q.x, q.y, q.z, q.w],
       trigger: buttons.length > 0 ? buttons[0] : 0,
-      // Meta Touch normally exposes Grip as gamepad button 1. WebXR squeeze
-      // events are retained as a fallback because firmware/browser versions
-      // do not always report the analog button value consistently.
       squeeze: Math.max(buttons.length > 1 ? buttons[1] : 0, squeezePressed[source.handedness] ? 1 : 0),
       buttons,
       axes,
@@ -162,38 +267,189 @@
     };
   }
 
+  function gripsReleased(sides) {
+    return sides.left.squeeze <= 0.12 && sides.right.squeeze <= 0.12;
+  }
+
+  function distanceToSegment2d(px, pz, ax, az, bx, bz) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const lengthSquared = dx * dx + dz * dz;
+    const t = lengthSquared > 1e-9
+      ? Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / lengthSquared))
+      : 0;
+    return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+  }
+
+  function boundaryState(viewerPose) {
+    const bounds = referenceSpace && referenceSpace.boundsGeometry;
+    if (!viewerPose || !bounds || bounds.length < 3) {
+      return { safe: true, distance: null };
+    }
+    const p = viewerPose.transform.position;
+    let inside = false;
+    let distance = Infinity;
+    for (let i = 0, j = bounds.length - 1; i < bounds.length; j = i++) {
+      const a = bounds[j];
+      const b = bounds[i];
+      distance = Math.min(distance, distanceToSegment2d(p.x, p.z, a.x, a.z, b.x, b.z));
+      if (((a.z > p.z) !== (b.z > p.z)) &&
+          (p.x < (b.x - a.x) * (p.z - a.z) / (b.z - a.z) + a.x)) {
+        inside = !inside;
+      }
+    }
+    return { safe: inside, distance: inside ? distance : -distance };
+  }
+
+  function captureHeadingCalibration(viewerPose) {
+    const q = viewerPose.transform.orientation;
+    const forwardX = -2 * (q.x * q.z + q.y * q.w);
+    const forwardZ = -(1 - 2 * (q.x * q.x + q.y * q.y));
+    if (Math.hypot(forwardX, forwardZ) < 0.2) {
+      setStatus('Look horizontally to calibrate the control direction.', 'error');
+      return;
+    }
+    calibrationViewerOrientation = [q.x, q.y, q.z, q.w];
+    calibrationId++;
+    sendLog('info', `Heading calibrated id=${calibrationId} reference=${referenceSpaceType}`);
+    if (lastHud && lastHud.title && lastHud.title !== 'Connected') {
+      applyHud(lastHud.title, lastHud.detail, lastHud.kind);
+    } else {
+      applyHud('Heading calibrated', 'Wait for READY, then press A. Grip does nothing before that.', 'ready');
+    }
+  }
+
   function onXrFrame(_time, frame) {
     try {
       xrSession.requestAnimationFrame(onXrFrame);
-      renderXrFrame(frame);
+      const viewerPose = frame.getViewerPose(referenceSpace);
+      renderXrFrame(frame, viewerPose);
       if (!socket || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 65536) return;
-      const sides = { left: emptySide(), right: emptySide() };
-      const trackingAllowed = xrSession.visibilityState === 'visible' && referenceResetFreezeFrames <= 0;
-      if (trackingAllowed) {
+      const rawSides = { left: emptySide(), right: emptySide() };
+      const visible = xrSession.visibilityState === 'visible';
+      if (visible) {
         for (const source of xrSession.inputSources) {
           if (source.handedness === 'left' || source.handedness === 'right') {
-            sides[source.handedness] = sampleSource(frame, source);
+            rawSides[source.handedness] = sampleSource(frame, source);
           }
         }
       }
+      const boundary = boundaryState(viewerPose);
+      const nearEdge = boundary.safe && boundary.distance !== null && boundary.distance < boundaryGuardMarginM;
+      if (boundary.safe !== lastBoundarySafe) {
+        lastBoundarySafe = boundary.safe;
+        if (!boundary.safe) {
+          const detail = boundary.distance === null ? '' : ` (${boundary.distance.toFixed(2)} m)`;
+          sendLog('warning', `Guardian boundary guard active${detail}`);
+          setStatus('Outside the Quest Guardian. Step back inside the play area.', 'error');
+        } else if (calibrationViewerOrientation && lastHud) {
+          applyHud(lastHud.title, lastHud.detail, lastHud.kind);
+        }
+      } else if (nearEdge && calibrationViewerOrientation) {
+        setStatus(
+          `Near Guardian edge (${boundary.distance.toFixed(2)} m). Teleop stays enabled; step inward if tracking jumps.`,
+          'ready'
+        );
+      }
+      if (
+        !calibrationViewerOrientation && visible && referenceResetFreezeFrames <= 0 &&
+        boundary.safe && viewerPose && gripsReleased(rawSides)
+      ) {
+        captureHeadingCalibration(viewerPose);
+      }
+      const trackingAllowed = (
+        visible && referenceResetFreezeFrames <= 0 && boundary.safe &&
+        calibrationViewerOrientation !== null
+      );
+      const sides = trackingAllowed ? rawSides : { left: emptySide(), right: emptySide() };
       if (referenceResetFreezeFrames > 0) referenceResetFreezeFrames--;
       socket.send(JSON.stringify({
         type: 'controller_frame', version: 1, session_id: sessionId,
         sequence: sequence++, client_time_ms: performance.now(),
-        reference_space: referenceSpace.type || 'local-floor',
+        reference_space: referenceSpaceType,
+        calibration_id: calibrationViewerOrientation ? calibrationId : 0,
+        calibration_viewer_orientation_xyzw: calibrationViewerOrientation,
+        boundary_safe: boundary.safe,
+        boundary_distance_m: boundary.distance,
         left: sides.left, right: sides.right,
       }));
     } catch (error) {
-      sendLog('error', `XR frame failed: ${error && error.message ? error.message : error}`);
+      sendLog('error', `XR frame failed: ${errorText(error)}`);
     }
   }
 
-  startButton.addEventListener('click', async () => {
+  async function endXrSession() {
+    if (!xrSession) return;
+    const session = xrSession;
+    xrSession = null;
     try {
-      xrSession = await navigator.xr.requestSession(sessionMode, { optionalFeatures: ['local-floor', 'bounded-floor'] });
+      await session.end();
+    } catch (_) {
+      // Already ended.
+    }
+  }
+
+  async function requestXrSession(mode) {
+    const overlayOptions = overlayRoot
+      ? { optionalFeatures: ['local-floor', 'dom-overlay'], domOverlay: { root: overlayRoot } }
+      : null;
+    const attempts = [
+      ...(overlayOptions && mode === 'immersive-ar' ? [overlayOptions] : []),
+      { optionalFeatures: ['local-floor'] },
+      { optionalFeatures: ['local-floor', 'bounded-floor'] },
+      {},
+    ];
+    let lastError = null;
+    for (const options of attempts) {
+      try {
+        sendLog('info', `XRSystem.requestSession mode=${mode} features=${JSON.stringify(options.optionalFeatures || [])}`);
+        return await navigator.xr.requestSession(mode, options);
+      } catch (error) {
+        lastError = error;
+        sendLog('warning', `requestSession ${mode} failed: ${errorText(error)}`);
+      }
+    }
+    throw lastError || new Error(`requestSession(${mode}) failed`);
+  }
+
+  async function enterXr() {
+    if (enteringXr) return;
+    enteringXr = true;
+    startButton.disabled = true;
+    try {
+      await endXrSession();
+      sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      sequence = 0;
+      calibrationId = 0;
+      calibrationViewerOrientation = null;
+      lastBoundarySafe = true;
+      referenceResetFreezeFrames = 0;
+      const modes = [];
+      if (sessionMode) modes.push(sessionMode);
+      if (sessionMode !== 'immersive-vr') modes.push('immersive-vr');
+      if (sessionMode !== 'immersive-ar') modes.push('immersive-ar');
+      let started = null;
+      let usedMode = null;
+      let lastError = null;
+      for (const mode of modes) {
+        try {
+          started = await requestXrSession(mode);
+          usedMode = mode;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!started) {
+        throw lastError || new Error('XRSystem.requestSession failed for immersive-ar and immersive-vr');
+      }
+      sessionMode = usedMode;
+      xrSession = started;
       await requestWakeLock();
       await setupXrLayer(xrSession);
-      referenceSpace = await requestStableReferenceSpace(xrSession);
+      const selectedReference = await requestStableReferenceSpace(xrSession);
+      referenceSpace = selectedReference.space;
+      referenceSpaceType = selectedReference.type;
       xrSession.addEventListener('squeezestart', event => {
         const hand = event.inputSource && event.inputSource.handedness;
         if (hand === 'left' || hand === 'right') squeezePressed[hand] = true;
@@ -206,26 +462,36 @@
         sendLog('warning', `XR visibility=${xrSession.visibilityState}`);
         if (xrSession.visibilityState !== 'visible') {
           referenceResetFreezeFrames = Math.max(referenceResetFreezeFrames, 30);
-          squeezePressed.left = false;
-          squeezePressed.right = false;
+          invalidateCalibration('XR tracking hidden');
         } else {
-          setStatus('Tracking resumed. Release both Grips, then re-clutch.', 'ready');
+          setStatus('Tracking resumed. Release both Grips for heading calibration.', 'ready');
         }
       });
       xrSession.addEventListener('end', () => {
-        squeezePressed.left = false;
-        squeezePressed.right = false;
+        invalidateCalibration('XR session ended');
         xrSession = null;
-        setStatus('XR session ended. Arms are frozen.', 'error');
+        enteringXr = false;
+        startButton.disabled = false;
+        setStatus('XR session ended. Tap the button to enter again.', 'error');
       });
       xrSession.requestAnimationFrame(onXrFrame);
-      sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpace.type}`);
-      setStatus('Streaming controller poses. Hold Grip to move each arm.', 'ready');
+      sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpaceType}`);
+      applyHud(
+        lastHud && lastHud.title ? lastHud.title : 'Passthrough',
+        lastHud && lastHud.detail
+          ? lastHud.detail
+          : 'Face robot-forward, release both Grips, then wait for READY.',
+        lastHud && lastHud.kind ? lastHud.kind : 'ready'
+      );
     } catch (error) {
-      sendLog('error', `Failed to enter VR: ${error && error.message ? error.message : error}`);
-      setStatus(`Failed to enter VR: ${error}`, 'error');
+      enteringXr = false;
+      startButton.disabled = false;
+      sendLog('error', `Failed to enter VR: ${errorText(error)}`);
+      setStatus(`Failed to enter VR: ${errorText(error)}`, 'error');
     }
-  });
+  }
+
+  startButton.addEventListener('click', enterXr);
   document.addEventListener('visibilitychange', () => {
     sendLog('warning', `document visibility=${document.visibilityState}`);
     if (document.visibilityState === 'visible' && (!wakeLock || wakeLock.released)) requestWakeLock();

@@ -23,3 +23,7 @@ outputs/
 *.mp4
 *.avi
 *.parquet
+*.mkv
+
+# Real-robot VLA collection sessions (default ~/real_vla_data is outside the repo).
+real_vla_data/

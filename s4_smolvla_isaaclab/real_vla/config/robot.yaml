@@ -1,0 +1,12 @@
+# Single-arm drawer policy contract. The hardware teleop config is the only
+# source of Home targets. READY allows two-arm setup; after A, only this arm and
+# hand can be controlled and recorded.
+active_arm: right
+control_hz: 30
+state:
+  arm_dim: 7
+  gripper_dim: 1
+action:
+  arm_dim: 7
+  gripper_dim: 1
+  semantics: absolute_joint_target

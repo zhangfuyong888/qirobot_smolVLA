@@ -1,8 +1,7 @@
-"""ROS2 bridge for real-robot state feedback and lowcmd/hand command output."""
+"""ROS2 bridge for real-robot state feedback and arm-replay/hand output."""
 
 from __future__ import annotations
 
-import math
 import threading
 import time
 from pathlib import Path
@@ -10,7 +9,11 @@ from typing import Mapping
 
 import numpy as np
 
-from hardware_teleop.config_loader import HardwareGravityCompConfig, HardwareHandsConfig, HardwareRosConfig
+from hardware_teleop.config_loader import (
+    HardwareGravityCompConfig,
+    HardwareHandsConfig,
+    HardwareRosConfig,
+)
 from hardware_teleop.hand_mapping import left_hand_positions, right_hand_positions
 from hardware_teleop.joint_mapping import (
     ARM_JOINT_NAMES,
@@ -55,7 +58,7 @@ class HardwareRobotBridge:
         *,
         gravity_cfg: HardwareGravityCompConfig | None = None,
         project_root: Path | None = None,
-        check_lowcmd_publishers: bool = True,
+        check_arm_command_publishers: bool = True,
         command_output_enabled: bool = True,
     ) -> None:
         rclpy, JointState, LowCmd, LowState, MotorCmd, HandCmd, HandsCmd = _require_ros_types()
@@ -78,6 +81,7 @@ class HardwareRobotBridge:
         self._gravity_comp: ArmGravityCompensator | None = None
         self._gravity_enabled = False
         self._gravity_ramp_start: float | None = None
+        self._last_gravity_motor_tau: dict[str, float] = {}
         if self._command_output_enabled and gravity_cfg is not None and gravity_cfg.enabled:
             self._initialize_gravity_compensation(gravity_cfg, project_root)
 
@@ -90,19 +94,24 @@ class HardwareRobotBridge:
         self._state_ready = False
         self._state_rejection_count = 0
         self._last_state_rejection = ""
-        self._valid_policy_frames = 0
-        self._last_policy_time = 0.0
-        self._last_policy_rejection = "not received"
-        self._mode5_seen_before_output = False
         self._has_published_lowcmd = False
         self._last_graph_check_time = 0.0
-        self._last_external_lowcmd_publishers: tuple[str, ...] = ()
+        self._last_external_arm_command_publishers: tuple[str, ...] = ()
         self._lock = threading.Lock()
+        self._spin_lock = threading.Lock()
+        self._command_lock = threading.RLock()
+        self._watchdog_stop = threading.Event()
+        self._watchdog_thread: threading.Thread | None = None
+        self._last_command_heartbeat = 0.0
+        self._release_active = False
+        self._output_relinquished = False
+        self._release_reason = ""
 
         self._left_hand_rad = np.zeros(6, dtype=np.float32)
         self._right_hand_rad = np.zeros(6, dtype=np.float32)
         self._commanded_arms: dict[str, float] = {}
         self._last_hand_trigger = (0.0, 0.0)
+        self._hands_ever_commanded = False
 
         if not rclpy.ok():
             rclpy.init(args=None)
@@ -125,24 +134,22 @@ class HardwareRobotBridge:
         else:
             raise ValueError(f"unsupported hardware.state_source: {ros_cfg.state_source!r}")
 
-        # Observe the shared lowcmd topic before creating our writer. A valid
-        # non-mode-5 packet proves the standing policy is actively feeding the
-        # SDK's leg-command cache. Merely seeing a graph publisher is not enough.
-        self._node.create_subscription(
-            LowCmd,
-            ros_cfg.lowcmd_topic,
-            self._on_observed_lowcmd,
-            50,
-        )
-
-        if self._command_output_enabled and check_lowcmd_publishers:
-            self._check_lowcmd_publisher_count()
+        if self._command_output_enabled and check_arm_command_publishers:
+            self._check_arm_command_publisher_count()
 
         self._lowcmd_pub = None
         self._hands_pub = None
         if self._command_output_enabled:
-            self._lowcmd_pub = self._node.create_publisher(LowCmd, ros_cfg.lowcmd_topic, 10)
+            self._lowcmd_pub = self._node.create_publisher(
+                LowCmd, ros_cfg.arm_command_topic, 10
+            )
             self._hands_pub = self._node.create_publisher(HandsCmd, ros_cfg.hands_cmd_topic, 10)
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                name="hardware-command-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
 
     def _initialize_gravity_compensation(
         self,
@@ -169,21 +176,27 @@ class HardwareRobotBridge:
         self._gravity_enabled = True
         print(
             f"[HW-TELEOP] gravity compensation enabled scale={gravity_cfg.scale:.2f} "
-            f"tau_limit={gravity_cfg.tau_limit:.1f} ramp={gravity_cfg.ramp_time_s:.1f}s "
-            f"source={gravity_cfg.source}",
+            f"sign={gravity_cfg.sign:.1f} tau_limit={gravity_cfg.tau_limit:.1f} "
+            f"ramp={gravity_cfg.ramp_time_s:.1f}s source={gravity_cfg.source}",
             flush=True,
         )
 
-    def _lowcmd_publisher_labels(self) -> tuple[str, ...]:
-        topic = self._ros_cfg.lowcmd_topic
+    def _arm_command_publisher_labels(
+        self, *, discovery_timeout_s: float = 0.0
+    ) -> tuple[str, ...]:
+        topic = self._ros_cfg.arm_command_topic
         candidates = [topic]
         if topic.startswith("/"):
             candidates.append(topic.lstrip("/"))
         else:
             candidates.append(f"/{topic}")
 
-        for _ in range(20):
-            self._rclpy.spin_once(self._node, timeout_sec=0.05)
+        deadline = time.monotonic() + max(float(discovery_timeout_s), 0.0)
+        while time.monotonic() < deadline:
+            self._rclpy.spin_once(
+                self._node,
+                timeout_sec=min(0.05, max(deadline - time.monotonic(), 0.0)),
+            )
 
         seen: list[str] = []
         for topic_name in candidates:
@@ -198,39 +211,39 @@ class HardwareRobotBridge:
         return tuple(seen)
 
     @staticmethod
-    def _external_lowcmd_publishers(labels: tuple[str, ...]) -> tuple[str, ...]:
+    def _external_arm_command_publishers(labels: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(
             label
             for label in labels
-            if label.rsplit("/", 1)[-1] != "hardware_quest_teleop_bridge"
+            if label != "/hardware_quest_teleop_bridge"
         )
 
-    def _check_lowcmd_publisher_count(self) -> None:
-        topic = self._ros_cfg.lowcmd_topic
-        seen = list(self._external_lowcmd_publishers(self._lowcmd_publisher_labels()))
-        if len(seen) > 1:
-            raise RuntimeError(
-                f"Refusing to start: lowcmd topic {topic!r} has multiple graph publishers: "
-                f"{', '.join(seen)}. Keep exactly one standing-policy source and stop every "
-                "old teleop, MoveIt or replay controller."
+    def _check_arm_command_publisher_count(self) -> None:
+        topic = self._ros_cfg.arm_command_topic
+        seen = list(
+            self._external_arm_command_publishers(
+                self._arm_command_publisher_labels(discovery_timeout_s=1.0)
             )
+        )
         if seen:
-            print(
-                f"[HW-TELEOP] existing lowcmd graph publisher (expected standing policy): {seen[0]}",
-                flush=True,
+            raise RuntimeError(
+                f"Refusing to start: arm command topic {topic!r} already has publisher(s): "
+                f"{', '.join(seen)}. Stop every old teleop or replay controller first."
             )
 
-    def is_lowcmd_graph_conflicted(self, check_period_s: float = 0.2) -> bool:
-        """Return whether more than one external lowcmd source is currently visible."""
+    def is_arm_command_graph_conflicted(self, check_period_s: float = 0.2) -> bool:
+        """Return whether another arm-replay command source is visible."""
         now = time.monotonic()
         with self._lock:
             if now - self._last_graph_check_time < max(float(check_period_s), 0.0):
-                return len(self._last_external_lowcmd_publishers) > 1
-        labels = self._external_lowcmd_publishers(self._lowcmd_publisher_labels())
+                return bool(self._last_external_arm_command_publishers)
+        labels = self._external_arm_command_publishers(
+            self._arm_command_publisher_labels()
+        )
         with self._lock:
             self._last_graph_check_time = now
-            self._last_external_lowcmd_publishers = labels
-        return len(labels) > 1
+            self._last_external_arm_command_publishers = labels
+        return bool(labels)
 
     @property
     def state_ready(self) -> bool:
@@ -250,19 +263,12 @@ class HardwareRobotBridge:
         return self.last_state_age_s > max_age_s
 
     @property
-    def last_policy_age_s(self) -> float:
-        with self._lock:
-            if self._last_policy_time <= 0.0:
-                return float("inf")
-            return max(time.monotonic() - self._last_policy_time, 0.0)
-
-    def is_policy_feed_stale(self, max_age_s: float) -> bool:
-        if max_age_s <= 0.0:
-            return False
-        return self.last_policy_age_s > max_age_s
+    def output_relinquished(self) -> bool:
+        return bool(self._output_relinquished)
 
     def spin_once(self, timeout_sec: float = 0.0) -> None:
-        self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
+        with self._spin_lock:
+            self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
 
     def wait_for_initial_state(self, timeout_s: float) -> None:
         deadline = time.monotonic() + max(timeout_s, 0.0)
@@ -278,45 +284,6 @@ class HardwareRobotBridge:
                 return
             time.sleep(0.01)
         raise TimeoutError(f"timed out waiting for robot state ({source}) on {topic}")
-
-    def wait_for_policy_lowcmd(
-        self,
-        timeout_s: float,
-        min_valid_frames: int,
-        max_age_s: float,
-    ) -> None:
-        """Require fresh policy-leg packets before any mode_ctrl=5 output."""
-        required = max(int(min_valid_frames), 1)
-        deadline = time.monotonic() + max(float(timeout_s), 0.0)
-        while time.monotonic() < deadline:
-            self.spin_once(timeout_sec=0.05)
-            with self._lock:
-                valid_frames = self._valid_policy_frames
-                mode5_seen = self._mode5_seen_before_output
-                rejection = self._last_policy_rejection
-            if mode5_seen:
-                raise RuntimeError(
-                    "another mode_ctrl=5 source was observed on lowcmd before this teleop "
-                    "published anything; stop the old teleop controller"
-                )
-            if self.is_lowcmd_graph_conflicted():
-                raise RuntimeError(
-                    "multiple external lowcmd publishers appeared while waiting for the "
-                    "standing policy: " + ", ".join(self._last_external_lowcmd_publishers)
-                )
-            policy_age = self.last_policy_age_s
-            if valid_frames >= required and policy_age <= max(float(max_age_s), 0.0):
-                print(
-                    f"[HW-TELEOP] standing-policy lowcmd ready: {valid_frames} valid frames, "
-                    f"age={policy_age:.3f}s",
-                    flush=True,
-                )
-                return
-        raise TimeoutError(
-            "timed out waiting for valid non-mode_ctrl=5 standing-policy lowcmd packets; "
-            f"received_valid={self._valid_policy_frames}/{required}, last={rejection!r}. "
-            "Start the standing controller before hardware teleop."
-        )
 
     def read_bimanual_state(self) -> np.ndarray:
         with self._lock:
@@ -341,31 +308,37 @@ class HardwareRobotBridge:
         allow_motion: bool = True,
         hold_commanded: bool = False,
     ) -> dict[str, float]:
-        desired = bimanual_arm_targets(action)
-        with self._lock:
-            if not self._commanded_arms and self._state_ready:
-                self._commanded_arms = {name: self._positions[name] for name in ARM_JOINT_NAMES}
-            limited = limit_arm_step(
-                desired,
-                self._commanded_arms,
-                max_step_rad=self._ros_cfg.max_joint_step_rad,
-            )
-            if allow_motion:
-                self._commanded_arms = dict(limited)
-            if allow_motion:
-                publish_targets = dict(self._commanded_arms)
-            elif hold_commanded and self._commanded_arms:
-                publish_targets = {name: self._commanded_arms[name] for name in ARM_JOINT_NAMES}
-            else:
-                publish_targets = {
-                    name: self._positions.get(name, limited[name]) for name in ARM_JOINT_NAMES
-                }
-                # Grip released or Quest stale with healthy feedback: re-anchor
-                # the next step limiter to the measured pose. Keeping an old
-                # command anchor can otherwise create a jump on re-engagement.
-                self._commanded_arms = dict(publish_targets)
-        self._publish_lowcmd(publish_targets)
-        return dict(publish_targets)
+        with self._command_lock:
+            if self._output_relinquished or self._release_active:
+                return {}
+            desired = bimanual_arm_targets(action)
+            with self._lock:
+                if not self._commanded_arms and self._state_ready:
+                    self._commanded_arms = {
+                        name: self._positions[name] for name in ARM_JOINT_NAMES
+                    }
+                limited = limit_arm_step(
+                    desired,
+                    self._commanded_arms,
+                    max_step_rad=self._ros_cfg.max_joint_step_rad,
+                )
+                if allow_motion:
+                    self._commanded_arms = dict(limited)
+                if allow_motion:
+                    publish_targets = dict(self._commanded_arms)
+                elif hold_commanded and self._commanded_arms:
+                    publish_targets = {
+                        name: self._commanded_arms[name] for name in ARM_JOINT_NAMES
+                    }
+                else:
+                    publish_targets = {
+                        name: self._positions.get(name, limited[name])
+                        for name in ARM_JOINT_NAMES
+                    }
+                    self._commanded_arms = dict(publish_targets)
+            self._publish_lowcmd(publish_targets)
+            self._last_command_heartbeat = time.monotonic()
+            return dict(publish_targets)
 
     def hold_current_arms(self) -> None:
         """Publish one lowcmd frame holding the last measured arm pose (best-effort shutdown)."""
@@ -379,6 +352,13 @@ class HardwareRobotBridge:
     def publish_hands(self, left_trigger: float, right_trigger: float) -> None:
         if not self._command_output_enabled:
             return
+        with self._command_lock:
+            if self._output_relinquished:
+                return
+            self._hands_ever_commanded = True
+            self._publish_hands_unlocked(left_trigger, right_trigger)
+
+    def _publish_hands_unlocked(self, left_trigger: float, right_trigger: float) -> None:
         left_positions = left_hand_positions(self._hands_cfg, left_trigger)
         right_positions = right_hand_positions(self._hands_cfg, right_trigger)
         self._last_hand_trigger = (float(left_trigger), float(right_trigger))
@@ -388,14 +368,15 @@ class HardwareRobotBridge:
         msg.timestamp = int(self._node.get_clock().now().nanoseconds)
 
         left = self._HandCmd()
+        duration = int(np.clip(self._hands_cfg.duration_ms, 0, 255))
         left.positions = left_positions
-        left.durations = [int(self._hands_cfg.duration_ms)] * 6
+        left.durations = [duration] * 6
         left.mode = int(self._hands_cfg.hand_mode)
         left.hand_id = int(self._hands_cfg.left_hand_id)
 
         right = self._HandCmd()
         right.positions = right_positions
-        right.durations = [int(self._hands_cfg.duration_ms)] * 6
+        right.durations = [duration] * 6
         right.mode = int(self._hands_cfg.hand_mode)
         right.hand_id = int(self._hands_cfg.right_hand_id)
 
@@ -406,7 +387,85 @@ class HardwareRobotBridge:
         assert self._hands_pub is not None
         self._hands_pub.publish(msg)
 
+    def hold_current_and_relinquish(self, reason: str = "controlled shutdown") -> bool:
+        """Briefly hold measured arms, then stop this process from publishing."""
+        if not self._command_output_enabled:
+            return True
+        with self._command_lock:
+            if self._output_relinquished:
+                return True
+            with self._lock:
+                has_lowcmd_output = self._has_published_lowcmd
+            if not has_lowcmd_output:
+                if self._hands_ever_commanded:
+                    self._publish_hands_unlocked(0.0, 0.0)
+                self._output_relinquished = True
+                return True
+            self._release_active = True
+            self._release_reason = reason
+            print(f"[HW-TELEOP][SAFETY] releasing command output: {reason}", flush=True)
+            deadline = time.monotonic() + self._ros_cfg.shutdown_hold_duration_s
+            published_hold = False
+            while time.monotonic() < deadline and not self._watchdog_stop.is_set():
+                self.spin_once(timeout_sec=0.0)
+                with self._lock:
+                    target = dict(self._positions or self._commanded_arms)
+                if self._hands_ever_commanded:
+                    self._publish_hands_unlocked(0.0, 0.0)
+                if len(target) != len(ARM_JOINT_NAMES):
+                    break
+                with self._lock:
+                    self._commanded_arms = dict(target)
+                self._publish_lowcmd(target)
+                published_hold = True
+                time.sleep(1.0 / self._ros_cfg.control_rate_hz)
+            if self._hands_ever_commanded:
+                self._publish_hands_unlocked(0.0, 0.0)
+            self._output_relinquished = True
+            self._release_active = False
+            status = "current pose held" if published_hold else "no valid hold pose"
+            print(f"[HW-TELEOP][SAFETY] arm-replay {status}; publisher relinquished", flush=True)
+            return published_hold
+
+    def relinquish_without_arm_hold(self, reason: str) -> None:
+        """Stop this publisher immediately when another arm source is detected."""
+        with self._command_lock:
+            if self._output_relinquished:
+                return
+            self._release_active = True
+            self._release_reason = reason
+            if self._hands_ever_commanded:
+                self._publish_hands_unlocked(0.0, 0.0)
+            self._output_relinquished = True
+            self._release_active = False
+            print(
+                f"[HW-TELEOP][SAFETY] arm-replay publisher relinquished immediately: {reason}",
+                flush=True,
+            )
+
+    def _watchdog_loop(self) -> None:
+        period = min(max(self._ros_cfg.command_watchdog_timeout_s / 4.0, 0.01), 0.05)
+        while not self._watchdog_stop.wait(period):
+            with self._lock:
+                has_output = self._has_published_lowcmd
+            if not has_output or self._output_relinquished or self._release_active:
+                continue
+            heartbeat = self._last_command_heartbeat
+            if heartbeat > 0.0 and time.monotonic() - heartbeat > self._ros_cfg.command_watchdog_timeout_s:
+                try:
+                    self.hold_current_and_relinquish("command heartbeat timeout")
+                except Exception as exc:
+                    self._output_relinquished = True
+                    print(f"[HW-TELEOP][SAFETY] watchdog fallback failed: {exc}", flush=True)
+                return
+
     def close(self) -> None:
+        self._watchdog_stop.set()
+        if (
+            self._watchdog_thread is not None
+            and self._watchdog_thread is not threading.current_thread()
+        ):
+            self._watchdog_thread.join(timeout=1.0)
         if self._node is not None:
             self._node.destroy_node()
         if self._rclpy.ok():
@@ -448,39 +507,6 @@ class HardwareRobotBridge:
             return
         self._accept_arm_positions(arm_positions)
 
-    def _on_observed_lowcmd(self, msg) -> None:
-        """Track fresh, structurally valid standing-policy leg commands."""
-        if int(msg.mode_ctrl) == 5:
-            with self._lock:
-                if not self._has_published_lowcmd:
-                    self._mode5_seen_before_output = True
-            return
-
-        motors = list(msg.motors)
-        reason = ""
-        if int(msg.mode) <= 0:
-            reason = f"packet mode is disabled ({int(msg.mode)})"
-        elif len(motors) < len(self._joint_order):
-            reason = f"packet has only {len(motors)} motors"
-        else:
-            for index, motor in enumerate(motors[:12]):
-                values = (motor.q, motor.dq, motor.tau, motor.kp, motor.kd)
-                if int(motor.mode) <= 0:
-                    reason = f"leg motor {index} is disabled"
-                    break
-                if not all(math.isfinite(float(value)) for value in values):
-                    reason = f"leg motor {index} has non-finite command fields"
-                    break
-
-        with self._lock:
-            if reason:
-                self._valid_policy_frames = 0
-                self._last_policy_rejection = reason
-            else:
-                self._valid_policy_frames += 1
-                self._last_policy_time = time.monotonic()
-                self._last_policy_rejection = ""
-
     def _publish_lowcmd(self, arm_targets: Mapping[str, float]) -> None:
         if not self._command_output_enabled:
             return
@@ -488,9 +514,10 @@ class HardwareRobotBridge:
         msg = self._LowCmd()
         msg.mode = 1
         msg.mode_ak = 1
-        msg.mode_ctrl = 5
+        msg.mode_ctrl = int(self._ros_cfg.arm_command_mode_ctrl)
         msg.timestamp = int(self._node.get_clock().now().nanoseconds)
         motors = []
+        gravity_motor_tau: dict[str, float] = {}
         for name in self._joint_order:
             motor = self._MotorCmd()
             if name in self._arm_joint_names:
@@ -499,6 +526,7 @@ class HardwareRobotBridge:
                 motor.q = float(sign * arm_targets[name])
                 motor.dq = 0.0
                 motor.tau = float(sign * gravity_efforts.get(name, 0.0))
+                gravity_motor_tau[name] = motor.tau
                 motor.kp = float(self._ros_cfg.arm_kp)
                 motor.kd = float(self._ros_cfg.arm_kd)
             else:
@@ -513,6 +541,7 @@ class HardwareRobotBridge:
         assert self._lowcmd_pub is not None
         with self._lock:
             self._has_published_lowcmd = True
+            self._last_gravity_motor_tau = gravity_motor_tau
         self._lowcmd_pub.publish(msg)
 
     def _gravity_ramp_multiplier(self) -> float:
@@ -555,18 +584,26 @@ class HardwareRobotBridge:
                 "state_age_s": state_age_s,
                 "state_rejection_count": self._state_rejection_count,
                 "last_state_rejection": self._last_state_rejection,
-                "policy_age_s": (
-                    max(time.monotonic() - self._last_policy_time, 0.0)
-                    if self._last_policy_time > 0.0
-                    else float("inf")
-                ),
-                "valid_policy_frames": self._valid_policy_frames,
-                "last_policy_rejection": self._last_policy_rejection,
-                "external_lowcmd_publishers": self._last_external_lowcmd_publishers,
+                "external_arm_command_publishers": self._last_external_arm_command_publishers,
                 "left_hand_trigger": self._last_hand_trigger[0],
                 "right_hand_trigger": self._last_hand_trigger[1],
-                "lowcmd_topic": self._ros_cfg.lowcmd_topic,
+                "arm_command_topic": self._ros_cfg.arm_command_topic,
+                "arm_command_mode_ctrl": self._ros_cfg.arm_command_mode_ctrl,
                 "hands_cmd_topic": self._ros_cfg.hands_cmd_topic,
                 "gravity_comp_enabled": self._gravity_enabled,
+                "gravity_sign": (
+                    0.0 if self._gravity_cfg is None else float(self._gravity_cfg.sign)
+                ),
+                "gravity_tau_abs_max": (
+                    max((abs(value) for value in self._last_gravity_motor_tau.values()), default=0.0)
+                ),
+                "gravity_tau_left_shoulder_pitch": self._last_gravity_motor_tau.get(
+                    "left_shoulder_pitch_joint", 0.0
+                ),
+                "gravity_tau_right_shoulder_pitch": self._last_gravity_motor_tau.get(
+                    "right_shoulder_pitch_joint", 0.0
+                ),
                 "command_output_enabled": self._command_output_enabled,
+                "command_output_relinquished": self._output_relinquished,
+                "release_reason": self._release_reason,
             }

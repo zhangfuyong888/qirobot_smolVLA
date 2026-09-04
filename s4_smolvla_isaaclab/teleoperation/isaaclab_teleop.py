@@ -91,7 +91,7 @@ from tasks import get_task_spec
 from teleoperation.common import detect_lan_ip, load_task_control_profiles
 from teleoperation.config import TeleopConfig, load_teleop_config
 from teleoperation.controllers import create_arm_controller
-from teleoperation.mapping import BimanualTeleopMapper, TcpPose, quat_wxyz_to_matrix
+from teleoperation.mapping import BimanualTeleopMapper, TcpPose, map_xr_translation, quat_wxyz_to_matrix
 from teleoperation.protocol import ControllerFrame, ControllerSample, LatestFrameStore
 from teleoperation.server import QuestWebServer
 
@@ -486,7 +486,13 @@ def run_simulation_teleop(config: TeleopConfig, args_cli: argparse.Namespace) ->
                             delta_xr = np.zeros(3, dtype=np.float64)
                         else:
                             delta_xr = np.asarray(sample.position) - state.controller_reference_position
-                        delta_base = config.mapping.controller_to_base_rotation @ delta_xr
+                        delta_base = map_xr_translation(
+                            config.mapping.controller_to_base_rotation,
+                            delta_xr,
+                            config.mapping.position_scale,
+                            config.mapping.invert_translation,
+                            config.mapping.translation_sign,
+                        )
                         buttons = ",".join(f"{value:.2f}" for value in sample.buttons)
                         axes = ",".join(f"{value:+.2f}" for value in sample.axes)
                         print(

@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from teleoperation.config import load_teleop_config
-from teleoperation.mapping import BimanualTeleopMapper, TcpPose
+from teleoperation.mapping import (
+    BimanualTeleopMapper,
+    TcpPose,
+    _rotation_vector,
+    horizontal_reference_to_operator_rotation,
+    map_xr_rotation,
+    map_xr_translation,
+)
 from teleoperation.protocol import ControllerFrame, ControllerSample
 
 
@@ -44,6 +53,18 @@ def test_clutch_release_snaps_target_to_current_tcp() -> None:
     assert result.left.target.quat_wxyz == pytest.approx(moved_tcp.quat_wxyz)
 
 
+def test_quest_forward_axis_maps_controller_away_to_robot_back() -> None:
+    """Shared basis (no invert): WebXR -Z (push away) -> robot -X."""
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    assert basis @ np.array([0.0, 0.0, -1.0]) == pytest.approx([-1.0, 0.0, 0.0])
+    assert basis @ np.array([1.0, 0.0, 0.0]) == pytest.approx([0.0, 1.0, 0.0])
+    assert basis @ np.array([0.0, 1.0, 0.0]) == pytest.approx([0.0, 0.0, 1.0])
+    assert config.mapping.invert_translation is False
+    assert config.mapping.invert_orientation is False
+    assert config.mapping.translation_sign == (1.0, 1.0, 1.0)
+
+
 def test_clutch_uses_quest_hardware_calibrated_horizontal_directions() -> None:
     control = mapper()
     left_tcp = TcpPose(np.array([0.4, 0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
@@ -56,6 +77,8 @@ def test_clutch_uses_quest_hardware_calibrated_horizontal_directions() -> None:
     assert second.left.target.position[0] == pytest.approx(0.60)
     assert second.left.target.position[1] == pytest.approx(0.40)
     assert second.left.target.position[2] == pytest.approx(0.40)
+    assert second.left.xr_delta == pytest.approx([0.1, 0.1, 0.1])
+    assert second.left.base_delta == pytest.approx([0.2, 0.2, 0.2])
 
 
 def test_each_arm_has_an_independent_clutch() -> None:
@@ -90,11 +113,50 @@ def test_stale_frame_releases_clutches_and_freezes_target() -> None:
     assert reengaged.left.clutch and reengaged.right.clutch
 
 
+def test_clutch_translation_is_bounded_per_engagement() -> None:
+    control = mapper()
+    control.config = replace(
+        control.config,
+        mapping=replace(control.config.mapping, max_clutch_translation_m=0.05),
+    )
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    control.update(frame(sample(squeeze=1.0), sample()), pose, pose, 0.01, 1.0)
+    moved = frame(
+        sample(position=(1.0, 2.0, 1.0), squeeze=1.0),
+        sample(),
+        received=1.01,
+    )
+    result = control.update(moved, pose, pose, 1.0, 1.01)
+    assert np.linalg.norm(result.left.target.position - pose.position) == pytest.approx(0.05)
+
+
 def test_trigger_interpolates_six_hand_controls() -> None:
     control = mapper()
     pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
     result = control.update(frame(sample(trigger=1.0), sample()), pose, pose, 1.0, 1.0)
     assert result.left.hand6 == pytest.approx(np.ones(6), abs=1.0e-6)
+
+
+def test_controller_filter_lags_a_position_step() -> None:
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    moved = frame(sample(position=(0.0, 1.2, -0.1), squeeze=1.0), sample(), received=1.01)
+
+    filtered = mapper()
+    filtered.config = replace(
+        filtered.config,
+        mapping=replace(filtered.config.mapping, controller_filter_time_constant_s=0.20),
+    )
+    filtered.update(frame(sample(squeeze=1.0), sample()), pose, pose, 0.01, 1.0)
+    filtered_result = filtered.update(moved, pose, pose, 0.01, 1.01)
+
+    raw = mapper()
+    raw.update(frame(sample(squeeze=1.0), sample()), pose, pose, 0.01, 1.0)
+    raw_result = raw.update(moved, pose, pose, 0.01, 1.01)
+
+    filtered_delta = float(np.linalg.norm(filtered_result.left.target.position - pose.position))
+    raw_delta = float(np.linalg.norm(raw_result.left.target.position - pose.position))
+    assert filtered_delta > 0.0
+    assert filtered_delta < raw_delta
 
 
 def test_configured_gamepad_button_can_engage_clutch() -> None:
@@ -111,3 +173,202 @@ def test_configured_gamepad_button_can_engage_clutch() -> None:
     )
     result = control.update(frame(left, sample()), pose, pose, 0.01, 1.0)
     assert result.left.clutch
+
+
+def test_invert_translation_maps_controller_away_to_robot_forward() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    away = np.array([0.0, 0.0, -1.0])
+    right = np.array([1.0, 0.0, 0.0])
+    up = np.array([0.0, 1.0, 0.0])
+    assert map_xr_translation(basis, away, 1.0, False) == pytest.approx([-1.0, 0.0, 0.0])
+    assert map_xr_translation(basis, away, 1.0, True) == pytest.approx([1.0, 0.0, 0.0])
+    assert map_xr_translation(basis, right, 1.0, True) == pytest.approx([0.0, -1.0, 0.0])
+    assert map_xr_translation(basis, up, 1.0, True) == pytest.approx([0.0, 0.0, -1.0])
+
+
+def test_xy_translation_sign_keeps_up_and_maps_away_to_forward() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    sign = (-1.0, -1.0, 1.0)
+    away = np.array([0.0, 0.0, -1.0])
+    right = np.array([1.0, 0.0, 0.0])
+    up = np.array([0.0, 1.0, 0.0])
+    assert map_xr_translation(basis, away, 1.0, False, sign) == pytest.approx([1.0, 0.0, 0.0])
+    assert map_xr_translation(basis, right, 1.0, False, sign) == pytest.approx([0.0, -1.0, 0.0])
+    assert map_xr_translation(basis, up, 1.0, False, sign) == pytest.approx([0.0, 0.0, 1.0])
+
+
+def test_xy_translation_sign_reverses_forearm_roll_sense() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    angle = math.pi / 6.0
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    forearm = np.array([[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]])
+    normal = _rotation_vector(map_xr_rotation(basis, forearm, False))
+    signed = _rotation_vector(map_xr_rotation(basis, forearm, False, (-1.0, -1.0, 1.0)))
+    axis = np.array([1.0, 0.0, 0.0])
+    assert float(normal @ axis) > 0.4
+    assert float(signed @ axis) < -0.4
+    assert signed == pytest.approx(-normal)
+
+
+def test_invert_orientation_reverses_rotation_sense_on_same_axis() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    angle = math.pi / 6.0
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    # Forearm / pointing axis in WebXR local-floor is ±Z; wrist flexion is ±X.
+    rotations_xr = {
+        "forearm": np.array([[cosine, -sine, 0.0], [sine, cosine, 0.0], [0.0, 0.0, 1.0]]),
+        "wrist": np.array([[1.0, 0.0, 0.0], [0.0, cosine, -sine], [0.0, sine, cosine]]),
+    }
+    expected_base_axes = {
+        "forearm": np.array([1.0, 0.0, 0.0]),
+        "wrist": np.array([0.0, 1.0, 0.0]),
+    }
+    for name, delta_xr in rotations_xr.items():
+        normal = _rotation_vector(map_xr_rotation(basis, delta_xr, False))
+        inverted = _rotation_vector(map_xr_rotation(basis, delta_xr, True))
+        axis = expected_base_axes[name]
+        assert float(normal @ axis) > 0.4, name
+        assert float(inverted @ axis) < -0.4, name
+        assert inverted == pytest.approx(-normal)
+
+
+def test_clutch_hardware_xy_sign_keeps_z() -> None:
+    control = mapper()
+    control.config = replace(
+        control.config,
+        mapping=replace(
+            control.config.mapping,
+            invert_translation=False,
+            invert_orientation=False,
+            translation_sign=(-1.0, -1.0, 1.0),
+        ),
+    )
+    left_tcp = TcpPose(np.array([0.4, 0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    right_tcp = TcpPose(np.array([0.4, -0.2, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    control.update(frame(sample(squeeze=1.0), sample(squeeze=0.0)), left_tcp, right_tcp, 1.0 / 120.0, 1.0)
+    moved = frame(sample(position=(0.1, 1.3, 0.1), squeeze=1.0), sample(), received=1.01)
+    second = control.update(moved, left_tcp, right_tcp, 1.0, 1.01)
+    assert second.left.xr_delta == pytest.approx([0.1, 0.1, 0.1])
+    assert second.left.base_delta == pytest.approx([-0.2, -0.2, 0.2])
+    assert second.left.target.position == pytest.approx([0.20, 0.00, 0.40])
+
+
+def test_heading_calibration_makes_translation_viewer_relative() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    sign = (-1.0, -1.0, 1.0)
+    yaw_90_xyzw = (0.0, math.sin(math.pi / 4.0), 0.0, math.cos(math.pi / 4.0))
+    reference_to_operator = horizontal_reference_to_operator_rotation(yaw_90_xyzw)
+    baseline = map_xr_translation(basis, np.array([0.0, 0.0, -0.1]), 1.0, False, sign)
+    viewer_forward_in_reference = np.array([-0.1, 0.0, 0.0])
+    calibrated = map_xr_translation(
+        basis,
+        viewer_forward_in_reference,
+        1.0,
+        False,
+        sign,
+        reference_to_operator,
+    )
+    assert calibrated == pytest.approx(baseline)
+
+
+def test_heading_calibration_makes_rotation_viewer_relative() -> None:
+    config = load_teleop_config(ROOT / "configs/teleoperation/meta_quest3.yaml")
+    basis = config.mapping.controller_to_base_rotation
+    sign = (-1.0, -1.0, 1.0)
+    yaw_90_xyzw = (0.0, math.sin(math.pi / 4.0), 0.0, math.cos(math.pi / 4.0))
+    reference_to_operator = horizontal_reference_to_operator_rotation(yaw_90_xyzw)
+    operator_to_reference = reference_to_operator.T
+    angle = 0.2
+    local_delta = np.array(
+        [[1.0, 0.0, 0.0], [0.0, math.cos(angle), -math.sin(angle)], [0.0, math.sin(angle), math.cos(angle)]]
+    )
+    reference_delta = operator_to_reference @ local_delta @ reference_to_operator
+    baseline = map_xr_rotation(basis, local_delta, False, sign)
+    calibrated = map_xr_rotation(
+        basis,
+        reference_delta,
+        False,
+        sign,
+        False,
+        reference_to_operator,
+    )
+    assert calibrated == pytest.approx(baseline)
+
+
+def test_required_calibration_forces_release_before_clutch() -> None:
+    control = mapper()
+    control.require_calibration = True
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    held = frame(sample(squeeze=1.0), sample(squeeze=0.0))
+    blocked = control.update(held, pose, pose, 0.01, 1.0)
+    assert not blocked.calibrated
+    assert not blocked.left.clutch
+
+    calibrated_held = replace(
+        held,
+        sequence=2,
+        received_monotonic=1.01,
+        calibration_id=1,
+        calibration_viewer_orientation_xyzw=(0.0, 0.0, 0.0, 1.0),
+    )
+    still_blocked = control.update(calibrated_held, pose, pose, 0.01, 1.01)
+    assert still_blocked.calibrated
+    assert not still_blocked.left.clutch
+
+    released = replace(
+        calibrated_held,
+        sequence=3,
+        received_monotonic=1.02,
+        left=sample(squeeze=0.0),
+    )
+    control.update(released, pose, pose, 0.01, 1.02)
+    reengaged = replace(
+        released,
+        sequence=4,
+        received_monotonic=1.03,
+        left=sample(squeeze=1.0),
+    )
+    result = control.update(reengaged, pose, pose, 0.01, 1.03)
+    assert result.left.clutch
+
+
+def test_boundary_guard_releases_active_clutch() -> None:
+    control = mapper()
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    active = control.update(frame(sample(squeeze=1.0), sample()), pose, pose, 0.01, 1.0)
+    assert active.left.clutch
+    unsafe = replace(
+        frame(sample(squeeze=1.0), sample(), received=1.01),
+        boundary_safe=False,
+        boundary_distance_m=0.2,
+    )
+    blocked = control.update(unsafe, pose, pose, 0.01, 1.01)
+    assert not blocked.boundary_safe
+    assert not blocked.left.clutch
+
+
+def test_vertical_viewer_orientation_fails_calibration_closed() -> None:
+    control = mapper()
+    control.require_calibration = True
+    pose = TcpPose(np.array([0.4, 0.0, 0.2]), np.array([1.0, 0.0, 0.0, 0.0]))
+    vertical = replace(
+        frame(sample(squeeze=0.0), sample()),
+        calibration_id=1,
+        calibration_viewer_orientation_xyzw=(
+            math.sin(math.pi / 4.0),
+            0.0,
+            0.0,
+            math.cos(math.pi / 4.0),
+        ),
+    )
+    result = control.update(vertical, pose, pose, 0.01, 1.0)
+    assert not result.calibrated
+    assert result.stale
+    assert not result.left.clutch

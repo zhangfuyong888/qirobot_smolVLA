@@ -25,6 +25,8 @@ class SideMappingResult:
     clutch_rising: bool
     clutch_falling: bool
     tracking_valid: bool
+    xr_delta: np.ndarray
+    base_delta: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,11 @@ class BimanualMappingResult:
     right: SideMappingResult
     stale: bool
     frame_age_s: float
+    calibrated: bool = True
+    calibration_changed: bool = False
+    calibration_yaw_rad: float = 0.0
+    boundary_safe: bool = True
+    boundary_distance_m: float | None = None
 
 
 @dataclass
@@ -43,6 +50,8 @@ class _SideState:
     controller_reference_rotation: np.ndarray | None = None
     tcp_reference_position: np.ndarray | None = None
     tcp_reference_rotation: np.ndarray | None = None
+    filtered_controller_position: np.ndarray | None = None
+    filtered_controller_rotation: np.ndarray | None = None
     clutch: bool = False
     requires_release: bool = False
     trigger_filtered: float = 0.0
@@ -116,10 +125,118 @@ def _rotation_from_vector(vector: np.ndarray) -> np.ndarray:
     return np.eye(3) + math.sin(angle) * skew + (1.0 - math.cos(angle)) * (skew @ skew)
 
 
+def _exp_smooth_vector(previous: np.ndarray, current: np.ndarray, dt: float, tau: float) -> np.ndarray:
+    if tau <= 0.0:
+        return np.asarray(current, dtype=np.float64)
+    alpha = 1.0 - math.exp(-max(float(dt), 0.0) / tau)
+    previous_np = np.asarray(previous, dtype=np.float64)
+    current_np = np.asarray(current, dtype=np.float64)
+    return previous_np + alpha * (current_np - previous_np)
+
+
+def resolved_translation_sign(
+    invert_translation: bool,
+    translation_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0),
+) -> np.ndarray:
+    sign = np.asarray(translation_sign, dtype=np.float64)
+    if invert_translation:
+        sign = -sign
+    return sign
+
+
+def mapping_basis(basis: np.ndarray, translation_sign: np.ndarray) -> np.ndarray:
+    """Apply per-axis signs in the robot base frame after the calibrated rotation."""
+    return np.diag(np.asarray(translation_sign, dtype=np.float64)) @ np.asarray(basis, dtype=np.float64)
+
+
+def horizontal_reference_to_operator_rotation(
+    viewer_orientation_xyzw: tuple[float, float, float, float] | np.ndarray,
+) -> np.ndarray:
+    """Rotate reference-space vectors into the viewer's captured horizontal frame."""
+    viewer_rotation = quat_xyzw_to_matrix(np.asarray(viewer_orientation_xyzw, dtype=np.float64))
+    forward = viewer_rotation @ np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    forward[1] = 0.0
+    norm = float(np.linalg.norm(forward))
+    if norm < 1.0e-6:
+        raise ValueError("viewer forward direction is too close to vertical for yaw calibration")
+    forward /= norm
+    up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    right = np.cross(forward, up)
+    right /= max(float(np.linalg.norm(right)), 1.0e-9)
+    operator_to_reference = np.column_stack((right, up, -forward))
+    return operator_to_reference.T
+
+
+def calibration_yaw_rad(reference_to_operator: np.ndarray) -> float:
+    """Return captured viewer yaw for diagnostics, positive about WebXR +Y."""
+    operator_to_reference = np.asarray(reference_to_operator, dtype=np.float64).T
+    forward = operator_to_reference @ np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    return math.atan2(-float(forward[0]), -float(forward[2]))
+
+
+def map_xr_translation(
+    basis: np.ndarray,
+    xr_delta: np.ndarray,
+    position_scale: float,
+    invert_translation: bool = False,
+    translation_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0),
+    reference_to_operator: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map a WebXR position delta into the robot base frame."""
+    sign = resolved_translation_sign(invert_translation, translation_sign)
+    alignment = np.eye(3) if reference_to_operator is None else np.asarray(reference_to_operator, dtype=np.float64)
+    mapped = mapping_basis(basis, sign) @ alignment @ np.asarray(xr_delta, dtype=np.float64)
+    return float(position_scale) * mapped
+
+
+def map_xr_rotation(
+    basis: np.ndarray,
+    delta_xr: np.ndarray,
+    invert_orientation: bool,
+    translation_sign: tuple[float, float, float] | np.ndarray = (1.0, 1.0, 1.0),
+    invert_translation: bool = False,
+    reference_to_operator: np.ndarray | None = None,
+) -> np.ndarray:
+    """Map a WebXR rotation delta into the robot base frame.
+
+    A proper rotation (det=+1) can bake XY translation signs into the same
+    basis used for orientation, which flips roll/pitch sense while keeping
+    yaw about vertical. A full XYZ flip has det=-1, so that case keeps the
+    original basis and uses ``delta_xr.T`` only when invert_orientation is set.
+    """
+    sign = resolved_translation_sign(invert_translation, translation_sign)
+    basis_np = np.asarray(basis, dtype=np.float64)
+    if float(np.linalg.det(np.diag(sign))) > 0.0:
+        basis_np = mapping_basis(basis_np, sign)
+    if reference_to_operator is not None:
+        basis_np = basis_np @ np.asarray(reference_to_operator, dtype=np.float64)
+    delta = np.asarray(delta_xr, dtype=np.float64)
+    if invert_orientation:
+        delta = delta.T
+    return basis_np @ delta @ basis_np.T
+
+
+def _exp_smooth_rotation(previous: np.ndarray, current: np.ndarray, dt: float, tau: float) -> np.ndarray:
+    if tau <= 0.0:
+        return np.asarray(current, dtype=np.float64)
+    alpha = 1.0 - math.exp(-max(float(dt), 0.0) / tau)
+    error_vector = _rotation_vector(np.asarray(current, dtype=np.float64) @ np.asarray(previous, dtype=np.float64).T)
+    return _rotation_from_vector(alpha * error_vector) @ previous
+
+
 class BimanualTeleopMapper:
     """Map independently clutched Quest controllers to smooth bimanual TCP targets."""
 
-    def __init__(self, config: TeleopConfig, left_open: np.ndarray, left_close: np.ndarray, right_open: np.ndarray, right_close: np.ndarray):
+    def __init__(
+        self,
+        config: TeleopConfig,
+        left_open: np.ndarray,
+        left_close: np.ndarray,
+        right_open: np.ndarray,
+        right_close: np.ndarray,
+        *,
+        require_calibration: bool = False,
+    ):
         self.config = config
         self.hand_profiles = {
             "left": (np.asarray(left_open, dtype=np.float64), np.asarray(left_close, dtype=np.float64)),
@@ -129,6 +246,22 @@ class BimanualTeleopMapper:
             if opened.shape != (6,) or closed.shape != (6,):
                 raise ValueError(f"{side} hand profiles must have shape (6,)")
         self.states = {"left": _SideState(), "right": _SideState()}
+        self.require_calibration = bool(require_calibration)
+        self._frame_context: tuple[str, str, int] | None = None
+
+    def _invalidate_context(self, current_left: TcpPose, current_right: TcpPose) -> None:
+        for side, current_tcp in (("left", current_left), ("right", current_right)):
+            state = self.states[side]
+            state.target_position = np.asarray(current_tcp.position, dtype=np.float64).copy()
+            state.target_rotation = quat_wxyz_to_matrix(current_tcp.quat_wxyz)
+            state.controller_reference_position = None
+            state.controller_reference_rotation = None
+            state.tcp_reference_position = None
+            state.tcp_reference_rotation = None
+            state.filtered_controller_position = None
+            state.filtered_controller_rotation = None
+            state.clutch = False
+            state.requires_release = True
 
     def clutch_value(self, sample: ControllerSample | None) -> float:
         """Return the configured clutch input, including WebXR event fallback."""
@@ -142,7 +275,15 @@ class BimanualTeleopMapper:
         )
         return max(values, default=0.0)
 
-    def _update_side(self, side: str, sample: ControllerSample | None, current_tcp: TcpPose, dt: float, stale: bool) -> SideMappingResult:
+    def _update_side(
+        self,
+        side: str,
+        sample: ControllerSample | None,
+        current_tcp: TcpPose,
+        dt: float,
+        stale: bool,
+        reference_to_operator: np.ndarray,
+    ) -> SideMappingResult:
         state = self.states[side]
         if state.target_position is None:
             state.target_position = np.asarray(current_tcp.position, dtype=np.float64).copy()
@@ -174,8 +315,12 @@ class BimanualTeleopMapper:
             state.trigger_filtered += alpha * (trigger - state.trigger_filtered)
 
         if clutch_rising and sample is not None:
-            state.controller_reference_position = np.asarray(sample.position, dtype=np.float64)
-            state.controller_reference_rotation = quat_xyzw_to_matrix(np.asarray(sample.orientation_xyzw))
+            raw_position = np.asarray(sample.position, dtype=np.float64)
+            raw_rotation = quat_xyzw_to_matrix(np.asarray(sample.orientation_xyzw))
+            state.filtered_controller_position = raw_position.copy()
+            state.filtered_controller_rotation = raw_rotation.copy()
+            state.controller_reference_position = raw_position.copy()
+            state.controller_reference_rotation = raw_rotation.copy()
             state.tcp_reference_position = np.asarray(current_tcp.position, dtype=np.float64).copy()
             state.tcp_reference_rotation = quat_wxyz_to_matrix(current_tcp.quat_wxyz)
             state.target_position = state.tcp_reference_position.copy()
@@ -185,12 +330,40 @@ class BimanualTeleopMapper:
             state.target_position = np.asarray(current_tcp.position, dtype=np.float64).copy()
             state.target_rotation = quat_wxyz_to_matrix(current_tcp.quat_wxyz)
 
+        xr_delta = np.zeros(3)
+        base_delta = np.zeros(3)
         if state.clutch and sample is not None and state.controller_reference_position is not None:
+            tau = float(self.config.mapping.controller_filter_time_constant_s)
+            raw_position = np.asarray(sample.position, dtype=np.float64)
+            raw_rotation = quat_xyzw_to_matrix(np.asarray(sample.orientation_xyzw))
+            if state.filtered_controller_position is None:
+                state.filtered_controller_position = raw_position.copy()
+                state.filtered_controller_rotation = raw_rotation.copy()
+            else:
+                state.filtered_controller_position = _exp_smooth_vector(
+                    state.filtered_controller_position, raw_position, dt, tau
+                )
+                state.filtered_controller_rotation = _exp_smooth_rotation(
+                    state.filtered_controller_rotation, raw_rotation, dt, tau
+                )
             basis = self.config.mapping.controller_to_base_rotation
-            controller_position = np.asarray(sample.position, dtype=np.float64)
-            requested_position = state.tcp_reference_position + self.config.mapping.position_scale * (
-                basis @ (controller_position - state.controller_reference_position)
+            controller_position = state.filtered_controller_position
+            xr_delta = controller_position - state.controller_reference_position
+            base_delta = map_xr_translation(
+                basis,
+                xr_delta,
+                self.config.mapping.position_scale,
+                self.config.mapping.invert_translation,
+                self.config.mapping.translation_sign,
+                reference_to_operator,
             )
+            requested_position = state.tcp_reference_position + base_delta
+            clutch_delta = requested_position - state.tcp_reference_position
+            clutch_distance = float(np.linalg.norm(clutch_delta))
+            max_clutch_distance = self.config.mapping.max_clutch_translation_m
+            if clutch_distance > max_clutch_distance:
+                clutch_delta *= max_clutch_distance / clutch_distance
+                requested_position = state.tcp_reference_position + clutch_delta
             requested_position = np.clip(
                 requested_position,
                 self.config.safety.workspace_min,
@@ -203,10 +376,21 @@ class BimanualTeleopMapper:
                 delta *= max_distance / distance
             state.target_position = state.target_position + delta
 
-            if self.config.mapping.orientation_enabled:
-                current_controller_rotation = quat_xyzw_to_matrix(np.asarray(sample.orientation_xyzw))
+            if (
+                self.config.mapping.orientation_enabled
+                and state.filtered_controller_rotation is not None
+                and state.controller_reference_rotation is not None
+            ):
+                current_controller_rotation = state.filtered_controller_rotation
                 delta_xr = current_controller_rotation @ state.controller_reference_rotation.T
-                delta_base = basis @ delta_xr @ basis.T
+                delta_base = map_xr_rotation(
+                    basis,
+                    delta_xr,
+                    self.config.mapping.invert_orientation,
+                    self.config.mapping.translation_sign,
+                    self.config.mapping.invert_translation,
+                    reference_to_operator,
+                )
                 requested_rotation = delta_base @ state.tcp_reference_rotation
                 error_vector = _rotation_vector(requested_rotation @ state.target_rotation.T)
                 max_angle = max(self.config.safety.max_rotation_speed_rad_s * dt, 1.0e-6)
@@ -224,11 +408,68 @@ class BimanualTeleopMapper:
             clutch_rising=clutch_rising,
             clutch_falling=clutch_falling,
             tracking_valid=tracking_valid,
+            xr_delta=xr_delta,
+            base_delta=base_delta,
         )
 
     def update(self, frame: ControllerFrame | None, current_left: TcpPose, current_right: TcpPose, dt: float, now_monotonic: float) -> BimanualMappingResult:
         age = math.inf if frame is None else max(float(now_monotonic - frame.received_monotonic), 0.0)
-        stale = frame is None or age > self.config.network.stale_timeout_s
-        left = self._update_side("left", None if frame is None else frame.left, current_left, dt, stale)
-        right = self._update_side("right", None if frame is None else frame.right, current_right, dt, stale)
-        return BimanualMappingResult(left=left, right=right, stale=stale, frame_age_s=age)
+        calibration_ready = bool(
+            frame is not None
+            and frame.calibration_id > 0
+            and frame.calibration_viewer_orientation_xyzw is not None
+        )
+        context = None if frame is None else (
+            frame.session_id,
+            frame.reference_space,
+            frame.calibration_id if calibration_ready else 0,
+        )
+        calibration_changed = context is not None and context != self._frame_context
+        if calibration_changed:
+            if self.require_calibration or self._frame_context is not None:
+                self._invalidate_context(current_left, current_right)
+            self._frame_context = context
+
+        reference_to_operator = np.eye(3, dtype=np.float64)
+        if calibration_ready:
+            try:
+                reference_to_operator = horizontal_reference_to_operator_rotation(
+                    frame.calibration_viewer_orientation_xyzw
+                )
+            except ValueError:
+                calibration_ready = False
+        calibrated = calibration_ready or not self.require_calibration
+        boundary_safe = True if frame is None else frame.boundary_safe
+        stale = (
+            frame is None
+            or age > self.config.network.stale_timeout_s
+            or not calibrated
+            or not boundary_safe
+        )
+        left = self._update_side(
+            "left",
+            None if frame is None else frame.left,
+            current_left,
+            dt,
+            stale,
+            reference_to_operator,
+        )
+        right = self._update_side(
+            "right",
+            None if frame is None else frame.right,
+            current_right,
+            dt,
+            stale,
+            reference_to_operator,
+        )
+        return BimanualMappingResult(
+            left=left,
+            right=right,
+            stale=stale,
+            frame_age_s=age,
+            calibrated=calibrated,
+            calibration_changed=calibration_changed,
+            calibration_yaw_rad=calibration_yaw_rad(reference_to_operator),
+            boundary_safe=boundary_safe,
+            boundary_distance_m=None if frame is None else frame.boundary_distance_m,
+        )

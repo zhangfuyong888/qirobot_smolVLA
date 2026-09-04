@@ -34,6 +34,10 @@ class ControllerFrame:
     left: ControllerSample
     right: ControllerSample
     received_monotonic: float
+    calibration_id: int = 0
+    calibration_viewer_orientation_xyzw: tuple[float, float, float, float] | None = None
+    boundary_safe: bool = True
+    boundary_distance_m: float | None = None
 
 
 def _finite_vector(value: Any, length: int, name: str) -> tuple[float, ...]:
@@ -108,6 +112,34 @@ def parse_controller_frame(payload: str | bytes | dict[str, Any], received_monot
     client_time_ms = float(payload.get("client_time_ms", 0.0))
     if not math.isfinite(client_time_ms):
         raise ValueError("client_time_ms must be finite")
+    calibration_id = int(payload.get("calibration_id", 0))
+    if calibration_id < 0:
+        raise ValueError("calibration_id must be non-negative")
+    calibration_orientation_raw = payload.get("calibration_viewer_orientation_xyzw")
+    calibration_orientation = None
+    if calibration_orientation_raw is not None:
+        calibration_orientation = _finite_vector(
+            calibration_orientation_raw,
+            4,
+            "calibration_viewer_orientation_xyzw",
+        )
+        norm = math.sqrt(sum(item * item for item in calibration_orientation))
+        if norm < 1.0e-6:
+            raise ValueError("calibration_viewer_orientation_xyzw has zero norm")
+        calibration_orientation = tuple(item / norm for item in calibration_orientation)
+    if (calibration_id > 0) != (calibration_orientation is not None):
+        raise ValueError(
+            "calibration_id and calibration_viewer_orientation_xyzw must be provided together"
+        )
+    boundary_distance_raw = payload.get("boundary_distance_m")
+    boundary_distance_m = None
+    if boundary_distance_raw is not None:
+        boundary_distance_m = float(boundary_distance_raw)
+        if not math.isfinite(boundary_distance_m):
+            raise ValueError("boundary_distance_m must be finite")
+    boundary_safe = payload.get("boundary_safe", True)
+    if not isinstance(boundary_safe, bool):
+        raise ValueError("boundary_safe must be a boolean")
     return ControllerFrame(
         session_id=session_id,
         sequence=sequence,
@@ -116,6 +148,10 @@ def parse_controller_frame(payload: str | bytes | dict[str, Any], received_monot
         left=_parse_side(payload.get("left", {}), "left"),
         right=_parse_side(payload.get("right", {}), "right"),
         received_monotonic=time.monotonic() if received_monotonic is None else float(received_monotonic),
+        calibration_id=calibration_id,
+        calibration_viewer_orientation_xyzw=calibration_orientation,
+        boundary_safe=boundary_safe,
+        boundary_distance_m=boundary_distance_m,
     )
 
 

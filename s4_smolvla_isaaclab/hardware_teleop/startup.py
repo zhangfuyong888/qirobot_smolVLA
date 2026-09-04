@@ -1,4 +1,4 @@
-"""Startup helpers: homing to task home pose before Quest teleoperation."""
+"""Startup helpers: homing to a rest pose before Quest teleoperation."""
 
 from __future__ import annotations
 
@@ -24,6 +24,40 @@ def build_home_action(
     target[ACTION_SLICES.left_hand] = np.asarray(profiles["left_open"], dtype=np.float32)
     target[ACTION_SLICES.right_hand] = np.asarray(profiles["right_open"], dtype=np.float32)
     return target
+
+
+def merge_startup_home_poses(
+    startup_cfg: HardwareStartupConfig,
+    home_poses: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
+    merged = dict(home_poses)
+    if startup_cfg.home_left_arm:
+        merged["left_arm"] = np.asarray(startup_cfg.home_left_arm, dtype=np.float32)
+    if startup_cfg.home_right_arm:
+        merged["right_arm"] = np.asarray(startup_cfg.home_right_arm, dtype=np.float32)
+    return merged
+
+
+def quintic_unit(tau: float) -> float:
+    """Rest-to-rest quintic: 10τ³ − 15τ⁴ + 6τ⁵, with zero vel/acc at 0 and 1."""
+    tau = float(np.clip(tau, 0.0, 1.0))
+    tau3 = tau * tau * tau
+    return float(tau3 * (10.0 + tau * (-15.0 + 6.0 * tau)))
+
+
+def interpolate_home_quintic(
+    start: np.ndarray,
+    home: np.ndarray,
+    tau: float,
+) -> np.ndarray:
+    """Blend arm joints from start to home. Hands stay at the start pose."""
+    start_np = np.asarray(start, dtype=np.float32)
+    home_np = np.asarray(home, dtype=np.float32)
+    result = start_np.copy()
+    blend = np.float32(quintic_unit(tau))
+    for sl in (ACTION_SLICES.left_arm, ACTION_SLICES.right_arm):
+        result[sl] = start_np[sl] + blend * (home_np[sl] - start_np[sl])
+    return result
 
 
 def interpolate_toward_home(
@@ -62,37 +96,69 @@ def run_startup_homing(
     profiles: dict[str, np.ndarray],
 ) -> np.ndarray:
     actual = read_state()
-    if not startup_cfg.move_to_home or not home_poses:
+    resolved_home = merge_startup_home_poses(startup_cfg, home_poses)
+    if not startup_cfg.move_to_home or not resolved_home:
         print("[HW-TELEOP] startup homing skipped (disabled or no home poses)", flush=True)
         return actual
 
-    home_action = build_home_action(actual, profiles, home_poses)
+    home_action = build_home_action(actual, profiles, resolved_home)
+    # Do not command the hands during arm homing; they stay at the measured pose.
+    home_action[ACTION_SLICES.left_hand] = actual[ACTION_SLICES.left_hand]
+    home_action[ACTION_SLICES.right_hand] = actual[ACTION_SLICES.right_hand]
     error = arm_home_error(actual, home_action)
     if error <= startup_cfg.position_tolerance_rad:
         print(f"[HW-TELEOP] already at home pose (err={error:.4f} rad)", flush=True)
         return home_action
 
+    requested_duration_s = max(float(startup_cfg.duration_s), control_dt)
+    start_action = np.asarray(actual, dtype=np.float32).copy()
+    max_step = max(float(startup_cfg.max_joint_step_rad), 0.0)
+    requested_steps = max(1, int(np.ceil(requested_duration_s / control_dt)))
+    # A quintic's peak slope is 1.875. Increase duration when necessary so
+    # the safety step limiter does not flatten the curve around its midpoint.
+    step_limited_steps = (
+        int(np.ceil(1.875 * error / max_step)) if max_step > 0.0 else 1
+    )
+    total_steps = max(requested_steps, step_limited_steps)
+    duration_s = total_steps * control_dt
     print(
-        f"[HW-TELEOP] startup homing: moving arms to task home over up to "
-        f"{startup_cfg.duration_s:.1f}s (step={startup_cfg.max_joint_step_rad:.3f} rad)",
+        f"[HW-TELEOP] startup homing: quintic rest-to-rest over {duration_s:.1f}s "
+        f"start_err={error:.3f} rad "
+        f"left={np.round(home_action[ACTION_SLICES.left_arm], 3).tolist()} "
+        f"right={np.round(home_action[ACTION_SLICES.right_arm], 3).tolist()}",
+        flush=True,
+    )
+    print(
+        "[HW-TELEOP] keep clear; Quest clutch is ignored until homing finishes",
         flush=True,
     )
 
-    command = np.asarray(actual, dtype=np.float32).copy()
-    deadline = time.monotonic() + max(startup_cfg.duration_s, control_dt)
-    while time.monotonic() < deadline:
+    command = start_action.copy()
+    next_deadline = time.monotonic()
+    for step_index in range(total_steps + 1):
         spin_once()
-        actual = read_state()
-        command = interpolate_toward_home(
-            actual,
-            home_action,
-            max_step_rad=startup_cfg.max_joint_step_rad,
-        )
+        tau = step_index / total_steps
+        desired = interpolate_home_quintic(start_action, home_action, tau)
+        if max_step > 0.0:
+            command = interpolate_toward_home(command, desired, max_step_rad=max_step)
+            command[ACTION_SLICES.left_hand] = start_action[ACTION_SLICES.left_hand]
+            command[ACTION_SLICES.right_hand] = start_action[ACTION_SLICES.right_hand]
+        else:
+            command = desired
         publish_step(command)
-        if arm_home_error(actual, home_action) <= startup_cfg.position_tolerance_rad:
-            print("[HW-TELEOP] startup homing reached home pose", flush=True)
-            return home_action
-        time.sleep(control_dt)
-
-    print("[HW-TELEOP][WARN] startup homing timed out before reaching home tolerance", flush=True)
-    return command
+        if step_index == total_steps:
+            actual = read_state()
+            final_err = arm_home_error(actual, home_action)
+            print(
+                f"[HW-TELEOP] startup homing finished command_err="
+                f"{arm_home_error(command, home_action):.4f} rad "
+                f"measured_err={final_err:.4f} rad",
+                flush=True,
+            )
+            return command
+        next_deadline += control_dt
+        sleep_s = next_deadline - time.monotonic()
+        if sleep_s > 0.0:
+            time.sleep(sleep_s)
+        else:
+            next_deadline = time.monotonic()
