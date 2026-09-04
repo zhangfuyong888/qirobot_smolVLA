@@ -22,5 +22,7 @@ dependencies:
       - accelerate==1.14.0
       - num2words==0.5.14
       - pyyaml==6.0.2
+      - msgpack==1.1.2
+      - pyzmq==27.0.2
 # Install the external LeRobot checkout in editable mode after creating this
 # environment. See docs/REPRODUCTION.md.

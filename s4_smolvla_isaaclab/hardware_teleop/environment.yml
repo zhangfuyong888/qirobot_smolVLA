@@ -13,3 +13,7 @@ dependencies:
   - daqp=0.8.7
   - quadprog=0.1.13
   - pytest
+  - h5py
+  - opencv
+  - msgpack
+  - pyzmq

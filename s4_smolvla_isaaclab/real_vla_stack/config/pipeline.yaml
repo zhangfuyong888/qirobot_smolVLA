@@ -1,0 +1,3 @@
+task: tasks/drawer_right.yaml
+host: hosts/train_host.yaml
+robot: robots/s4_real.yaml

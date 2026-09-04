@@ -1,0 +1,47 @@
+contract_version: s4_real_policy_v1
+task:
+  id: right_drawer_open_close_v1
+  instruction: >
+    Approach the drawer handle, grasp it firmly, pull the drawer open, push it fully closed,
+    release the handle, and move the arm away.
+robot:
+  type: S4
+  active_arm: right
+dataset:
+  raw_schema: s4_real_vla_v2
+  fps: 20
+  include_phases: [teleop]
+  lerobot_commit: 3f2179f3b69708b6ad009b2e7685dd9d05269ee1
+state:
+  semantics: measured_joint_state
+  units: rad
+  names: &policy_names
+    - right_shoulder_pitch_joint
+    - right_shoulder_roll_joint
+    - right_shoulder_yaw_joint
+    - right_elbow_joint
+    - right_wrist_roll_joint
+    - right_wrist_pitch_joint
+    - right_wrist_yaw_joint
+    - gripper
+action:
+  semantics: absolute_joint_target
+  units: rad
+  names: *policy_names
+gripper:
+  semantics: logical_commanded_state_not_measured
+  open: 0.0
+  grasp: 1.0
+  open_threshold: 0.35
+  grasp_threshold: 0.65
+cameras:
+  head:
+    source: head
+    feature: observation.images.head
+  wrist:
+    source: wrist_right
+    feature: observation.images.wrist_right
+alignment:
+  method: latest_before
+  max_camera_age_ms: 100
+  max_cross_camera_skew_ms: 60

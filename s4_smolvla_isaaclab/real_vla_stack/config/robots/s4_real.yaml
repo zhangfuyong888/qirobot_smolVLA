@@ -1,0 +1,24 @@
+network:
+  policy_server: 192.168.110.35
+  policy_port: 5555
+  connect_timeout_ms: 1000
+  request_timeout_ms: 500
+rollout:
+  mode: shadow
+  control_hz: 30
+  policy_hz: 20
+  execute_horizon: 8
+  start_from_home: true
+  return_home_on_finish: true
+  return_home_on_abort: true
+  max_episode_s: 30
+freshness:
+  max_chunk_age_ms: 500
+  max_consecutive_timeouts: 2
+safety:
+  reject_non_finite: true
+  max_policy_target_jump_rad: 0.20
+  max_policy_tracking_error_rad: 0.25
+gripper:
+  open_threshold: 0.35
+  grasp_threshold: 0.65

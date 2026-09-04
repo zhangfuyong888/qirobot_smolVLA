@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "real_vla_stack/tests"]
 addopts = "-ra"
 
 [tool.ruff]
