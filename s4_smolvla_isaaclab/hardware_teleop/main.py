@@ -119,7 +119,15 @@ def run_hardware_teleop(config: HardwareTeleopConfig, args: argparse.Namespace) 
     host = args.host or teleop_cfg.network.host
     port = int(args.port or teleop_cfg.network.port)
     store = LatestFrameStore()
-    server = QuestWebServer(store, host, port, cert, key, PROJECT_ROOT / "teleoperation/webxr")
+    server = QuestWebServer(
+        store,
+        host,
+        port,
+        cert,
+        key,
+        PROJECT_ROOT / "teleoperation/webxr",
+        ui_profile="hardware",
+    )
 
     if config.startup.require_sdk_arm_replay:
         sdk_pid, sdk_executable = find_verified_arm_replay_sdk_process(

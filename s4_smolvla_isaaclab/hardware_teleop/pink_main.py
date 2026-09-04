@@ -258,7 +258,15 @@ def run_pink_hardware_teleop(
     host = args.host or teleop_cfg.network.host
     port = int(args.port or teleop_cfg.network.port)
     store = LatestFrameStore()
-    server = QuestWebServer(store, host, port, cert, key, PROJECT_ROOT / "teleoperation/webxr")
+    server = QuestWebServer(
+        store,
+        host,
+        port,
+        cert,
+        key,
+        PROJECT_ROOT / "teleoperation/webxr",
+        ui_profile="collection" if hooks is not None else "hardware",
+    )
 
     if not args.shadow and config.startup.require_sdk_arm_replay:
         sdk_pid, sdk_executable = find_verified_arm_replay_sdk_process(

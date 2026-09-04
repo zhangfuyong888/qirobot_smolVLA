@@ -41,26 +41,27 @@
 <main>
   <h1>S4 Quest Teleoperation</h1>
   <p>Controller data only. No camera image is transmitted to the headset.</p>
-  <div id="status" class="status">Connecting to IsaacLab...</div>
+  <div id="status" class="status">Connecting to teleoperation server...</div>
   <button id="start" disabled>Enter Passthrough Teleoperation</button>
-  <p><code>Right Grip</code>: move the configured collection arm (READY and RECORDING).<br>
-     <code>A</code>: return home, then start recording.<br>
-     <code>Trigger</code>: grasp. <code>B</code>: record return Home and end. <code>X</code>: save. Hold <code>Y</code>: discard.</p>
+  <p id="controls"><code>Left/Right Grip</code>: move each arm independently.<br>
+     <code>Trigger</code>: continuously close the corresponding hand.</p>
 </main>
 <div id="overlay">
   <div id="hud">
     <div id="hud-title">Connecting</div>
-    <div id="hud-detail">Open this page, enter passthrough, then wait for READY.</div>
+    <div id="hud-detail">Enter passthrough, then release both Grips to calibrate heading.</div>
   </div>
 </div>
 <script>
 (() => {
   const statusNode = document.getElementById('status');
   const startButton = document.getElementById('start');
+  const controlsNode = document.getElementById('controls');
   const overlayRoot = document.getElementById('overlay');
   const hudTitle = document.getElementById('hud-title');
   const hudDetail = document.getElementById('hud-detail');
   let lastHud = null;
+  let uiProfile = 'teleoperation';
   let socket = null;
   let xrSession = null;
   let referenceSpace = null;
@@ -85,6 +86,41 @@
     saved: [[0, 0.65, 80], [140, 0.75, 80], [280, 0.90, 120]],
     discarded: [[0, 0.80, 450]],
   };
+  const uiProfiles = {
+    teleoperation: {
+      controls: '<code>Left/Right Grip</code>: move each arm independently.<br><code>Trigger</code>: continuously close the corresponding hand.',
+      connected: 'Enter passthrough, release both Grips to calibrate heading, then Grip to move.',
+      calibrated: 'Grip moves each arm independently. Trigger closes the corresponding hand.',
+      entered: 'Release both Grips while facing robot-forward, then Grip to move either arm.',
+    },
+    simulation: {
+      controls: '<code>Left/Right Grip</code>: move each simulated arm independently.<br><code>Trigger</code>: continuously close the corresponding simulated hand.',
+      connected: 'Enter passthrough, release both Grips to calibrate heading, then Grip to move the simulated arms.',
+      calibrated: 'Grip moves each simulated arm independently. Trigger closes the corresponding hand.',
+      entered: 'Release both Grips while facing robot-forward, then Grip to move either simulated arm.',
+    },
+    hardware: {
+      controls: '<code>Left/Right Grip</code>: move each enabled robot arm independently.<br><code>Trigger</code>: continuously close the corresponding hand.',
+      connected: 'Enter passthrough, release both Grips to calibrate heading, then Grip to move an enabled arm.',
+      calibrated: 'Grip moves each enabled robot arm. Trigger closes the corresponding hand.',
+      entered: 'Release both Grips while facing robot-forward, then Grip to move an enabled arm.',
+    },
+    collection: {
+      controls: '<code>Right Grip</code>: move the configured collection arm (READY and RECORDING).<br><code>A</code>: return home, then start recording.<br><code>Trigger</code>: grasp. <code>B</code>: return Home and end. <code>X</code>: save. Hold <code>Y</code>: discard.',
+      connected: 'Enter passthrough, then wait for READY. A starts recording.',
+      calibrated: 'Wait for READY, then press A. Grip does nothing before that.',
+      entered: 'Face robot-forward, release both Grips, then wait for READY.',
+    },
+  };
+
+  function profileText() {
+    return uiProfiles[uiProfile] || uiProfiles.teleoperation;
+  }
+
+  function applyUiProfile(profile) {
+    uiProfile = Object.prototype.hasOwnProperty.call(uiProfiles, profile) ? profile : 'teleoperation';
+    controlsNode.innerHTML = profileText().controls;
+  }
 
   function setStatus(text, kind = '') {
     statusNode.textContent = text;
@@ -201,12 +237,15 @@
         return;
       }
       startButton.disabled = enteringXr;
-      applyHud('Connected', 'Enter passthrough, then wait for READY. A starts recording.', 'ready');
+      applyHud('Connected', profileText().connected, 'ready');
     };
     socket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg && msg.type === 'hud') {
+        if (msg && msg.type === 'server_hello') {
+          applyUiProfile(String(msg.ui_profile || 'teleoperation'));
+          applyHud('Connected', profileText().connected, 'ready');
+        } else if (msg && msg.type === 'hud') {
           applyHud(String(msg.title || ''), String(msg.detail || ''), String(msg.kind || 'ready'));
           playHapticCue(String(msg.haptic || ''), String(msg.haptic_id || ''));
         }
@@ -315,7 +354,7 @@
     if (lastHud && lastHud.title && lastHud.title !== 'Connected') {
       applyHud(lastHud.title, lastHud.detail, lastHud.kind);
     } else {
-      applyHud('Heading calibrated', 'Wait for READY, then press A. Grip does nothing before that.', 'ready');
+      applyHud('Heading calibrated', profileText().calibrated, 'ready');
     }
   }
 
@@ -480,7 +519,7 @@
         lastHud && lastHud.title ? lastHud.title : 'Passthrough',
         lastHud && lastHud.detail
           ? lastHud.detail
-          : 'Face robot-forward, release both Grips, then wait for READY.',
+          : profileText().entered,
         lastHud && lastHud.kind ? lastHud.kind : 'ready'
       );
     } catch (error) {

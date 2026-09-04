@@ -191,7 +191,15 @@ def run_simulation_teleop(config: TeleopConfig, args_cli: argparse.Namespace) ->
     host = args_cli.host or config.network.host
     port = int(args_cli.port or config.network.port)
     store = LatestFrameStore()
-    server = QuestWebServer(store, host, port, cert, key, PROJECT_ROOT / "teleoperation/webxr")
+    server = QuestWebServer(
+        store,
+        host,
+        port,
+        cert,
+        key,
+        PROJECT_ROOT / "teleoperation/webxr",
+        ui_profile="simulation",
+    )
 
     scene_cfg = make_scene_cfg(config)
     sim = create_simulation_context(args_cli.device)

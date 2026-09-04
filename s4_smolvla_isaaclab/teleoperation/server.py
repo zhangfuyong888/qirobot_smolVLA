@@ -22,6 +22,7 @@ class QuestWebServer:
         cert_path: Path | None,
         key_path: Path | None,
         web_root: Path,
+        ui_profile: str = "teleoperation",
     ) -> None:
         self.store = store
         self.host = host
@@ -29,6 +30,7 @@ class QuestWebServer:
         self.cert_path = cert_path
         self.key_path = key_path
         self.web_root = Path(web_root)
+        self.ui_profile = str(ui_profile)
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: web.AppRunner | None = None
@@ -62,7 +64,13 @@ class QuestWebServer:
         try:
             await websocket.prepare(request)
             self._clients.add(websocket)
-            await websocket.send_json({"type": "server_hello", "version": PROTOCOL_VERSION})
+            await websocket.send_json(
+                {
+                    "type": "server_hello",
+                    "version": PROTOCOL_VERSION,
+                    "ui_profile": self.ui_profile,
+                }
+            )
             async for message in websocket:
                 if message.type == WSMsgType.TEXT:
                     try:
