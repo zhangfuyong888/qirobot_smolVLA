@@ -1,4 +1,5 @@
-# Single-arm drawer policy contract. Inactive arm is held at its home pose.
+# Single-arm drawer policy contract. The hardware teleop config is the only
+# source of Home targets; the inactive arm remains held by the existing bridge.
 active_arm: right
 control_hz: 30
 state:
@@ -8,6 +9,3 @@ action:
   arm_dim: 7
   gripper_dim: 1
   semantics: absolute_joint_target
-# Copied from hardware_teleop/config/quest_hardware.yaml startup homes.
-home_left_arm: [0.437743, 0.680362, -0.232509, -1.193446, 0.181773, -0.530060, -0.129129]
-home_right_arm: [0.437743, -0.680362, -0.232509, -1.193446, -0.181773, -0.530060, -0.129129]

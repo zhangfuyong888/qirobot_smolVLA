@@ -1,6 +1,6 @@
-schema_version: s4_real_vla_v1
+schema_version: s4_real_vla_v2
 task:
-  text: "Grasp the drawer handle and pull the drawer open."
+  text: "Approach the drawer handle, grasp it firmly, pull the drawer open to a clear distance, push it fully closed, release the handle, move the arm away, and return home."
 robot:
   config: robot.yaml
 cameras:
@@ -11,11 +11,9 @@ gripper:
   grasp_threshold: 0.65
 home:
   gripper: open
-  # Arrival also accepts commanded home. Measured sag above this must not block READY.
+  # Joint targets, duration and step limit come from quest_hardware.yaml.
   tolerance_rad: 0.03
   stable_time_s: 0.3
-  duration_s: 6.0
-  max_joint_step_rad: 0.025
 buttons:
   start: A
   end_and_home: B

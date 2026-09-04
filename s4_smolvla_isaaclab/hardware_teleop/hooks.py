@@ -33,6 +33,12 @@ class TeleopTick:
     right_active: bool
     fault_active: bool
     output_relinquished: bool
+    state_feed_stale: bool
+    state_age_s: float
+    command_transport_ok: bool
+    command_published: bool
+    input_stale: bool
+    fault_reason: str
     mapping_dt: float
 
 

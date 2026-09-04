@@ -559,7 +559,11 @@ def run_pink_hardware_teleop(
                 teleop_cfg.smoothing.hand_command_alpha,
                 teleop_cfg.smoothing.hand_max_joint_step_rad,
             )
-            if request.command_override is not None:
+            if (
+                request.command_override is not None
+                and state_feed_ok
+                and not fault.active
+            ):
                 command_action = np.asarray(request.command_override, dtype=np.float32).copy()
 
             if not np.isfinite(command_action).all():
@@ -644,6 +648,12 @@ def run_pink_hardware_teleop(
                         right_active=bool(right_active),
                         fault_active=bool(fault.active),
                         output_relinquished=bool(bridge.output_relinquished),
+                        state_feed_stale=bool(state_feed_stale),
+                        state_age_s=float(bridge.last_state_age_s),
+                        command_transport_ok=bool(command_transport_ok),
+                        command_published=bool(published_arm),
+                        input_stale=bool(mapped.stale),
+                        fault_reason=str(fault.reason),
                         mapping_dt=float(mapping_dt),
                     )
                 )

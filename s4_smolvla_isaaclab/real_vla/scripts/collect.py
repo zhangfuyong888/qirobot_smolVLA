@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
+import os
 import shutil
 import sys
 import threading
@@ -20,15 +22,23 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from hardware_teleop.config_loader import HardwareHandsConfig, load_hardware_teleop_config  # noqa: E402
+from hardware_teleop.config_loader import (  # noqa: E402
+    HardwareHandsConfig,
+    HardwareStartupConfig,
+    load_hardware_teleop_config,
+)
 from hardware_teleop.hooks import TeleopHooks, TeleopTick, TickRequest  # noqa: E402
 from hardware_teleop.pink_main import build_parser as build_teleop_parser  # noqa: E402
 from hardware_teleop.pink_main import run_pink_hardware_teleop  # noqa: E402
 from s4_robot.control_mapping import ACTION_SLICES  # noqa: E402
 from s4_robot.s4_robot_cfg import LEFT_ARM_JOINTS, RIGHT_ARM_JOINTS  # noqa: E402
 
+from real_vla import SCHEMA_VERSION  # noqa: E402
 from real_vla.cameras.camera_manager import CameraManager  # noqa: E402
-from real_vla.collection.episode_writer import EpisodeWriter  # noqa: E402
+from real_vla.collection.episode_writer import (  # noqa: E402
+    EpisodeWriter,
+    recover_orphaned_sessions,
+)
 from real_vla.collection.recorder import Recorder  # noqa: E402
 from real_vla.collection.schema import PolicyState, PublishedCommand  # noqa: E402
 from real_vla.collection.state_machine import CollectionEvent, CollectionState, CollectionStateMachine  # noqa: E402
@@ -57,6 +67,7 @@ class CollectionHooks(TeleopHooks):
         cameras: CameraManager,
         writer: EpisodeWriter,
         hands_cfg: HardwareHandsConfig,
+        startup_cfg: HardwareStartupConfig,
     ) -> None:
         self.config = config
         self.cameras = cameras
@@ -77,21 +88,26 @@ class CollectionHooks(TeleopHooks):
             grasp_threshold=config.gripper.grasp_threshold,
         )
         self.home = HomeManager(
-            home_left_arm=config.robot.home_left_arm,
-            home_right_arm=config.robot.home_right_arm,
+            home_left_arm=startup_cfg.home_left_arm,
+            home_right_arm=startup_cfg.home_right_arm,
             tolerance_rad=config.home.tolerance_rad,
             stable_time_s=config.home.stable_time_s,
-            duration_s=config.home.duration_s,
-            max_joint_step_rad=config.home.max_joint_step_rad,
+            duration_s=startup_cfg.duration_s,
+            max_joint_step_rad=startup_cfg.max_joint_step_rad,
             control_dt=1.0 / config.robot.control_hz,
         )
         self._last_status = ""
         self._started = False
-        self._critical_abort = False
+        self._stop_requested = False
         self._last_hud: dict[str, str] | None = None
         self._last_button_log = ""
+        self._last_disk_check_s = 0.0
+        self._disk_free_gb = float("inf")
+        self._io_thread: threading.Thread | None = None
 
     def begin_tick(self, frame, now_s: float) -> TickRequest:
+        if self._stop_requested:
+            return TickRequest(stop=True)
         if not self._started:
             self.machine.on_startup_ok()
             self._started = True
@@ -109,16 +125,24 @@ class CollectionHooks(TeleopHooks):
                 flush=True,
             )
             edges = replace(edges, a_rising=False)
-        disk_ok = self.writer.disk_gb() >= self.config.storage.min_free_disk_gb
+        if now_s - self._last_disk_check_s >= 1.0:
+            self._disk_free_gb = self.writer.disk_gb()
+            self._last_disk_check_s = now_s
+        disk_ok = self._disk_free_gb >= self.config.storage.min_free_disk_gb
         if (
             self.machine.state == CollectionState.RECORDING
-            and self.writer.disk_gb() < self.config.storage.critical_free_disk_gb
+            and self._disk_free_gb < self.config.storage.critical_free_disk_gb
         ):
+            self.writer.mark_invalid("recording aborted because disk space became critical")
             transition = self.machine.abort_recording("LOW DISK SPACE")
             self._on_transition(transition, now_s)
-            self._critical_abort = True
         else:
-            transition = self.machine.on_buttons(edges, disk_ok=disk_ok)
+            save_ok = self.writer.quality is not None and self.writer.quality.valid
+            transition = self.machine.on_buttons(
+                edges,
+                disk_ok=disk_ok,
+                save_ok=save_ok,
+            )
             self._on_transition(transition, now_s)
 
         allow_teleop = self.machine.state in {
@@ -171,46 +195,37 @@ class CollectionHooks(TeleopHooks):
 
     def end_tick(self, tick: TeleopTick) -> None:
         if self.machine.state in {
+            CollectionState.RECORDING,
+            CollectionState.RETURNING_HOME,
+        } and self.recorder.enabled:
+            self._record_tick(tick)
+
+        if self.machine.state in {
             CollectionState.HOMING,
             CollectionState.HOMING_TO_RECORD,
             CollectionState.RETURNING_HOME,
         }:
             if not self.home.active:
                 self.home.request_home(tick.command_action, now_s=tick.monotonic_s)
-            elif self.home.is_home(tick.actual_action, tick.monotonic_s):
+            elif self.home.is_home(
+                tick.actual_action,
+                tick.monotonic_s,
+                require_measured=True,
+            ):
+                if self.home.arrived_by == "timeout":
+                    reason = "return to Home was not confirmed by measured lowstate"
+                    if self.machine.state == CollectionState.RETURNING_HOME:
+                        self.writer.mark_invalid(reason)
+                    else:
+                        print(f"[REAL-VLA] {reason}; collection stopped", flush=True)
+                        self._stop_requested = True
+                        return
                 transition = self.machine.on_home_arrived()
                 self._on_transition(transition, tick.monotonic_s)
 
         if self.writer.wait_finalized(timeout_s=0.0) and self.machine.state == CollectionState.RETURNING_HOME:
             transition = self.machine.on_writer_finalized()
             self._on_transition(transition, tick.monotonic_s)
-
-        if self.machine.state == CollectionState.RECORDING:
-            gripper = self.gripper.state
-            state = PolicyState(
-                timestamp_ns=tick.timestamp_ns,
-                arm_q=_arm_q7_from_action(tick.actual_action, self.config.active_arm),
-                gripper_state=gripper,
-            )
-            self.recorder.on_state(state)
-            arm_target = _arm_q7_from_targets(tick.published_arm, self.config.active_arm)
-            if arm_target is None:
-                arm_target = _arm_q7_from_action(tick.command_action, self.config.active_arm)
-            command = PublishedCommand(
-                timestamp_ns=tick.timestamp_ns,
-                arm_target_q=arm_target,
-                gripper_target=gripper,
-                hand_command_6d=np.asarray(
-                    gripper_to_hand6(
-                        self.hands_cfg, side=self.config.active_arm, gripper=gripper
-                    ),
-                    dtype=np.float64,
-                ),
-                quest_trigger=tick.left_trigger if self.config.active_arm == "left" else tick.right_trigger,
-                limited=bool(tick.published_arm),
-                motion_allowed=tick.left_active or tick.right_active,
-            )
-            self.recorder.on_action(command)
 
         if tick.monotonic_s - getattr(self, "_last_report", 0.0) >= 0.5:
             self._last_report = tick.monotonic_s
@@ -223,9 +238,76 @@ class CollectionHooks(TeleopHooks):
                 extra = f" {self.home.status_line()} via={self.home.arrived_by or '-'}"
             print(
                 f"[REAL-VLA] {self.machine.state.value} {self.cameras.health_line()} "
-                f"disk={self.writer.disk_gb():.1f}GB{extra}",
+                f"disk={self._disk_free_gb:.1f}GB{extra}",
                 flush=True,
             )
+
+    def _record_tick(self, tick: TeleopTick) -> None:
+        gripper = self.gripper.state
+        state_valid = not (
+            tick.state_feed_stale
+            or tick.fault_active
+            or tick.output_relinquished
+        )
+        if not state_valid:
+            reason = tick.fault_reason or "robot state/control output became invalid"
+            self.writer.mark_invalid(reason)
+        input_valid = not tick.input_stale or (
+            self.machine.state == CollectionState.RETURNING_HOME
+        )
+        if not input_valid:
+            self.writer.mark_invalid("Quest input became stale during teleoperation")
+        state = PolicyState(
+            timestamp_ns=tick.timestamp_ns,
+            arm_q=_arm_q7_from_action(tick.actual_action, self.config.active_arm),
+            gripper_state=gripper,
+            state_age_s=tick.state_age_s,
+            valid=state_valid,
+            phase=(
+                1
+                if self.machine.state == CollectionState.RETURNING_HOME
+                else 0
+            ),
+        )
+        self.recorder.on_state(state)
+        arm_target = _arm_q7_from_targets(tick.published_arm, self.config.active_arm)
+        published = arm_target is not None and tick.command_published
+        requested = _arm_q7_from_action(tick.command_action, self.config.active_arm)
+        if arm_target is None:
+            arm_target = requested
+        limited = published and not np.allclose(arm_target, requested, atol=1.0e-9)
+        if not published:
+            self.writer.mark_invalid("arm command was not published during recording")
+        command = PublishedCommand(
+            timestamp_ns=tick.timestamp_ns,
+            arm_target_q=arm_target,
+            gripper_target=gripper,
+            hand_command_6d=np.asarray(
+                gripper_to_hand6(
+                    self.hands_cfg, side=self.config.active_arm, gripper=gripper
+                ),
+                dtype=np.float64,
+            ),
+            quest_trigger=(
+                tick.left_trigger
+                if self.config.active_arm == "left"
+                else tick.right_trigger
+            ),
+            limited=limited,
+            motion_allowed=bool(
+                published
+                and tick.command_transport_ok
+                and (
+                    tick.left_active
+                    or tick.right_active
+                    or self.machine.state == CollectionState.RETURNING_HOME
+                )
+            ),
+            published=published,
+            fault_active=tick.fault_active,
+            input_valid=input_valid,
+        )
+        self.recorder.on_action(command)
 
     def _hud(self) -> dict[str, str]:
         state = self.machine.state
@@ -250,19 +332,19 @@ class CollectionHooks(TeleopHooks):
                 }
             return {
                 "title": "READY",
-                "detail": "Hold Grip to move both arms. A homes, then starts recording.",
+                "detail": f"Use {self.config.active_arm} Grip. A homes, then starts recording.",
                 "kind": "ready",
             }
         if state == CollectionState.RECORDING:
             return {
                 "title": "RECORDING",
-                "detail": "Both Grips move arms. Trigger grasps. B ends.",
+                "detail": "Grip moves the active arm. B records the automatic return home.",
                 "kind": "ready",
             }
         if state == CollectionState.RETURNING_HOME:
             return {
                 "title": "RETURNING HOME",
-                "detail": "Wait for home and writer finalize.",
+                "detail": "Recording automatic return home. Keep the area clear.",
                 "kind": "ready",
             }
         if state == CollectionState.REVIEW:
@@ -289,10 +371,11 @@ class CollectionHooks(TeleopHooks):
                 print(line, flush=True)
 
     def _on_transition(self, transition, now_s: float) -> None:
-        if transition.event is None:
-            return
+        del now_s
         if transition.message:
             print(f"[REAL-VLA] {transition.message}", flush=True)
+        if transition.event is None:
+            return
         if transition.event == CollectionEvent.HOME_DONE and self.home.arrived_by:
             print(
                 f"[REAL-VLA] home accepted via {self.home.arrived_by} "
@@ -304,9 +387,16 @@ class CollectionHooks(TeleopHooks):
             self.recorder.start()
             print(f"[REAL-VLA] recording episode_{self.writer.episode_id:06d}", flush=True)
         elif transition.event in {CollectionEvent.END, CollectionEvent.ABORT_RECORDING}:
+            if transition.event == CollectionEvent.END:
+                return
             self.recorder.stop()
             self.writer.stop_accepting(time.monotonic_ns())
             self.writer.finalize_async()
+        elif transition.event == CollectionEvent.RETURN_HOME_DONE:
+            if self.recorder.enabled:
+                self.recorder.stop()
+                self.writer.stop_accepting(time.monotonic_ns())
+                self.writer.finalize_async()
         elif transition.event == CollectionEvent.WRITER_DONE or (
             transition.state == CollectionState.REVIEW
         ):
@@ -320,13 +410,32 @@ class CollectionHooks(TeleopHooks):
         elif transition.event == CollectionEvent.LOW_DISK:
             print("[REAL-VLA] A ignored: LOW DISK SPACE", flush=True)
 
+    def shutdown(self) -> None:
+        """Finish any active writer without issuing additional robot motion."""
+        if self._io_thread is not None and self._io_thread.is_alive():
+            self._io_thread.join(timeout=20.0)
+        if self.recorder.enabled:
+            self.writer.mark_invalid("collection process stopped before B/home completion")
+            self.recorder.stop()
+            self.writer.stop_accepting(time.monotonic_ns())
+            self.writer.finalize_async()
+        elif self.writer._finalize_thread is None:
+            self.writer.cancel_prepared()
+        if self.writer.active_dir is not None and self.writer._finalize_thread is not None:
+            if not self.writer.wait_finalized(timeout_s=40.0):
+                print("[REAL-VLA] writer shutdown timed out; pending episode kept", flush=True)
+
     def _spawn_io(self, action: str) -> None:
-        threading.Thread(
+        if self._io_thread is not None and self._io_thread.is_alive():
+            print("[REAL-VLA] save/discard already in progress", flush=True)
+            return
+        self._io_thread = threading.Thread(
             target=self._io_worker,
             args=(action,),
             name=f"real-vla-{action}",
             daemon=True,
-        ).start()
+        )
+        self._io_thread.start()
 
     def _io_worker(self, action: str) -> None:
         try:
@@ -360,14 +469,14 @@ def _fmt_buttons(values: tuple[float, ...]) -> str:
 
 def _create_session_dir(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     path = root / f"session_{stamp}"
     path.mkdir(parents=True, exist_ok=False)
     (path / "session.json").write_text(
         json.dumps(
             {
                 "created": stamp,
-                "schema_version": "s4_real_vla_v1",
+                "schema_version": SCHEMA_VERSION,
             },
             indent=2,
         )
@@ -375,6 +484,20 @@ def _create_session_dir(root: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _acquire_collection_lock(root: Path):
+    handle = (root / ".collection.lock").open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"pid={os.getpid()} started={datetime.now().isoformat()}\n")
+    handle.flush()
+    return handle
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -390,12 +513,17 @@ def main(argv: list[str] | None = None) -> int:
     # Pink's URDF range. Skipping it seeds IK from the measured pose and can
     # crash before HomeManager ever runs.
     teleop_args.skip_homing = False
-    teleop_args.enabled_arms = "both"
-    if not teleop_args.shadow:
-        teleop_args.arm_output = True
+    teleop_args.enabled_arms = collection.active_arm
+    if not teleop_args.shadow and not teleop_args.arm_output:
+        print("[REAL-VLA] refusing live collection without explicit --arm-output", flush=True)
+        return 2
 
     session_root = collection.storage.root
     session_root.mkdir(parents=True, exist_ok=True)
+    collection_lock = _acquire_collection_lock(session_root)
+    if collection_lock is None:
+        print("[REAL-VLA] refusing to start: another collector holds the lock", flush=True)
+        return 2
     free_gb = shutil.disk_usage(session_root).free / (1024 ** 3)
     if free_gb < collection.storage.min_free_disk_gb:
         print(
@@ -405,21 +533,32 @@ def main(argv: list[str] | None = None) -> int:
         )
     if free_gb < collection.storage.critical_free_disk_gb:
         print("[REAL-VLA] refusing to start: critical disk space", flush=True)
+        collection_lock.close()
         return 2
 
+    recovered = recover_orphaned_sessions(collection.storage.root)
+    if recovered:
+        print(f"[REAL-VLA] recovered {len(recovered)} orphaned pending episodes", flush=True)
     session_dir = args.session_dir or _create_session_dir(collection.storage.root)
     print(f"[REAL-VLA] session={session_dir}", flush=True)
-    print(f"[REAL-VLA] task={collection.task.text!r} record_arm={collection.active_arm} teleop_arms=both", flush=True)
+    print(
+        f"[REAL-VLA] task={collection.task.text!r} "
+        f"record_arm={collection.active_arm} teleop_arms={collection.active_arm}",
+        flush=True,
+    )
     config = load_hardware_teleop_config(teleop_args.hardware_config)
     cameras = CameraManager(collection.cameras, active_arm=collection.active_arm)
     writer = EpisodeWriter(collection, session_dir, PROJECT_ROOT)
-    hooks = CollectionHooks(collection, cameras, writer, hands_cfg=config.hands)
+    hooks = CollectionHooks(
+        collection,
+        cameras,
+        writer,
+        hands_cfg=config.hands,
+        startup_cfg=config.startup,
+    )
     try:
         cameras.start()
         print(f"[REAL-VLA] cameras={list(cameras.names)} warmup done", flush=True)
-        recovered = hooks.writer.recover_incomplete()
-        if recovered:
-            print(f"[REAL-VLA] recovered incomplete: {recovered}", flush=True)
         first_id = hooks.writer.next_episode_id()
         hooks.writer.prepare_episode(first_id, cameras.readers)
         if not hooks.writer.is_prepared:
@@ -430,7 +569,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print(
             f"[REAL-VLA] recorder ready episode_{first_id:06d}  "
-            "READY: both-arm teleop  A: home then record  B: end",
+            f"READY: {collection.active_arm}-arm teleop  A: home then record  B: record return home",
             flush=True,
         )
         if teleop_args.ik_backend is not None:
@@ -444,12 +583,14 @@ def main(argv: list[str] | None = None) -> int:
         traceback.print_exc()
         return 1
     finally:
+        hooks.shutdown()
         try:
             cameras.close()
         except KeyboardInterrupt:
             print("[REAL-VLA] camera close interrupted", flush=True)
         if writer.active_dir is not None and not writer.wait_finalized(timeout_s=0.0):
             print("[REAL-VLA] pending episode left in pending/ for recovery", flush=True)
+        collection_lock.close()
     return 0
 
 

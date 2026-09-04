@@ -12,6 +12,10 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from real_vla.collection.episode_writer import (  # noqa: E402
+    _decoded_video_frames,
+    _video_openable,
+)
 from real_vla.collection.quality import evaluate_episode  # noqa: E402
 from real_vla.config_loader import load_collection_config  # noqa: E402
 from real_vla.data.episode_reader import load_meta, load_trajectory  # noqa: E402
@@ -34,10 +38,13 @@ def main(argv: list[str] | None = None) -> int:
         if key.endswith("_capture_seq") and key.startswith("camera_"):
             name = key[len("camera_") : -len("_capture_seq")]
             camera_seq[name] = value
-    video_ok = {
-        name: (args.episode_dir / f"{name}.mkv").is_file()
-        or (args.episode_dir / "head.mkv").is_file()
+    video_paths = {
+        name: args.episode_dir / ("head.mkv" if name == "head" else f"{name}.mkv")
         for name in camera_ts
+    }
+    video_ok = {name: _video_openable(path) for name, path in video_paths.items()}
+    decoded_frames = {
+        name: _decoded_video_frames(path) for name, path in video_paths.items()
     }
     result = evaluate_episode(
         quality=config.quality,
@@ -50,6 +57,22 @@ def main(argv: list[str] | None = None) -> int:
         camera_seq=camera_seq,
         writer_drops={k: int(v) for k, v in dict(meta.get("writer_drops") or {}).items()},
         video_ok=video_ok,
+        decoded_video_frames=decoded_frames,
+        state_valid=np.asarray(
+            traj.get("robot_state_valid", np.ones_like(traj.get("robot_state_timestamp_ns", np.zeros((0,)))))
+        ),
+        action_published=np.asarray(
+            traj.get("action_published", np.ones_like(traj.get("action_timestamp_ns", np.zeros((0,)))))
+        ),
+        fault_active=np.asarray(
+            traj.get("action_fault_active", np.zeros_like(traj.get("action_timestamp_ns", np.zeros((0,)))))
+        ),
+        input_valid=np.asarray(
+            traj.get("action_input_valid", np.ones_like(traj.get("action_timestamp_ns", np.zeros((0,)))))
+        ),
+        lowdim_drops=int(meta.get("lowdim_drops", 0)),
+        t_start_ns=int(meta.get("t_start_ns", 0)),
+        t_end_ns=int(meta.get("t_end_ns", 0)),
     )
     print(result.label)
     for note in result.notes:

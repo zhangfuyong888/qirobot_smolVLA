@@ -28,6 +28,7 @@ class CollectionEvent(str, Enum):
     PRE_RECORD_HOME = "PRE_RECORD_HOME"
     START = "START"
     END = "END"
+    RETURN_HOME_DONE = "RETURN_HOME_DONE"
     WRITER_DONE = "WRITER_DONE"
     SAVE = "SAVE"
     DISCARD = "DISCARD"
@@ -72,7 +73,11 @@ class CollectionStateMachine:
             )
         if self.state == CollectionState.RETURNING_HOME:
             self.robot_at_home = True
-            return self._maybe_review("robot at home")
+            return Transition(
+                self.state,
+                CollectionEvent.RETURN_HOME_DONE,
+                "robot at home; closing recorded episode",
+            )
         return Transition(self.state, None)
 
     def on_writer_finalized(self) -> Transition:
@@ -81,7 +86,13 @@ class CollectionStateMachine:
         self.writer_finalized = True
         return self._maybe_review("episode writer finalized")
 
-    def on_buttons(self, buttons: QuestButtons, *, disk_ok: bool = True) -> Transition:
+    def on_buttons(
+        self,
+        buttons: QuestButtons,
+        *,
+        disk_ok: bool = True,
+        save_ok: bool = True,
+    ) -> Transition:
         if self.state == CollectionState.READY and buttons.a_rising:
             if not disk_ok:
                 return Transition(self.state, CollectionEvent.LOW_DISK, "A ignored: LOW DISK SPACE")
@@ -99,6 +110,12 @@ class CollectionStateMachine:
                 "END  returning home",
             )
         if self.state == CollectionState.REVIEW and buttons.x_rising:
+            if not save_ok:
+                return Transition(
+                    self.state,
+                    None,
+                    "X ignored: episode is invalid; hold Y to discard",
+                )
             return self._go(
                 CollectionState.READY,
                 CollectionEvent.SAVE,

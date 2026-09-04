@@ -48,10 +48,24 @@ def evaluate_episode(
     camera_seq: dict[str, np.ndarray],
     writer_drops: dict[str, int],
     video_ok: dict[str, bool],
+    decoded_video_frames: dict[str, int] | None = None,
+    state_valid: np.ndarray | None = None,
+    action_published: np.ndarray | None = None,
+    fault_active: np.ndarray | None = None,
+    input_valid: np.ndarray | None = None,
+    lowdim_drops: int = 0,
+    t_start_ns: int | None = None,
+    t_end_ns: int | None = None,
+    forced_invalid_notes: list[str] | None = None,
 ) -> QualityResult:
     notes: list[str] = []
     warning = False
     valid = True
+    decoded_video_frames = decoded_video_frames or {}
+
+    for note in forced_invalid_notes or []:
+        valid = False
+        notes.append(str(note))
 
     if duration_s < quality.min_duration_s:
         valid = False
@@ -63,6 +77,42 @@ def evaluate_episode(
     if action_q.size and not np.isfinite(action_q).all():
         valid = False
         notes.append("action contains non-finite values")
+
+    if state_ts.size != action_ts.size:
+        valid = False
+        notes.append(f"state/action count mismatch {state_ts.size}/{action_ts.size}")
+    elif state_ts.size and not np.array_equal(
+        np.asarray(state_ts, dtype=np.int64),
+        np.asarray(action_ts, dtype=np.int64),
+    ):
+        valid = False
+        notes.append("state/action timestamps do not match")
+    if state_valid is not None and (
+        np.asarray(state_valid).size != state_ts.size
+        or not np.all(np.asarray(state_valid, dtype=np.float64) > 0.5)
+    ):
+        valid = False
+        notes.append("robot state contains stale or invalid samples")
+    if action_published is not None and (
+        np.asarray(action_published).size != action_ts.size
+        or not np.all(np.asarray(action_published, dtype=np.float64) > 0.5)
+    ):
+        valid = False
+        notes.append("action contains commands that were not published")
+    if fault_active is not None and np.any(
+        np.asarray(fault_active, dtype=np.float64) > 0.5
+    ):
+        valid = False
+        notes.append("controller fault occurred during recording")
+    if input_valid is not None and (
+        np.asarray(input_valid).size != action_ts.size
+        or not np.all(np.asarray(input_valid, dtype=np.float64) > 0.5)
+    ):
+        valid = False
+        notes.append("Quest input contains stale samples during teleoperation")
+    if int(lowdim_drops) > 0:
+        valid = False
+        notes.append(f"low-dimensional writer dropped {int(lowdim_drops)} samples")
 
     for label, stamps in (("state", state_ts), ("action", action_ts), *camera_ts.items()):
         array = np.asarray(stamps, dtype=np.int64)
@@ -84,9 +134,25 @@ def evaluate_episode(
             if array.size < quality.min_camera_frames:
                 valid = False
                 notes.append(f"{label} frames {array.size} below {quality.min_camera_frames}")
-        elif label == "state" and gap > quality.robot_state_invalid_ms:
+        elif label in {"state", "action"} and gap > quality.robot_state_invalid_ms:
             valid = False
-            notes.append(f"robot state gap {gap:.0f}ms")
+            notes.append(f"{label} gap {gap:.0f}ms")
+
+        coverage_limit_ms = (
+            quality.camera_gap_invalid_ms
+            if label in camera_ts
+            else quality.robot_state_invalid_ms
+        )
+        if t_start_ns is not None and array.size:
+            start_gap_ms = (int(array[0]) - int(t_start_ns)) / 1.0e6
+            if start_gap_ms > coverage_limit_ms:
+                valid = False
+                notes.append(f"{label} starts {start_gap_ms:.0f}ms after episode")
+        if t_end_ns is not None and array.size:
+            end_gap_ms = (int(t_end_ns) - int(array[-1])) / 1.0e6
+            if end_gap_ms > coverage_limit_ms:
+                valid = False
+                notes.append(f"{label} ends {end_gap_ms:.0f}ms before episode")
 
     if len(camera_ts) < 2:
         valid = False
@@ -109,5 +175,12 @@ def evaluate_episode(
         if not ok:
             valid = False
             notes.append(f"{name} video cannot be opened")
+        decoded = decoded_video_frames.get(name)
+        expected = np.asarray(camera_ts.get(name, ())).size
+        if decoded is not None and int(decoded) != int(expected):
+            valid = False
+            notes.append(
+                f"{name} decoded frames {int(decoded)} do not match timestamps {int(expected)}"
+            )
 
     return QualityResult(valid=valid, warning=warning, notes=notes)

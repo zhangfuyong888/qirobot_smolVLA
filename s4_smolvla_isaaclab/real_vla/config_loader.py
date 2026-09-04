@@ -43,8 +43,6 @@ class RobotPolicyConfig:
     arm_dim: int
     gripper_dim: int
     action_semantics: str
-    home_left_arm: tuple[float, ...]
-    home_right_arm: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -101,8 +99,6 @@ class HomeConfig:
     gripper: str
     tolerance_rad: float
     stable_time_s: float
-    duration_s: float
-    max_joint_step_rad: float
 
 
 @dataclass(frozen=True)
@@ -163,7 +159,7 @@ def _camera_stream(raw: dict[str, Any], name: str) -> CameraStreamConfig:
     serial = str(raw.get("serial", "")).strip()
     if not serial:
         raise ValueError(f"cameras.{name}.serial is required")
-    return CameraStreamConfig(
+    stream = CameraStreamConfig(
         name=name,
         enabled=bool(raw.get("enabled", True)),
         serial=serial,
@@ -172,6 +168,9 @@ def _camera_stream(raw: dict[str, Any], name: str) -> CameraStreamConfig:
         height=int(raw.get("height", 480)),
         fps=int(raw.get("fps", 30)),
     )
+    if stream.width <= 0 or stream.height <= 0 or stream.fps <= 0:
+        raise ValueError(f"cameras.{name} dimensions and fps must be positive")
+    return stream
 
 
 def load_collection_config(path: Path | None = None) -> CollectionConfig:
@@ -207,6 +206,11 @@ def load_collection_config(path: Path | None = None) -> CollectionConfig:
         wrist_right=_camera_stream(cameras_raw.get("wrist_right", {}), "wrist_right"),
         active_wrist=str(cameras_raw.get("active_wrist", "auto")),
     )
+    enabled_streams = cameras.enabled_streams(active_arm)
+    if len(enabled_streams) != 2 or enabled_streams[0].name != "head":
+        raise ValueError("collection requires the head and active wrist cameras")
+    if len({stream.serial for stream in enabled_streams}) != len(enabled_streams):
+        raise ValueError("enabled cameras must have unique serial numbers")
     storage_raw = raw.get("storage") or {}
     quality_raw = raw.get("quality") or {}
     gripper_raw = raw.get("gripper") or {}
@@ -220,17 +224,28 @@ def load_collection_config(path: Path | None = None) -> CollectionConfig:
     if not 0.0 <= open_threshold < grasp_threshold <= 1.0:
         raise ValueError("gripper thresholds must satisfy 0 <= open < grasp <= 1")
 
+    task_text = str((raw.get("task") or {}).get("text", "")).strip()
+    arm_dim = int((robot_raw.get("state") or {}).get("arm_dim", 7))
+    gripper_dim = int((robot_raw.get("state") or {}).get("gripper_dim", 1))
+    action_semantics = str(
+        (robot_raw.get("action") or {}).get("semantics", "absolute_joint_target")
+    )
+    if not task_text:
+        raise ValueError("task.text is required")
+    if arm_dim != 7 or gripper_dim != 1:
+        raise ValueError("real_vla v1 requires a 7D arm and 1D gripper")
+    if action_semantics != "absolute_joint_target":
+        raise ValueError("real_vla v1 action semantics must be absolute_joint_target")
+
     return CollectionConfig(
         schema_version=schema_version,
-        task=TaskConfig(text=str((raw.get("task") or {}).get("text", "")).strip()),
+        task=TaskConfig(text=task_text),
         robot=RobotPolicyConfig(
             active_arm=active_arm,
             control_hz=float(robot_raw.get("control_hz", 30)),
-            arm_dim=int((robot_raw.get("state") or {}).get("arm_dim", 7)),
-            gripper_dim=int((robot_raw.get("state") or {}).get("gripper_dim", 1)),
-            action_semantics=str((robot_raw.get("action") or {}).get("semantics", "absolute_joint_target")),
-            home_left_arm=_float7(robot_raw.get("home_left_arm"), "robot.home_left_arm"),
-            home_right_arm=_float7(robot_raw.get("home_right_arm"), "robot.home_right_arm"),
+            arm_dim=arm_dim,
+            gripper_dim=gripper_dim,
+            action_semantics=action_semantics,
         ),
         cameras=cameras,
         gripper=GripperConfig(
@@ -242,8 +257,6 @@ def load_collection_config(path: Path | None = None) -> CollectionConfig:
             gripper=str(home_raw.get("gripper", "open")),
             tolerance_rad=float(home_raw.get("tolerance_rad", 0.03)),
             stable_time_s=float(home_raw.get("stable_time_s", 0.3)),
-            duration_s=float(home_raw.get("duration_s", 6.0)),
-            max_joint_step_rad=float(home_raw.get("max_joint_step_rad", 0.025)),
         ),
         buttons=ButtonsConfig(
             discard_hold_s=float(buttons_raw.get("discard_hold_s", 0.6)),

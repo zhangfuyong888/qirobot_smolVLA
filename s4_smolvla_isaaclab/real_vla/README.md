@@ -4,15 +4,15 @@
 
 当前里程碑：采集 raw episode。LeRobot 转换、训练、推理只留接口。
 
-## 冻结规格（v1）
+## 冻结规格（v2）
 
-- 任务：拉开抽屉（固定文本写在 episode metadata）
+- 任务：接近把手、抓紧、拉开、推回关闭、松手撤离并自动回 Home
 - Policy state/action：**8D** = 实测臂 7 + 逻辑夹爪 1（OPEN=0 / GRASP=1）
 - 真机手指仍然发 **6D** HandsCmd，由 `gripper_adapter` 展开
 - 相机：头部 D435i + 当前臂腕部 D405
 - 控制保持现有 30 Hz；raw 按真实时间戳异步落盘
 - 图片：每路一个 `.mkv`；低维：`trajectory.h5` 或 fallback `trajectory.npz`
-- ABXY：A 开始 / B 结束并回 Home / X 保存 / Y 长按丢弃
+- ABXY：A 回 Home 后开始 / B 停止人工遥操并继续记录自动回 Home / X 保存 / Y 长按丢弃
 
 ## 启动
 
@@ -34,7 +34,11 @@ sudo -E bash run.sh real-collect --arm-output --input-debug
 
 Quest 仍打开 `https://192.168.110.35:8443`。
 
-流程：自动 Home → A 开始采 → 右手 Grip 遥操、Trigger 抓握 → B 停止并回 Home → 看 QUALITY → X 保存或 Y 长按丢弃。
+流程：自动 Home → A 再次确认 Home 后开始采集 → 右手 Grip 遥操、Trigger 抓握 → 拉开抽屉 → 推回关闭 → 松手并撤开 → B 停止人工遥操 → 系统继续记录自动回 Home → 看 QUALITY → X 保存或 Y 长按丢弃。
+
+只有显式传入 `--arm-output` 才允许真机输出。采集只开放 `robot.yaml` 指定的活动臂，另一只手臂保持在已有命令位置。state/action 任一失效、控制 fault、低维丢样或视频帧数不一致都会令 episode 变为 `QUALITY INVALID`，invalid episode 不能按 X 保存。
+
+每个 episode 同时保存采集配置快照、Git commit、dirty 标志、采集代码 SHA256，以及 `collection_phase`（`0=teleop`、`1=return_home`）。异常退出会在下次启动时跨 session 回收 pending episode。
 
 数据默认写到 `/home/coral/real_vla_data/session_*/episodes/`。
 

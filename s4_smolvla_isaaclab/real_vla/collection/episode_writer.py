@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -16,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from real_vla.cameras.camera_device import CameraReader
+from real_vla import SCHEMA_VERSION
 from real_vla.collection.quality import QualityResult, evaluate_episode
 from real_vla.collection.schema import CameraFrame, EpisodeMeta, PolicyState, PublishedCommand
 from real_vla.collection.sync import alignment_report
@@ -45,6 +47,108 @@ def _git_commit(project_root: Path) -> str:
     if result.returncode != 0:
         return ""
     return result.stdout.strip()
+
+
+def _git_dirty(project_root: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=str(project_root),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        return result.returncode != 0 or bool(result.stdout.strip())
+    except Exception:
+        return True
+
+
+def _source_sha256(project_root: Path) -> str:
+    digest = hashlib.sha256()
+    roots = [
+        project_root / "real_vla",
+        project_root / "hardware_teleop",
+        project_root / "teleoperation",
+    ]
+    files = [project_root / "run.sh"]
+    for root in roots:
+        files.extend(root.rglob("*.py"))
+        files.extend(root.rglob("*.yaml"))
+        files.extend(root.rglob("*.html"))
+    for path in sorted({path for path in files if path.is_file()}):
+        if "__pycache__" in path.parts or "ros_ws" in path.parts:
+            continue
+        digest.update(str(path.relative_to(project_root)).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def recover_orphaned_sessions(storage_root: Path) -> list[Path]:
+    """Move pending episodes from previous, no-longer-live sessions aside."""
+    recovered: list[Path] = []
+    for path in sorted(storage_root.glob("session_*/pending/episode_*.tmp")):
+        recovered_dir = path.parents[1] / "recovered"
+        recovered_dir.mkdir(parents=True, exist_ok=True)
+        meta_path = path / "meta.json"
+        meta_payload: dict[str, Any] | None = None
+        if meta_path.is_file():
+            try:
+                meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                meta_payload = None
+        finalized = meta_payload is not None and (
+            (path / "trajectory.h5").is_file()
+            or (path / "trajectory.npz").is_file()
+        )
+        suffix = ".review" if finalized else ".incomplete"
+        dest = recovered_dir / path.name.replace(".tmp", suffix)
+        if dest.exists():
+            dest = dest.with_name(dest.name + f".{int(time.time())}")
+        shutil.move(str(path), str(dest))
+        meta = dest / "meta.json"
+        if meta_payload is not None:
+            payload = meta_payload
+            payload["result"] = (
+                "recovered_pending_review" if finalized else "recovered_incomplete"
+            )
+            payload["recovered_path"] = str(dest)
+            meta.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        else:
+            meta.write_text(
+                json.dumps(
+                    {
+                        "schema_version": SCHEMA_VERSION,
+                        "result": "recovered_incomplete",
+                        "path": str(dest),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        manifest = dest.parents[1] / "manifest.jsonl"
+        with manifest.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "episode": path.name,
+                        "result": (
+                            "recovered_pending_review"
+                            if finalized
+                            else "recovered_incomplete"
+                        ),
+                        "path": str(dest),
+                    }
+                )
+                + "\n"
+            )
+            handle.flush()
+            os.fsync(handle.fileno())
+        recovered.append(dest)
+    return recovered
 
 
 def _warm_video_codec(codec: str) -> None:
@@ -97,6 +201,26 @@ def _video_openable(path: Path) -> bool:
         return False
 
 
+def _decoded_video_frames(path: Path) -> int:
+    """Decode the complete stream so timestamps cannot outnumber real frames."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        return 0
+    try:
+        import cv2
+
+        capture = cv2.VideoCapture(str(path))
+        count = 0
+        while capture.isOpened():
+            ok, _frame = capture.read()
+            if not ok:
+                break
+            count += 1
+        capture.release()
+        return count
+    except Exception:
+        return 0
+
+
 def _write_trajectory(path: Path, payload: dict[str, Any]) -> str:
     try:
         import h5py
@@ -144,6 +268,7 @@ class _VideoWriterThread(threading.Thread):
         self.used_codec = ""
         self.error: str | None = None
         self.ready = threading.Event()
+        self.stop_requested = threading.Event()
 
     def submit(self, frame: CameraFrame) -> bool:
         try:
@@ -154,10 +279,7 @@ class _VideoWriterThread(threading.Thread):
             return False
 
     def request_stop(self) -> None:
-        try:
-            self.queue.put_nowait(_VideoJob(frame=None, stop=True))
-        except queue.Full:
-            self.queue.put(_VideoJob(frame=None, stop=True))
+        self.stop_requested.set()
 
     def run(self) -> None:
         writer = None
@@ -167,10 +289,14 @@ class _VideoWriterThread(threading.Thread):
             )
             self.ready.set()
             with self.timestamps_path.open("ab") as ts_file, self.seq_path.open("ab") as seq_file:
-                while True:
-                    job = self.queue.get()
+                while not self.stop_requested.is_set() or not self.queue.empty():
+                    try:
+                        job = self.queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
                     if job.stop:
-                        break
+                        self.stop_requested.set()
+                        continue
                     frame = job.frame
                     if frame is None:
                         continue
@@ -182,6 +308,10 @@ class _VideoWriterThread(threading.Thread):
                     writer.write(image)
                     ts_file.write(np.int64(frame.timestamp_ns).tobytes())
                     seq_file.write(np.int32(frame.capture_seq).tobytes())
+                ts_file.flush()
+                seq_file.flush()
+                os.fsync(ts_file.fileno())
+                os.fsync(seq_file.fileno())
         except Exception as exc:
             self.error = str(exc)
             self.ready.set()
@@ -215,13 +345,17 @@ class EpisodeWriter:
         self._drop_counters: dict[str, list[int]] = {}
         self._camera_readers: dict[str, CameraReader] = {}
         self._lowdim_queue: queue.Queue[tuple[str, np.ndarray] | None] = queue.Queue(maxsize=4096)
+        self._lowdim_stop = threading.Event()
         self._lowdim_thread: threading.Thread | None = None
         self._lowdim_drops = 0
         self._finalize_thread: threading.Thread | None = None
         self._finalized = threading.Event()
         self._finalize_error: str | None = None
+        self._forced_invalid_notes: list[str] = []
         self.quality: QualityResult | None = None
         self._git_commit = _git_commit(project_root)
+        self._git_dirty = _git_dirty(project_root)
+        self._source_hash = _source_sha256(project_root)
         self._prepared = False
         self.prepare_error = ""
         _warm_video_codec(self.config.storage.video_codec)
@@ -293,9 +427,21 @@ class EpisodeWriter:
         if self.active_dir.exists():
             shutil.rmtree(self.active_dir)
         self.active_dir.mkdir(parents=True)
+        snapshot_dir = self.active_dir / "config_snapshot"
+        snapshot_dir.mkdir()
+        snapshot_sources = list((self.config.source_path.parent).glob("*.yaml"))
+        snapshot_sources.append(self.config.hardware_teleop_config)
+        for source in snapshot_sources:
+            if source.is_file():
+                name = source.name
+                if source == self.config.hardware_teleop_config:
+                    name = "hardware_teleop_" + name
+                shutil.copy2(source, snapshot_dir / name)
         self._state_path = self.active_dir / "robot_state.bin"
         self._action_path = self.active_dir / "action.bin"
         self._lowdim_drops = 0
+        self._lowdim_queue = queue.Queue(maxsize=4096)
+        self._lowdim_stop.clear()
         self._lowdim_thread = threading.Thread(target=self._lowdim_loop, name="lowdim-writer", daemon=True)
         self._lowdim_thread.start()
         self._camera_readers = dict(cameras)
@@ -327,22 +473,56 @@ class EpisodeWriter:
             cameras=list(cameras.keys()),
             control_hz=self.config.robot.control_hz,
             git_commit=self._git_commit,
+            git_dirty=self._git_dirty,
+            source_sha256=self._source_hash,
+            camera_specs={
+                name: {
+                    "serial": reader.config.serial,
+                    "model": reader.config.model,
+                    "width": reader.config.width,
+                    "height": reader.config.height,
+                    "fps": reader.config.fps,
+                }
+                for name, reader in cameras.items()
+            },
             t_start_ns=0,
         )
         self._finalized.clear()
         self._finalize_error = None
+        self._forced_invalid_notes = []
         self.quality = None
         deadline = time.monotonic() + max(float(wait_s), 0.1)
         for thread in self._video_threads.values():
             remaining = max(0.05, deadline - time.monotonic())
             if not thread.ready.wait(timeout=remaining):
                 self.prepare_error = f"video writer {thread.camera_name} did not open in time"
+                self._stop_prepared_writers()
                 return self.active_dir
             if thread.error:
                 self.prepare_error = f"{thread.camera_name}: {thread.error}"
+                self._stop_prepared_writers()
                 return self.active_dir
         self._prepared = True
         return self.active_dir
+
+    def _stop_prepared_writers(self) -> None:
+        self._lowdim_stop.set()
+        for thread in self._video_threads.values():
+            thread.request_stop()
+        if self._lowdim_thread is not None:
+            self._lowdim_thread.join(timeout=5.0)
+        for thread in self._video_threads.values():
+            thread.join(timeout=5.0)
+
+    def cancel_prepared(self) -> None:
+        """Close and remove an empty pre-opened episode during clean shutdown."""
+        if self._recording or self._finalize_thread is not None:
+            return
+        self._prepared = False
+        self._stop_prepared_writers()
+        if self.active_dir is not None:
+            shutil.rmtree(self.active_dir, ignore_errors=True)
+        self.active_dir = None
 
     def begin_recording(self) -> None:
         """Arm capture. Cheap enough for the 30 Hz control thread."""
@@ -384,7 +564,16 @@ class EpisodeWriter:
         if not self._recording or (self._t_end_ns and state.timestamp_ns > self._t_end_ns):
             return
         record = np.concatenate(
-            [[float(state.timestamp_ns)], state.arm_q.astype(np.float64).reshape(7), [float(state.gripper_state)]]
+            [
+                [float(state.timestamp_ns)],
+                state.arm_q.astype(np.float64).reshape(7),
+                [
+                    float(state.gripper_state),
+                    float(state.state_age_s),
+                    float(state.valid),
+                    float(state.phase),
+                ],
+            ]
         )
         self._submit_lowdim("state", record)
 
@@ -397,16 +586,27 @@ class EpisodeWriter:
                 command.arm_target_q.astype(np.float64).reshape(7),
                 [float(command.gripper_target)],
                 command.hand_command_6d.astype(np.float64).reshape(6),
-                [float(command.quest_trigger)],
+                [
+                    float(command.quest_trigger),
+                    float(command.published),
+                    float(command.limited),
+                    float(command.motion_allowed),
+                    float(command.fault_active),
+                    float(command.input_valid),
+                ],
             ]
         )
         self._submit_lowdim("action", record)
 
     def _lowdim_loop(self) -> None:
-        while True:
-            item = self._lowdim_queue.get()
+        while not self._lowdim_stop.is_set() or not self._lowdim_queue.empty():
+            try:
+                item = self._lowdim_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
             if item is None:
-                break
+                self._lowdim_stop.set()
+                continue
             kind, record = item
             path = self._state_path if kind == "state" else self._action_path
             if path is None:
@@ -427,7 +627,12 @@ class EpisodeWriter:
             reader.set_writer(None)
         for thread in self._video_threads.values():
             thread.request_stop()
-        self._lowdim_queue.put(None)
+        self._lowdim_stop.set()
+
+    def mark_invalid(self, reason: str) -> None:
+        message = str(reason).strip()
+        if message and message not in self._forced_invalid_notes:
+            self._forced_invalid_notes.append(message)
 
     def finalize_async(self) -> None:
         if self._finalize_thread is not None:
@@ -443,7 +648,10 @@ class EpisodeWriter:
             return np.zeros((0, width), dtype=np.float64)
         raw = np.fromfile(path, dtype="<f8")
         if raw.size % width != 0:
-            raw = raw[: raw.size - (raw.size % width)]
+            raise RuntimeError(
+                f"partial low-dimensional record in {path.name}: "
+                f"{raw.size} values is not divisible by {width}"
+            )
         return raw.reshape((-1, width))
 
     def _load_i64(self, path: Path) -> np.ndarray:
@@ -460,19 +668,25 @@ class EpisodeWriter:
         try:
             if self._lowdim_thread is not None:
                 self._lowdim_thread.join(timeout=5.0)
+                if self._lowdim_thread.is_alive():
+                    raise RuntimeError("low-dimensional writer did not stop")
             for thread in self._video_threads.values():
                 thread.join(timeout=30.0)
+                if thread.is_alive():
+                    raise RuntimeError(f"video writer {thread.camera_name} did not stop")
             assert self.active_dir is not None
-            state = self._load_bin(self.active_dir / "robot_state.bin", 9)
-            action = self._load_bin(self.active_dir / "action.bin", 16)
+            state = self._load_bin(self.active_dir / "robot_state.bin", 12)
+            action = self._load_bin(self.active_dir / "action.bin", 21)
             camera_ts = {}
             camera_seq = {}
             video_ok = {}
+            decoded_frames = {}
             writer_drops = {}
             for name, thread in self._video_threads.items():
                 camera_ts[name] = self._load_i64(self.active_dir / f"{name}_timestamp_ns.bin")
                 camera_seq[name] = self._load_i32(self.active_dir / f"{name}_capture_seq.bin")
                 video_ok[name] = _video_openable(thread.path) and thread.error is None
+                decoded_frames[name] = _decoded_video_frames(thread.path)
                 writer_drops[name] = int(self._drop_counters.get(name, [0])[0])
             duration_s = max(self._t_end_ns - self.meta.t_start_ns, 0) / 1.0e9
             quality = evaluate_episode(
@@ -486,6 +700,15 @@ class EpisodeWriter:
                 camera_seq=camera_seq,
                 writer_drops=writer_drops,
                 video_ok=video_ok,
+                decoded_video_frames=decoded_frames,
+                state_valid=state[:, 10] if state.size else np.zeros((0,)),
+                action_published=action[:, 16] if action.size else np.zeros((0,)),
+                fault_active=action[:, 19] if action.size else np.zeros((0,)),
+                input_valid=action[:, 20] if action.size else np.zeros((0,)),
+                lowdim_drops=self._lowdim_drops,
+                t_start_ns=self.meta.t_start_ns,
+                t_end_ns=self._t_end_ns,
+                forced_invalid_notes=self._forced_invalid_notes,
             )
             head_ts = camera_ts.get("head", np.zeros((0,), dtype=np.int64))
             wrist_key = next((key for key in camera_ts if key.startswith("wrist")), "wrist")
@@ -502,11 +725,19 @@ class EpisodeWriter:
                 "robot_state_timestamp_ns": state[:, 0].astype(np.int64) if state.size else np.zeros((0,), dtype=np.int64),
                 "robot_state_arm_q": state[:, 1:8] if state.size else np.zeros((0, 7)),
                 "robot_state_gripper": state[:, 8:9] if state.size else np.zeros((0, 1)),
+                "robot_state_age_s": state[:, 9:10] if state.size else np.zeros((0, 1)),
+                "robot_state_valid": state[:, 10:11] if state.size else np.zeros((0, 1)),
+                "collection_phase": state[:, 11:12] if state.size else np.zeros((0, 1)),
                 "action_timestamp_ns": action[:, 0].astype(np.int64) if action.size else np.zeros((0,), dtype=np.int64),
                 "action_arm_target_q": action[:, 1:8] if action.size else np.zeros((0, 7)),
                 "action_gripper_target": action[:, 8:9] if action.size else np.zeros((0, 1)),
                 "debug_hand_command_6d": action[:, 9:15] if action.size else np.zeros((0, 6)),
                 "debug_quest_trigger": action[:, 15:16] if action.size else np.zeros((0, 1)),
+                "action_published": action[:, 16:17] if action.size else np.zeros((0, 1)),
+                "action_limited": action[:, 17:18] if action.size else np.zeros((0, 1)),
+                "action_motion_allowed": action[:, 18:19] if action.size else np.zeros((0, 1)),
+                "action_fault_active": action[:, 19:20] if action.size else np.zeros((0, 1)),
+                "action_input_valid": action[:, 20:21] if action.size else np.zeros((0, 1)),
             }
             for name, stamps in camera_ts.items():
                 payload[f"camera_{name}_timestamp_ns"] = stamps.astype(np.int64)
@@ -518,6 +749,10 @@ class EpisodeWriter:
             self.meta.quality_warning = quality.warning
             self.meta.quality_notes = list(quality.notes)
             self.meta.writer_drops = writer_drops
+            self.meta.camera_stats = {
+                name: reader.buffer.stats(time.monotonic_ns())
+                for name, reader in self._camera_readers.items()
+            }
             self.meta.alignment = alignment
             self.meta.result = "pending"
             meta_payload = asdict(self.meta)
@@ -525,6 +760,8 @@ class EpisodeWriter:
             meta_payload["video_codecs"] = {
                 name: thread.used_codec for name, thread in self._video_threads.items()
             }
+            meta_payload["decoded_video_frames"] = decoded_frames
+            meta_payload["lowdim_drops"] = self._lowdim_drops
             meta_payload["counts"] = {
                 "robot_states": int(state.shape[0]),
                 "actions": int(action.shape[0]),
@@ -544,6 +781,8 @@ class EpisodeWriter:
             raise RuntimeError("cannot save before finalize")
         if self._finalize_error:
             raise RuntimeError(f"finalize failed: {self._finalize_error}")
+        if self.quality is None or not self.quality.valid:
+            raise RuntimeError("invalid episode cannot be saved; discard it instead")
         assert self.active_dir is not None
         dest = self.episodes_dir / f"episode_{self.episode_id:06d}"
         if dest.exists():

@@ -95,7 +95,13 @@ class HomeManager:
         self._step_index += 1
         return self._command.copy()
 
-    def is_home(self, measured_action: np.ndarray, now_s: float | None = None) -> bool:
+    def is_home(
+        self,
+        measured_action: np.ndarray,
+        now_s: float | None = None,
+        *,
+        require_measured: bool = False,
+    ) -> bool:
         now = time.monotonic() if now_s is None else float(now_s)
         self.last_measured_error = arm_home_error(
             np.asarray(measured_action, dtype=np.float32), self.home_action
@@ -110,7 +116,7 @@ class HomeManager:
         arrived_by = ""
         if self.last_measured_error <= self.tolerance_rad:
             arrived_by = "measured"
-        elif self.last_command_error <= self.tolerance_rad:
+        elif not require_measured and self.last_command_error <= self.tolerance_rad:
             arrived_by = "command"
         elif (
             self.interpolation_done
