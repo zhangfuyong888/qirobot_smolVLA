@@ -63,8 +63,11 @@ def launch_training(config: PipelineConfig, *, profile: str | None = None, dry_r
     dataset_root = config.host_path_value("lerobot_root") / str(config.host["dataset"]["repo_id"])
     validate_lerobot_dataset(dataset_root, config.contract)
     command, output = training_command(config, profile=profile)
-    if shutil.which(command[0]) is None:
+    adjacent_cli = Path(sys.executable).resolve().parent / command[0]
+    resolved_cli = adjacent_cli if adjacent_cli.is_file() else shutil.which(command[0])
+    if resolved_cli is None:
         raise FileNotFoundError("lerobot-train is not available in the active training environment")
+    command[0] = str(resolved_cli)
     if output.exists():
         raise FileExistsError(f"fresh training output already exists: {output}")
     if dry_run:
