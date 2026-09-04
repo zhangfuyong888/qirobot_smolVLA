@@ -86,8 +86,8 @@ startup:
   duration_s: 6.0
   max_joint_step_rad: 0.025
   position_tolerance_rad: 0.05
-  home_left_arm: [-0.25, 0.45, -0.34, -0.52, -0.65, -0.33, 0.19]
-  home_right_arm: [-0.25, -0.45, -0.34, -0.52, 0.65, -0.33, 0.19]
+  home_left_arm: [0.437743, 0.680362, -0.232509, -1.193446, 0.181773, -0.530060, -0.129129]
+  home_right_arm: [0.437743, -0.680362, -0.232509, -1.193446, -0.181773, -0.530060, -0.129129]
   check_arm_command_publishers: true
   # Refuse output unless the running SDK contains its dedicated arm-only
   # rt/lowcmd_replay handler. No standing-policy/deploy packets are consumed.

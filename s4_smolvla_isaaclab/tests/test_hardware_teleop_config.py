@@ -60,8 +60,12 @@ def test_hardware_config_loads() -> None:
     assert config.teleop.mapping.position_scale == pytest.approx(2.0)
     assert config.startup.move_to_home is True
     assert config.startup.duration_s == pytest.approx(6.0)
-    assert config.startup.home_left_arm == pytest.approx((-0.25, 0.45, -0.34, -0.52, -0.65, -0.33, 0.19))
-    assert config.startup.home_right_arm == pytest.approx((-0.25, -0.45, -0.34, -0.52, 0.65, -0.33, 0.19))
+    assert config.startup.home_left_arm == pytest.approx(
+        (0.395399, 0.485809, -0.233272, -1.614595, 0.235180, -0.264553, -0.042916)
+    )
+    assert config.startup.home_right_arm == pytest.approx(
+        (0.437743, -0.680362, -0.232509, -1.193446, -0.181773, -0.530060, -0.129129)
+    )
     assert config.startup.check_arm_command_publishers is True
     assert len(config.startup.approved_sdk_sha256) == 1
     assert config.startup.require_sdk_arm_replay is True
@@ -91,8 +95,8 @@ def test_hardware_config_rejects_reverse_elbow_home(
         encoding="utf-8"
     )
     bad = source.replace(
-        "home_left_arm: [-0.25, 0.45, -0.34, -0.52, -0.65, -0.33, 0.19]",
-        "home_left_arm: [-0.25, 0.45, -0.34, 0.00, -0.65, -0.33, 0.19]",
+        "home_left_arm: [0.395399, 0.485809, -0.233272, -1.614595, 0.235180, -0.264553, -0.042916]",
+        "home_left_arm: [0.395399, 0.485809, -0.233272, 0.00, 0.235180, -0.264553, -0.042916]",
     )
     path = tmp_path / "quest_hardware_reverse_elbow_home.yaml"
     path.write_text(bad, encoding="utf-8")

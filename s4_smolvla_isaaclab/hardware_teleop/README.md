@@ -456,7 +456,13 @@ ros2 topic echo /handscmd --once
 1. Quest 连接与电脑相同 WiFi
 2. 浏览器打开：`https://<电脑IP>:8443`
 3. 进入 WebXR，允许手柄追踪
-4. 日志出现 `[HW-TELEOP][INPUT] session=...` 表示已连接
+4. 松开双侧 Grip，目视期望的机器人前进方向，等待自动锁定水平朝向
+5. 日志出现 `Heading calibrated id=... reference=...` 后再按 Grip
+
+位移和姿态共用该次锁定的水平朝向；Grip 操作期间转头不会改变映射。XR
+会话重启、WebSocket 断线、参考空间 reset 或追踪隐藏后，标定立即失效，必须
+回到 Guardian 安全区域并松开双侧 Grip 重新标定。`bounded-floor` 模式下距离
+Guardian 边界小于 `0.35 m` 时禁止控制；退回安全区域后需要松开并重新按 Grip。
 
 
 

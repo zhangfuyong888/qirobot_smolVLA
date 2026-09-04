@@ -33,13 +33,18 @@
   let socket = null;
   let xrSession = null;
   let referenceSpace = null;
+  let referenceSpaceType = 'unknown';
   let gl = null;
   let sequence = 0;
   let sessionMode = null;
   let wakeLock = null;
   let referenceResetFreezeFrames = 0;
+  let sessionId = '';
+  let calibrationId = 0;
+  let calibrationViewerOrientation = null;
+  let lastBoundarySafe = true;
+  const boundaryGuardMarginM = 0.35;
   const squeezePressed = { left: false, right: false };
-  const sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
   function setStatus(text, kind = '') {
     statusNode.textContent = text;
@@ -49,6 +54,14 @@
   function sendLog(level, message) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ type: 'client_log', level, message: String(message).slice(0, 300) }));
+  }
+
+  function invalidateCalibration(reason) {
+    calibrationViewerOrientation = null;
+    squeezePressed.left = false;
+    squeezePressed.right = false;
+    sendLog('warning', `${reason}; release both Grips for heading calibration`);
+    setStatus(`${reason}. Release both Grips and face the intended robot-forward direction.`, 'error');
   }
 
   async function requestWakeLock() {
@@ -70,11 +83,10 @@
     session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
   }
 
-  function renderXrFrame(frame) {
+  function renderXrFrame(frame, pose) {
     const layer = xrSession.renderState.baseLayer;
     if (!gl || !layer) return;
     gl.bindFramebuffer(gl.FRAMEBUFFER, layer.framebuffer);
-    const pose = frame.getViewerPose(referenceSpace);
     if (!pose) return;
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -103,6 +115,7 @@
       setStatus(`Connected. Ready for ${sessionMode}.`, 'ready');
     };
     socket.onclose = () => {
+      if (xrSession) invalidateCalibration('Controller connection lost');
       startButton.disabled = true;
       setStatus('Connection closed. Retrying...', 'error');
       setTimeout(connect, 1000);
@@ -124,13 +137,10 @@
             // enter requires_release. This prevents a Guardian relocalization
             // from being interpreted as a large robot command.
             referenceResetFreezeFrames = 30;
-            squeezePressed.left = false;
-            squeezePressed.right = false;
-            sendLog('warning', `XR reference-space reset (${type}); release both Grips and re-clutch`);
-            setStatus('Tracking origin changed. Release both Grips, then re-clutch.', 'error');
+            invalidateCalibration(`XR reference-space reset (${type})`);
           });
         }
-        return space;
+        return { space, type };
       } catch (_) {
         // Try the next less persistent reference-space type.
       }
@@ -162,25 +172,101 @@
     };
   }
 
+  function gripsReleased(sides) {
+    return sides.left.squeeze <= 0.12 && sides.right.squeeze <= 0.12;
+  }
+
+  function distanceToSegment2d(px, pz, ax, az, bx, bz) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const lengthSquared = dx * dx + dz * dz;
+    const t = lengthSquared > 1e-9
+      ? Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / lengthSquared))
+      : 0;
+    return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+  }
+
+  function boundaryState(viewerPose) {
+    const bounds = referenceSpace && referenceSpace.boundsGeometry;
+    if (!viewerPose || !bounds || bounds.length < 3) {
+      const boundedUnavailable = referenceSpaceType === 'bounded-floor';
+      return { safe: !boundedUnavailable, distance: null };
+    }
+    const p = viewerPose.transform.position;
+    let inside = false;
+    let distance = Infinity;
+    for (let i = 0, j = bounds.length - 1; i < bounds.length; j = i++) {
+      const a = bounds[j];
+      const b = bounds[i];
+      distance = Math.min(distance, distanceToSegment2d(p.x, p.z, a.x, a.z, b.x, b.z));
+      if (((a.z > p.z) !== (b.z > p.z)) &&
+          (p.x < (b.x - a.x) * (p.z - a.z) / (b.z - a.z) + a.x)) {
+        inside = !inside;
+      }
+    }
+    return { safe: inside && distance >= boundaryGuardMarginM, distance: inside ? distance : -distance };
+  }
+
+  function captureHeadingCalibration(viewerPose) {
+    const q = viewerPose.transform.orientation;
+    const forwardX = -2 * (q.x * q.z + q.y * q.w);
+    const forwardZ = -(1 - 2 * (q.x * q.x + q.y * q.y));
+    if (Math.hypot(forwardX, forwardZ) < 0.2) {
+      setStatus('Look horizontally to calibrate the control direction.', 'error');
+      return;
+    }
+    calibrationViewerOrientation = [q.x, q.y, q.z, q.w];
+    calibrationId++;
+    sendLog('info', `Heading calibrated id=${calibrationId} reference=${referenceSpaceType}`);
+    setStatus('Heading calibrated. Hold Grip to move each arm.', 'ready');
+  }
+
   function onXrFrame(_time, frame) {
     try {
       xrSession.requestAnimationFrame(onXrFrame);
-      renderXrFrame(frame);
+      const viewerPose = frame.getViewerPose(referenceSpace);
+      renderXrFrame(frame, viewerPose);
       if (!socket || socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > 65536) return;
-      const sides = { left: emptySide(), right: emptySide() };
-      const trackingAllowed = xrSession.visibilityState === 'visible' && referenceResetFreezeFrames <= 0;
-      if (trackingAllowed) {
+      const rawSides = { left: emptySide(), right: emptySide() };
+      const visible = xrSession.visibilityState === 'visible';
+      if (visible) {
         for (const source of xrSession.inputSources) {
           if (source.handedness === 'left' || source.handedness === 'right') {
-            sides[source.handedness] = sampleSource(frame, source);
+            rawSides[source.handedness] = sampleSource(frame, source);
           }
         }
       }
+      const boundary = boundaryState(viewerPose);
+      if (boundary.safe !== lastBoundarySafe) {
+        lastBoundarySafe = boundary.safe;
+        if (!boundary.safe) {
+          const detail = boundary.distance === null ? '' : ` (${boundary.distance.toFixed(2)} m)`;
+          sendLog('warning', `Guardian boundary guard active${detail}`);
+          setStatus('Too close to the Guardian boundary. Release both Grips and step inward.', 'error');
+        } else if (calibrationViewerOrientation) {
+          setStatus('Inside safe boundary. Release and re-clutch.', 'ready');
+        }
+      }
+      if (
+        !calibrationViewerOrientation && visible && referenceResetFreezeFrames <= 0 &&
+        boundary.safe && viewerPose && gripsReleased(rawSides)
+      ) {
+        captureHeadingCalibration(viewerPose);
+      }
+      const trackingAllowed = (
+        visible && referenceResetFreezeFrames <= 0 && boundary.safe &&
+        calibrationViewerOrientation !== null
+      );
+      const sides = trackingAllowed ? rawSides : { left: emptySide(), right: emptySide() };
       if (referenceResetFreezeFrames > 0) referenceResetFreezeFrames--;
       socket.send(JSON.stringify({
         type: 'controller_frame', version: 1, session_id: sessionId,
         sequence: sequence++, client_time_ms: performance.now(),
-        reference_space: referenceSpace.type || 'local-floor',
+        reference_space: referenceSpaceType,
+        calibration_id: calibrationViewerOrientation ? calibrationId : 0,
+        calibration_viewer_orientation_xyzw: calibrationViewerOrientation,
+        boundary_safe: boundary.safe,
+        boundary_distance_m: boundary.distance,
         left: sides.left, right: sides.right,
       }));
     } catch (error) {
@@ -190,10 +276,18 @@
 
   startButton.addEventListener('click', async () => {
     try {
+      sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      sequence = 0;
+      calibrationId = 0;
+      calibrationViewerOrientation = null;
+      lastBoundarySafe = true;
+      referenceResetFreezeFrames = 0;
       xrSession = await navigator.xr.requestSession(sessionMode, { optionalFeatures: ['local-floor', 'bounded-floor'] });
       await requestWakeLock();
       await setupXrLayer(xrSession);
-      referenceSpace = await requestStableReferenceSpace(xrSession);
+      const selectedReference = await requestStableReferenceSpace(xrSession);
+      referenceSpace = selectedReference.space;
+      referenceSpaceType = selectedReference.type;
       xrSession.addEventListener('squeezestart', event => {
         const hand = event.inputSource && event.inputSource.handedness;
         if (hand === 'left' || hand === 'right') squeezePressed[hand] = true;
@@ -206,21 +300,19 @@
         sendLog('warning', `XR visibility=${xrSession.visibilityState}`);
         if (xrSession.visibilityState !== 'visible') {
           referenceResetFreezeFrames = Math.max(referenceResetFreezeFrames, 30);
-          squeezePressed.left = false;
-          squeezePressed.right = false;
+          invalidateCalibration('XR tracking hidden');
         } else {
-          setStatus('Tracking resumed. Release both Grips, then re-clutch.', 'ready');
+          setStatus('Tracking resumed. Release both Grips for heading calibration.', 'ready');
         }
       });
       xrSession.addEventListener('end', () => {
-        squeezePressed.left = false;
-        squeezePressed.right = false;
+        invalidateCalibration('XR session ended');
         xrSession = null;
         setStatus('XR session ended. Arms are frozen.', 'error');
       });
       xrSession.requestAnimationFrame(onXrFrame);
-      sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpace.type}`);
-      setStatus('Streaming controller poses. Hold Grip to move each arm.', 'ready');
+      sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpaceType}`);
+      setStatus('Face the intended robot-forward direction and release both Grips.', 'ready');
     } catch (error) {
       sendLog('error', `Failed to enter VR: ${error && error.message ? error.message : error}`);
       setStatus(`Failed to enter VR: ${error}`, 'error');

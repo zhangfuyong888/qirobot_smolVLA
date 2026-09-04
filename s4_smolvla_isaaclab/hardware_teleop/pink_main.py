@@ -230,7 +230,7 @@ def run_pink_hardware_teleop(
         )
     project = load_project_config()
     profiles, home_poses = load_task_control_profiles(project.dataset.task_id)
-    mapper = BimanualTeleopMapper(teleop_cfg, **profiles)
+    mapper = BimanualTeleopMapper(teleop_cfg, **profiles, require_calibration=True)
 
     if not args.shadow and not args.arm_output:
         raise RuntimeError(
@@ -632,6 +632,11 @@ def run_pink_hardware_teleop(
                     f"{0.0 if right_sample is None else float(right_sample.trigger):.2f} "
                     f"hands={int(hands_enabled)} "
                     f"track(L/R)={int(mapped.left.tracking_valid)}/{int(mapped.right.tracking_valid)} "
+                    f"calibrated={int(mapped.calibrated)} "
+                    f"calib_yaw={mapped.calibration_yaw_rad:+.3f}rad "
+                    f"boundary_safe={int(mapped.boundary_safe)} "
+                    f"boundary_distance="
+                    f"{'n/a' if mapped.boundary_distance_m is None else f'{mapped.boundary_distance_m:.2f}m'} "
                     f"fault={fault.reason!r} "
                     f"proximal_track_err={proximal_tracking_error:.3f}rad "
                     f"tcp_err(L/R)={left_error:.3f}/{right_error:.3f}m "
@@ -643,8 +648,13 @@ def run_pink_hardware_teleop(
                 if args.input_debug:
                     cmd_q14 = bimanual_to_arm_q14(command_action)
                     proximal = np.r_[0:4, 7:11]
+                    session_id = "none" if frame is None else frame.session_id
+                    reference_space = "none" if frame is None else frame.reference_space
+                    calibration_id = 0 if frame is None else frame.calibration_id
                     print(
-                        f"[HW-PINK][DEBUG] q14={np.round(actual_q14, 4).tolist()} "
+                        f"[HW-PINK][DEBUG] session={session_id} "
+                        f"reference={reference_space} calibration_id={calibration_id} "
+                        f"q14={np.round(actual_q14, 4).tolist()} "
                         f"cmd_q14={np.round(cmd_q14, 4).tolist()} "
                         f"proximal_cmd_err={float(np.max(np.abs(cmd_q14[proximal] - actual_q14[proximal]))):.4f}rad "
                         f"target_L={np.round(mapped.left.target.position, 4).tolist()} "
