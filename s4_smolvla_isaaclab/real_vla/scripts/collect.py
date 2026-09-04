@@ -1,0 +1,457 @@
+#!/usr/bin/env python
+"""Real-robot collection: Quest teleop + ABXY episodes. No IsaacLab / LeRobot mix-in."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import sys
+import threading
+import time
+import traceback
+from dataclasses import replace
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from hardware_teleop.config_loader import HardwareHandsConfig, load_hardware_teleop_config  # noqa: E402
+from hardware_teleop.hooks import TeleopHooks, TeleopTick, TickRequest  # noqa: E402
+from hardware_teleop.pink_main import build_parser as build_teleop_parser  # noqa: E402
+from hardware_teleop.pink_main import run_pink_hardware_teleop  # noqa: E402
+from s4_robot.control_mapping import ACTION_SLICES  # noqa: E402
+from s4_robot.s4_robot_cfg import LEFT_ARM_JOINTS, RIGHT_ARM_JOINTS  # noqa: E402
+
+from real_vla.cameras.camera_manager import CameraManager  # noqa: E402
+from real_vla.collection.episode_writer import EpisodeWriter  # noqa: E402
+from real_vla.collection.recorder import Recorder  # noqa: E402
+from real_vla.collection.schema import PolicyState, PublishedCommand  # noqa: E402
+from real_vla.collection.state_machine import CollectionEvent, CollectionState, CollectionStateMachine  # noqa: E402
+from real_vla.config_loader import CollectionConfig, load_collection_config  # noqa: E402
+from real_vla.input.quest_buttons import QuestButtonDecoder  # noqa: E402
+from real_vla.robot.gripper_adapter import OPEN, BinaryGripper, gripper_to_hand6  # noqa: E402
+from real_vla.robot.home_manager import HomeManager  # noqa: E402
+
+
+def _arm_q7_from_targets(targets: dict[str, float], active_arm: str) -> np.ndarray | None:
+    names = LEFT_ARM_JOINTS if active_arm == "left" else RIGHT_ARM_JOINTS
+    if not all(name in targets for name in names):
+        return None
+    return np.asarray([float(targets[name]) for name in names], dtype=np.float64)
+
+
+def _arm_q7_from_action(action: np.ndarray, active_arm: str) -> np.ndarray:
+    sl = ACTION_SLICES.left_arm if active_arm == "left" else ACTION_SLICES.right_arm
+    return np.asarray(action[sl], dtype=np.float64).copy()
+
+
+class CollectionHooks(TeleopHooks):
+    def __init__(
+        self,
+        config: CollectionConfig,
+        cameras: CameraManager,
+        writer: EpisodeWriter,
+        hands_cfg: HardwareHandsConfig,
+    ) -> None:
+        self.config = config
+        self.cameras = cameras
+        self.writer = writer
+        self.hands_cfg = hands_cfg
+        self.recorder = Recorder(writer)
+        self.machine = CollectionStateMachine()
+        self.buttons = QuestButtonDecoder(
+            a_index=config.buttons.a_index,
+            b_index=config.buttons.b_index,
+            x_index=config.buttons.x_index,
+            y_index=config.buttons.y_index,
+            press_threshold=config.buttons.press_threshold,
+            discard_hold_s=config.buttons.discard_hold_s,
+        )
+        self.gripper = BinaryGripper(
+            open_threshold=config.gripper.open_threshold,
+            grasp_threshold=config.gripper.grasp_threshold,
+        )
+        self.home = HomeManager(
+            home_left_arm=config.robot.home_left_arm,
+            home_right_arm=config.robot.home_right_arm,
+            tolerance_rad=config.home.tolerance_rad,
+            stable_time_s=config.home.stable_time_s,
+            duration_s=config.home.duration_s,
+            max_joint_step_rad=config.home.max_joint_step_rad,
+            control_dt=1.0 / config.robot.control_hz,
+        )
+        self._last_status = ""
+        self._started = False
+        self._critical_abort = False
+        self._last_hud: dict[str, str] | None = None
+        self._last_button_log = ""
+
+    def begin_tick(self, frame, now_s: float) -> TickRequest:
+        if not self._started:
+            self.machine.on_startup_ok()
+            self._started = True
+            print("[REAL-VLA] HOMING  wait; Grip ignored until READY", flush=True)
+
+        edges = self.buttons.update(frame, now_s)
+        self._log_buttons(frame, edges, now_s)
+        if (
+            self.machine.state == CollectionState.READY
+            and edges.a_rising
+            and not self.writer.is_prepared
+        ):
+            print(
+                f"[REAL-VLA] A ignored: recorder not ready ({self.writer.prepare_error or 'preparing'})",
+                flush=True,
+            )
+            edges = replace(edges, a_rising=False)
+        disk_ok = self.writer.disk_gb() >= self.config.storage.min_free_disk_gb
+        if (
+            self.machine.state == CollectionState.RECORDING
+            and self.writer.disk_gb() < self.config.storage.critical_free_disk_gb
+        ):
+            transition = self.machine.abort_recording("LOW DISK SPACE")
+            self._on_transition(transition, now_s)
+            self._critical_abort = True
+        else:
+            transition = self.machine.on_buttons(edges, disk_ok=disk_ok)
+            self._on_transition(transition, now_s)
+
+        allow_teleop = self.machine.state in {
+            CollectionState.READY,
+            CollectionState.RECORDING,
+        }
+        home_states = {
+            CollectionState.HOMING,
+            CollectionState.HOMING_TO_RECORD,
+            CollectionState.RETURNING_HOME,
+        }
+        command_override = None
+        if self.machine.state in home_states:
+            if self.home.active:
+                command_override = self.home.step()
+        hand_triggers: tuple[float, float] | None
+        if self.machine.state == CollectionState.RECORDING:
+            left_analog = 0.0
+            right_analog = 0.0
+            if frame is not None:
+                if frame.left.valid:
+                    left_analog = float(frame.left.trigger)
+                if frame.right.valid:
+                    right_analog = float(frame.right.trigger)
+            active_trigger = left_analog if self.config.active_arm == "left" else right_analog
+            gripper = self.gripper.update(active_trigger)
+            if self.config.active_arm == "left":
+                hand_triggers = (float(gripper), right_analog)
+            else:
+                hand_triggers = (left_analog, float(gripper))
+        elif self.machine.state in home_states:
+            self.gripper.reset(OPEN)
+            hand_triggers = (float(OPEN), float(OPEN))
+        else:
+            self.gripper.reset(OPEN)
+            hand_triggers = None
+        hud = self._hud()
+        hud_out = None
+        if hud != self._last_hud or now_s - getattr(self, "_last_hud_send", 0.0) >= 0.5:
+            self._last_hud = hud
+            self._last_hud_send = now_s
+            hud_out = hud
+        return TickRequest(
+            allow_teleop=allow_teleop,
+            command_override=command_override,
+            hand_triggers=hand_triggers,
+            publish_arms=True,
+            hud=hud_out,
+        )
+
+    def end_tick(self, tick: TeleopTick) -> None:
+        if self.machine.state in {
+            CollectionState.HOMING,
+            CollectionState.HOMING_TO_RECORD,
+            CollectionState.RETURNING_HOME,
+        }:
+            if not self.home.active:
+                self.home.request_home(tick.command_action, now_s=tick.monotonic_s)
+            elif self.home.is_home(tick.actual_action, tick.monotonic_s):
+                transition = self.machine.on_home_arrived()
+                self._on_transition(transition, tick.monotonic_s)
+
+        if self.writer.wait_finalized(timeout_s=0.0) and self.machine.state == CollectionState.RETURNING_HOME:
+            transition = self.machine.on_writer_finalized()
+            self._on_transition(transition, tick.monotonic_s)
+
+        if self.machine.state == CollectionState.RECORDING:
+            gripper = self.gripper.state
+            state = PolicyState(
+                timestamp_ns=tick.timestamp_ns,
+                arm_q=_arm_q7_from_action(tick.actual_action, self.config.active_arm),
+                gripper_state=gripper,
+            )
+            self.recorder.on_state(state)
+            arm_target = _arm_q7_from_targets(tick.published_arm, self.config.active_arm)
+            if arm_target is None:
+                arm_target = _arm_q7_from_action(tick.command_action, self.config.active_arm)
+            command = PublishedCommand(
+                timestamp_ns=tick.timestamp_ns,
+                arm_target_q=arm_target,
+                gripper_target=gripper,
+                hand_command_6d=np.asarray(
+                    gripper_to_hand6(
+                        self.hands_cfg, side=self.config.active_arm, gripper=gripper
+                    ),
+                    dtype=np.float64,
+                ),
+                quest_trigger=tick.left_trigger if self.config.active_arm == "left" else tick.right_trigger,
+                limited=bool(tick.published_arm),
+                motion_allowed=tick.left_active or tick.right_active,
+            )
+            self.recorder.on_action(command)
+
+        if tick.monotonic_s - getattr(self, "_last_report", 0.0) >= 0.5:
+            self._last_report = tick.monotonic_s
+            extra = ""
+            if self.machine.state in {
+                CollectionState.HOMING,
+                CollectionState.HOMING_TO_RECORD,
+                CollectionState.RETURNING_HOME,
+            }:
+                extra = f" {self.home.status_line()} via={self.home.arrived_by or '-'}"
+            print(
+                f"[REAL-VLA] {self.machine.state.value} {self.cameras.health_line()} "
+                f"disk={self.writer.disk_gb():.1f}GB{extra}",
+                flush=True,
+            )
+
+    def _hud(self) -> dict[str, str]:
+        state = self.machine.state
+        if state == CollectionState.HOMING:
+            return {
+                "title": "HOMING",
+                "detail": "Wait. Grip ignored until READY.",
+                "kind": "ready",
+            }
+        if state == CollectionState.HOMING_TO_RECORD:
+            return {
+                "title": "HOMING TO RECORD",
+                "detail": "Returning to home. Grip ignored. Recording starts at home.",
+                "kind": "ready",
+            }
+        if state == CollectionState.READY:
+            if not self.writer.is_prepared:
+                return {
+                    "title": "READY",
+                    "detail": "Grip teleop OK. Recorder preparing; wait before A.",
+                    "kind": "ready",
+                }
+            return {
+                "title": "READY",
+                "detail": "Hold Grip to move both arms. A homes, then starts recording.",
+                "kind": "ready",
+            }
+        if state == CollectionState.RECORDING:
+            return {
+                "title": "RECORDING",
+                "detail": "Both Grips move arms. Trigger grasps. B ends.",
+                "kind": "ready",
+            }
+        if state == CollectionState.RETURNING_HOME:
+            return {
+                "title": "RETURNING HOME",
+                "detail": "Wait for home and writer finalize.",
+                "kind": "ready",
+            }
+        if state == CollectionState.REVIEW:
+            return {
+                "title": "REVIEW",
+                "detail": "X saves. Hold Y 0.6s to discard.",
+                "kind": "ready",
+            }
+        return {"title": state.value, "detail": "", "kind": "ready"}
+
+    def _log_buttons(self, frame, edges, now_s: float) -> None:
+        del now_s
+        if edges.a_rising or edges.b_rising or edges.x_rising or edges.y_rising or edges.y_held:
+            left = () if frame is None or not frame.left.valid else frame.left.buttons
+            right = () if frame is None or not frame.right.valid else frame.right.buttons
+            line = (
+                f"[REAL-VLA] buttons A={int(edges.a)} B={int(edges.b)} "
+                f"X={int(edges.x)} Y={int(edges.y)} heldY={int(edges.y_held)} "
+                f"state={self.machine.state.value} "
+                f"btnL={_fmt_buttons(left)} btnR={_fmt_buttons(right)}"
+            )
+            if line != self._last_button_log:
+                self._last_button_log = line
+                print(line, flush=True)
+
+    def _on_transition(self, transition, now_s: float) -> None:
+        if transition.event is None:
+            return
+        if transition.message:
+            print(f"[REAL-VLA] {transition.message}", flush=True)
+        if transition.event == CollectionEvent.HOME_DONE and self.home.arrived_by:
+            print(
+                f"[REAL-VLA] home accepted via {self.home.arrived_by} "
+                f"({self.home.status_line()})",
+                flush=True,
+            )
+        if transition.event == CollectionEvent.START:
+            self.writer.begin_recording()
+            self.recorder.start()
+            print(f"[REAL-VLA] recording episode_{self.writer.episode_id:06d}", flush=True)
+        elif transition.event in {CollectionEvent.END, CollectionEvent.ABORT_RECORDING}:
+            self.recorder.stop()
+            self.writer.stop_accepting(time.monotonic_ns())
+            self.writer.finalize_async()
+        elif transition.event == CollectionEvent.WRITER_DONE or (
+            transition.state == CollectionState.REVIEW
+        ):
+            print(self.writer.review_summary(), flush=True)
+        elif transition.event == CollectionEvent.SAVE:
+            print("[REAL-VLA] saving in background...", flush=True)
+            self._spawn_io("save")
+        elif transition.event == CollectionEvent.DISCARD:
+            print("[REAL-VLA] discarding in background...", flush=True)
+            self._spawn_io("discard")
+        elif transition.event == CollectionEvent.LOW_DISK:
+            print("[REAL-VLA] A ignored: LOW DISK SPACE", flush=True)
+
+    def _spawn_io(self, action: str) -> None:
+        threading.Thread(
+            target=self._io_worker,
+            args=(action,),
+            name=f"real-vla-{action}",
+            daemon=True,
+        ).start()
+
+    def _io_worker(self, action: str) -> None:
+        try:
+            if action == "save":
+                path = self.writer.save()
+                print(f"[REAL-VLA] saved {path}", flush=True)
+            else:
+                self.writer.discard()
+                print("[REAL-VLA] discarded pending episode", flush=True)
+            next_id = self.writer.next_episode_id()
+            self.writer.prepare_episode(next_id, self.cameras.readers)
+            if self.writer.is_prepared:
+                print(
+                    f"[REAL-VLA] recorder ready episode_{next_id:06d}  A: START",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"[REAL-VLA] recorder prepare failed: {self.writer.prepare_error}",
+                    flush=True,
+                )
+        except Exception:
+            traceback.print_exc()
+
+
+def _fmt_buttons(values: tuple[float, ...]) -> str:
+    if not values:
+        return "[]"
+    return "[" + ",".join(f"{item:.2f}" for item in values[:8]) + "]"
+
+
+def _create_session_dir(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = root / f"session_{stamp}"
+    path.mkdir(parents=True, exist_ok=False)
+    (path / "session.json").write_text(
+        json.dumps(
+            {
+                "created": stamp,
+                "schema_version": "s4_real_vla_v1",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Collect real-robot VLA episodes with Quest ABXY.")
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--session-dir", type=Path, default=None)
+    teleop_parser = build_teleop_parser()
+    args, remaining = parser.parse_known_args(argv)
+    teleop_args = teleop_parser.parse_args(remaining)
+    collection = load_collection_config(args.config)
+    teleop_args.hardware_config = collection.hardware_teleop_config
+    # Startup homing is joint-space and can recover an elbow that is outside
+    # Pink's URDF range. Skipping it seeds IK from the measured pose and can
+    # crash before HomeManager ever runs.
+    teleop_args.skip_homing = False
+    teleop_args.enabled_arms = "both"
+    if not teleop_args.shadow:
+        teleop_args.arm_output = True
+
+    session_root = collection.storage.root
+    session_root.mkdir(parents=True, exist_ok=True)
+    free_gb = shutil.disk_usage(session_root).free / (1024 ** 3)
+    if free_gb < collection.storage.min_free_disk_gb:
+        print(
+            f"[REAL-VLA] WARNING low disk {free_gb:.1f}GB "
+            f"(min {collection.storage.min_free_disk_gb:.1f}GB)",
+            flush=True,
+        )
+    if free_gb < collection.storage.critical_free_disk_gb:
+        print("[REAL-VLA] refusing to start: critical disk space", flush=True)
+        return 2
+
+    session_dir = args.session_dir or _create_session_dir(collection.storage.root)
+    print(f"[REAL-VLA] session={session_dir}", flush=True)
+    print(f"[REAL-VLA] task={collection.task.text!r} record_arm={collection.active_arm} teleop_arms=both", flush=True)
+    config = load_hardware_teleop_config(teleop_args.hardware_config)
+    cameras = CameraManager(collection.cameras, active_arm=collection.active_arm)
+    writer = EpisodeWriter(collection, session_dir, PROJECT_ROOT)
+    hooks = CollectionHooks(collection, cameras, writer, hands_cfg=config.hands)
+    try:
+        cameras.start()
+        print(f"[REAL-VLA] cameras={list(cameras.names)} warmup done", flush=True)
+        recovered = hooks.writer.recover_incomplete()
+        if recovered:
+            print(f"[REAL-VLA] recovered incomplete: {recovered}", flush=True)
+        first_id = hooks.writer.next_episode_id()
+        hooks.writer.prepare_episode(first_id, cameras.readers)
+        if not hooks.writer.is_prepared:
+            print(
+                f"[REAL-VLA] recorder prepare failed: {hooks.writer.prepare_error}",
+                flush=True,
+            )
+            return 1
+        print(
+            f"[REAL-VLA] recorder ready episode_{first_id:06d}  "
+            "READY: both-arm teleop  A: home then record  B: end",
+            flush=True,
+        )
+        if teleop_args.ik_backend is not None:
+            config = replace(config, ik=replace(config.ik, backend=str(teleop_args.ik_backend)))
+        run_pink_hardware_teleop(config, teleop_args, hooks=hooks)
+    except KeyboardInterrupt:
+        print("\n[REAL-VLA] interrupted", flush=True)
+        return 130
+    except BaseException:
+        print("[FATAL] real VLA collection failed:", flush=True)
+        traceback.print_exc()
+        return 1
+    finally:
+        try:
+            cameras.close()
+        except KeyboardInterrupt:
+            print("[REAL-VLA] camera close interrupted", flush=True)
+        if writer.active_dir is not None and not writer.wait_finalized(timeout_s=0.0):
+            print("[REAL-VLA] pending episode left in pending/ for recovery", flush=True)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -16,6 +16,25 @@
     button { border: 0; border-radius: 6px; padding: 14px 18px; font-size: 17px; font-weight: 650; background: #2f81f7; color: white; }
     button:disabled { opacity: .5; }
     code { color: #d2e6ff; }
+    #overlay {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 48px 24px 0;
+      background: transparent;
+    }
+    #hud {
+      max-width: 720px;
+      padding: 16px 20px;
+      border-radius: 12px;
+      background: rgba(12, 16, 20, 0.72);
+      text-align: center;
+    }
+    #hud-title { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    #hud-detail { font-size: 20px; color: #d7dde3; line-height: 1.4; }
   </style>
 </head>
 <body>
@@ -24,12 +43,24 @@
   <p>Controller data only. No camera image is transmitted to the headset.</p>
   <div id="status" class="status">Connecting to IsaacLab...</div>
   <button id="start" disabled>Enter Passthrough Teleoperation</button>
-  <p><code>Grip/Squeeze</code>: clutch each arm independently.<br><code>Trigger</code>: continuously close the corresponding dexterous hand.</p>
+  <p><code>Grip</code>: move each arm (READY and RECORDING).<br>
+     <code>A</code>: return home, then start recording.<br>
+     <code>Trigger</code>: grasp. <code>B</code>: end. <code>X</code>: save. Hold <code>Y</code>: discard.</p>
 </main>
+<div id="overlay">
+  <div id="hud">
+    <div id="hud-title">Connecting</div>
+    <div id="hud-detail">Open this page, enter passthrough, then wait for READY.</div>
+  </div>
+</div>
 <script>
 (() => {
   const statusNode = document.getElementById('status');
   const startButton = document.getElementById('start');
+  const overlayRoot = document.getElementById('overlay');
+  const hudTitle = document.getElementById('hud-title');
+  const hudDetail = document.getElementById('hud-detail');
+  let lastHud = null;
   let socket = null;
   let xrSession = null;
   let referenceSpace = null;
@@ -43,12 +74,26 @@
   let calibrationId = 0;
   let calibrationViewerOrientation = null;
   let lastBoundarySafe = true;
+  let enteringXr = false;
   const boundaryGuardMarginM = 0.35;
   const squeezePressed = { left: false, right: false };
 
   function setStatus(text, kind = '') {
     statusNode.textContent = text;
     statusNode.className = `status ${kind}`;
+  }
+
+  function applyHud(title, detail, kind = 'ready') {
+    lastHud = { title, detail, kind };
+    hudTitle.textContent = title;
+    hudDetail.textContent = detail;
+    setStatus(`${title}\n${detail}`, kind);
+  }
+
+  function errorText(error) {
+    if (!error) return 'unknown error';
+    const name = error.name ? `${error.name}: ` : '';
+    return `${name}${error.message || error}`;
   }
 
   function sendLog(level, message) {
@@ -71,7 +116,7 @@
       wakeLock.addEventListener('release', () => sendLog('warning', 'Screen wake lock released'));
       sendLog('info', 'Screen wake lock acquired');
     } catch (error) {
-      sendLog('warning', `Screen wake lock unavailable: ${error && error.message ? error.message : error}`);
+      sendLog('warning', `Screen wake lock unavailable: ${errorText(error)}`);
     }
   }
 
@@ -97,6 +142,9 @@
   }
 
   function connect() {
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(`${scheme}://${location.host}/ws`);
     socket.onopen = async () => {
@@ -111,8 +159,18 @@
         setStatus('Neither immersive-ar nor immersive-vr is supported by this browser.', 'error');
         return;
       }
-      startButton.disabled = false;
-      setStatus(`Connected. Ready for ${sessionMode}.`, 'ready');
+      startButton.disabled = enteringXr;
+      applyHud('Connected', 'Enter passthrough, then wait for READY. A starts recording.', 'ready');
+    };
+    socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg && msg.type === 'hud') {
+          applyHud(String(msg.title || ''), String(msg.detail || ''), String(msg.kind || 'ready'));
+        }
+      } catch (_) {
+        // Ignore non-JSON control messages.
+      }
     };
     socket.onclose = () => {
       if (xrSession) invalidateCalibration('Controller connection lost');
@@ -128,14 +186,12 @@
   }
 
   async function requestStableReferenceSpace(session) {
-    for (const type of ['bounded-floor', 'local-floor', 'local']) {
+    // Prefer local-floor so lab teleop does not depend on Guardian.
+    for (const type of ['local-floor', 'local', 'bounded-floor']) {
       try {
         const space = await session.requestReferenceSpace(type);
         if (space.addEventListener) {
           space.addEventListener('reset', () => {
-            // Publish invalid controller frames long enough for the server to
-            // enter requires_release. This prevents a Guardian relocalization
-            // from being interpreted as a large robot command.
             referenceResetFreezeFrames = 30;
             invalidateCalibration(`XR reference-space reset (${type})`);
           });
@@ -162,9 +218,6 @@
       position: [p.x, p.y, p.z],
       orientation_xyzw: [q.x, q.y, q.z, q.w],
       trigger: buttons.length > 0 ? buttons[0] : 0,
-      // Meta Touch normally exposes Grip as gamepad button 1. WebXR squeeze
-      // events are retained as a fallback because firmware/browser versions
-      // do not always report the analog button value consistently.
       squeeze: Math.max(buttons.length > 1 ? buttons[1] : 0, squeezePressed[source.handedness] ? 1 : 0),
       buttons,
       axes,
@@ -189,8 +242,7 @@
   function boundaryState(viewerPose) {
     const bounds = referenceSpace && referenceSpace.boundsGeometry;
     if (!viewerPose || !bounds || bounds.length < 3) {
-      const boundedUnavailable = referenceSpaceType === 'bounded-floor';
-      return { safe: !boundedUnavailable, distance: null };
+      return { safe: true, distance: null };
     }
     const p = viewerPose.transform.position;
     let inside = false;
@@ -204,7 +256,7 @@
         inside = !inside;
       }
     }
-    return { safe: inside && distance >= boundaryGuardMarginM, distance: inside ? distance : -distance };
+    return { safe: inside, distance: inside ? distance : -distance };
   }
 
   function captureHeadingCalibration(viewerPose) {
@@ -218,7 +270,11 @@
     calibrationViewerOrientation = [q.x, q.y, q.z, q.w];
     calibrationId++;
     sendLog('info', `Heading calibrated id=${calibrationId} reference=${referenceSpaceType}`);
-    setStatus('Heading calibrated. Hold Grip to move each arm.', 'ready');
+    if (lastHud && lastHud.title && lastHud.title !== 'Connected') {
+      applyHud(lastHud.title, lastHud.detail, lastHud.kind);
+    } else {
+      applyHud('Heading calibrated', 'Wait for READY, then press A. Grip does nothing before that.', 'ready');
+    }
   }
 
   function onXrFrame(_time, frame) {
@@ -237,15 +293,21 @@
         }
       }
       const boundary = boundaryState(viewerPose);
+      const nearEdge = boundary.safe && boundary.distance !== null && boundary.distance < boundaryGuardMarginM;
       if (boundary.safe !== lastBoundarySafe) {
         lastBoundarySafe = boundary.safe;
         if (!boundary.safe) {
           const detail = boundary.distance === null ? '' : ` (${boundary.distance.toFixed(2)} m)`;
           sendLog('warning', `Guardian boundary guard active${detail}`);
-          setStatus('Too close to the Guardian boundary. Release both Grips and step inward.', 'error');
-        } else if (calibrationViewerOrientation) {
-          setStatus('Inside safe boundary. Release and re-clutch.', 'ready');
+          setStatus('Outside the Quest Guardian. Step back inside the play area.', 'error');
+        } else if (calibrationViewerOrientation && lastHud) {
+          applyHud(lastHud.title, lastHud.detail, lastHud.kind);
         }
+      } else if (nearEdge && calibrationViewerOrientation) {
+        setStatus(
+          `Near Guardian edge (${boundary.distance.toFixed(2)} m). Teleop stays enabled; step inward if tracking jumps.`,
+          'ready'
+        );
       }
       if (
         !calibrationViewerOrientation && visible && referenceResetFreezeFrames <= 0 &&
@@ -270,19 +332,77 @@
         left: sides.left, right: sides.right,
       }));
     } catch (error) {
-      sendLog('error', `XR frame failed: ${error && error.message ? error.message : error}`);
+      sendLog('error', `XR frame failed: ${errorText(error)}`);
     }
   }
 
-  startButton.addEventListener('click', async () => {
+  async function endXrSession() {
+    if (!xrSession) return;
+    const session = xrSession;
+    xrSession = null;
     try {
+      await session.end();
+    } catch (_) {
+      // Already ended.
+    }
+  }
+
+  async function requestXrSession(mode) {
+    const overlayOptions = overlayRoot
+      ? { optionalFeatures: ['local-floor', 'dom-overlay'], domOverlay: { root: overlayRoot } }
+      : null;
+    const attempts = [
+      ...(overlayOptions && mode === 'immersive-ar' ? [overlayOptions] : []),
+      { optionalFeatures: ['local-floor'] },
+      { optionalFeatures: ['local-floor', 'bounded-floor'] },
+      {},
+    ];
+    let lastError = null;
+    for (const options of attempts) {
+      try {
+        sendLog('info', `XRSystem.requestSession mode=${mode} features=${JSON.stringify(options.optionalFeatures || [])}`);
+        return await navigator.xr.requestSession(mode, options);
+      } catch (error) {
+        lastError = error;
+        sendLog('warning', `requestSession ${mode} failed: ${errorText(error)}`);
+      }
+    }
+    throw lastError || new Error(`requestSession(${mode}) failed`);
+  }
+
+  async function enterXr() {
+    if (enteringXr) return;
+    enteringXr = true;
+    startButton.disabled = true;
+    try {
+      await endXrSession();
       sessionId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       sequence = 0;
       calibrationId = 0;
       calibrationViewerOrientation = null;
       lastBoundarySafe = true;
       referenceResetFreezeFrames = 0;
-      xrSession = await navigator.xr.requestSession(sessionMode, { optionalFeatures: ['local-floor', 'bounded-floor'] });
+      const modes = [];
+      if (sessionMode) modes.push(sessionMode);
+      if (sessionMode !== 'immersive-vr') modes.push('immersive-vr');
+      if (sessionMode !== 'immersive-ar') modes.push('immersive-ar');
+      let started = null;
+      let usedMode = null;
+      let lastError = null;
+      for (const mode of modes) {
+        try {
+          started = await requestXrSession(mode);
+          usedMode = mode;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!started) {
+        throw lastError || new Error('XRSystem.requestSession failed for immersive-ar and immersive-vr');
+      }
+      sessionMode = usedMode;
+      xrSession = started;
       await requestWakeLock();
       await setupXrLayer(xrSession);
       const selectedReference = await requestStableReferenceSpace(xrSession);
@@ -308,16 +428,28 @@
       xrSession.addEventListener('end', () => {
         invalidateCalibration('XR session ended');
         xrSession = null;
-        setStatus('XR session ended. Arms are frozen.', 'error');
+        enteringXr = false;
+        startButton.disabled = false;
+        setStatus('XR session ended. Tap the button to enter again.', 'error');
       });
       xrSession.requestAnimationFrame(onXrFrame);
       sendLog('info', `XR session started mode=${sessionMode} reference=${referenceSpaceType}`);
-      setStatus('Face the intended robot-forward direction and release both Grips.', 'ready');
+      applyHud(
+        lastHud && lastHud.title ? lastHud.title : 'Passthrough',
+        lastHud && lastHud.detail
+          ? lastHud.detail
+          : 'Face robot-forward, release both Grips, then wait for READY.',
+        lastHud && lastHud.kind ? lastHud.kind : 'ready'
+      );
     } catch (error) {
-      sendLog('error', `Failed to enter VR: ${error && error.message ? error.message : error}`);
-      setStatus(`Failed to enter VR: ${error}`, 'error');
+      enteringXr = false;
+      startButton.disabled = false;
+      sendLog('error', `Failed to enter VR: ${errorText(error)}`);
+      setStatus(`Failed to enter VR: ${errorText(error)}`, 'error');
     }
-  });
+  }
+
+  startButton.addEventListener('click', enterXr);
   document.addEventListener('visibilitychange', () => {
     sendLog('warning', `document visibility=${document.visibilityState}`);
     if (document.visibilityState === 'visible' && (!wakeLock || wakeLock.released)) requestWakeLock();

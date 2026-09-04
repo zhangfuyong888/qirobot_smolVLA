@@ -34,6 +34,7 @@ class QuestWebServer:
         self._runner: web.AppRunner | None = None
         self._ready = threading.Event()
         self._startup_error: BaseException | None = None
+        self._clients: set[web.WebSocketResponse] = set()
 
     @property
     def secure(self) -> bool:
@@ -60,6 +61,7 @@ class QuestWebServer:
         websocket = web.WebSocketResponse(heartbeat=10.0, max_msg_size=64 * 1024, compress=False)
         try:
             await websocket.prepare(request)
+            self._clients.add(websocket)
             await websocket.send_json({"type": "server_hello", "version": PROTOCOL_VERSION})
             async for message in websocket:
                 if message.type == WSMsgType.TEXT:
@@ -78,8 +80,29 @@ class QuestWebServer:
                 elif message.type == WSMsgType.ERROR:
                     break
         finally:
+            self._clients.discard(websocket)
             self.store.client_disconnected()
         return websocket
+
+    def send_status(self, payload: dict) -> None:
+        """Push a small HUD/status JSON to the connected Quest page (best-effort)."""
+        loop = self._loop
+        if loop is None or not loop.is_running() or not self._clients:
+            return
+        asyncio.run_coroutine_threadsafe(self._broadcast(payload), loop)
+
+    async def _broadcast(self, payload: dict) -> None:
+        dead: list[web.WebSocketResponse] = []
+        for websocket in list(self._clients):
+            if websocket.closed:
+                dead.append(websocket)
+                continue
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                dead.append(websocket)
+        for websocket in dead:
+            self._clients.discard(websocket)
 
     async def _start_async(self) -> None:
         app = web.Application(client_max_size=64 * 1024)

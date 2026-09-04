@@ -33,6 +33,7 @@ from hardware_teleop.safety import (  # noqa: E402
     TeleopFaultLatch,
     find_verified_arm_replay_sdk_process,
 )
+from hardware_teleop.hooks import TeleopHooks, TeleopTick, TickRequest  # noqa: E402
 from hardware_teleop.startup import run_startup_homing  # noqa: E402
 from s4_pipeline.config import load_project_config  # noqa: E402
 from s4_robot.control_mapping import ACTION_SLICES  # noqa: E402
@@ -164,6 +165,7 @@ def _close_failed_initialization(
 def run_pink_hardware_teleop(
     config: HardwareTeleopConfig,
     args: argparse.Namespace,
+    hooks: TeleopHooks | None = None,
 ) -> None:
     _validate_no_isaac_imports()
     from hardware_teleop.env_check import validate_runtime_imports
@@ -407,6 +409,13 @@ def run_pink_hardware_teleop(
             # each Grip press ratchets the arm downward.
             hold_left_tcp, hold_right_tcp = ik_backend.forward(command_q14)
             frame = store.snapshot()
+            request = TickRequest()
+            if hooks is not None:
+                request = hooks.begin_tick(frame, now)
+                if request.stop:
+                    break
+                if request.hud:
+                    server.send_status({"type": "hud", **request.hud})
             mapped = mapper.update(frame, hold_left_tcp, hold_right_tcp, mapping_dt, now)
             state_feed_stale = bridge.is_state_feed_stale(config.hardware.max_state_age_s)
             arm_command_graph_conflict = bridge.is_arm_command_graph_conflicted()
@@ -441,14 +450,16 @@ def run_pink_hardware_teleop(
                 print("[HW-PINK][SAFETY] fault cleared after both grips were released", flush=True)
 
             left_active = (
-                mapped.left.clutch
+                request.allow_teleop
+                and mapped.left.clutch
                 and _arm_enabled(args.enabled_arms, "left")
                 and not mapped.stale
                 and state_feed_ok
                 and not fault.active
             )
             right_active = (
-                mapped.right.clutch
+                request.allow_teleop
+                and mapped.right.clutch
                 and _arm_enabled(args.enabled_arms, "right")
                 and not mapped.stale
                 and state_feed_ok
@@ -548,6 +559,8 @@ def run_pink_hardware_teleop(
                 teleop_cfg.smoothing.hand_command_alpha,
                 teleop_cfg.smoothing.hand_max_joint_step_rad,
             )
+            if request.command_override is not None:
+                command_action = np.asarray(request.command_override, dtype=np.float32).copy()
 
             if not np.isfinite(command_action).all():
                 if fault.trip("non-finite 26D command"):
@@ -586,8 +599,9 @@ def run_pink_hardware_teleop(
                     flush=True,
                 )
                 break
-            if not args.shadow and command_transport_ok:
-                bridge.publish_arm_command(
+            published_arm: dict[str, float] = {}
+            if not args.shadow and command_transport_ok and request.publish_arms:
+                published_arm = bridge.publish_arm_command(
                     command_action,
                     allow_motion=allow_arm_motion,
                     hold_commanded=False,
@@ -610,8 +624,29 @@ def run_pink_hardware_teleop(
                 fault_active=fault.active,
                 trigger=mapper.states["right"].trigger_filtered,
             )
+            if request.hand_triggers is not None:
+                left_trigger, right_trigger = request.hand_triggers
             if not args.shadow and hands_enabled:
                 bridge.publish_hands(left_trigger, right_trigger)
+
+            if hooks is not None:
+                hooks.end_tick(
+                    TeleopTick(
+                        monotonic_s=now,
+                        timestamp_ns=time.monotonic_ns(),
+                        frame=frame,
+                        actual_action=np.asarray(actual_action, dtype=np.float32).copy(),
+                        command_action=np.asarray(command_action, dtype=np.float32).copy(),
+                        published_arm=dict(published_arm),
+                        left_trigger=float(left_trigger),
+                        right_trigger=float(right_trigger),
+                        left_active=bool(left_active),
+                        right_active=bool(right_active),
+                        fault_active=bool(fault.active),
+                        output_relinquished=bool(bridge.output_relinquished),
+                        mapping_dt=float(mapping_dt),
+                    )
+                )
 
             report_steps += 1
             if now - last_report >= max(args.report_period_s, 0.1):

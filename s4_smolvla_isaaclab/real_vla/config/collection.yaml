@@ -1,0 +1,44 @@
+schema_version: s4_real_vla_v1
+task:
+  text: "Grasp the drawer handle and pull the drawer open."
+robot:
+  config: robot.yaml
+cameras:
+  config: cameras.yaml
+gripper:
+  mode: binary
+  open_threshold: 0.35
+  grasp_threshold: 0.65
+home:
+  gripper: open
+  # Arrival also accepts commanded home. Measured sag above this must not block READY.
+  tolerance_rad: 0.03
+  stable_time_s: 0.3
+  duration_s: 6.0
+  max_joint_step_rad: 0.025
+buttons:
+  start: A
+  end_and_home: B
+  save: X
+  discard: Y
+  discard_hold_s: 0.6
+  # Quest Touch: right A/B and left X/Y are both buttons[4]/buttons[5].
+  a_index: 4
+  b_index: 5
+  x_index: 4
+  y_index: 5
+  press_threshold: 0.5
+storage:
+  root: "/home/coral/real_vla_data"
+  video_codec: "h264"
+  video_container: "mkv"
+  writer_queue_frames: 12
+  min_free_disk_gb: 10
+  critical_free_disk_gb: 2
+quality:
+  camera_gap_warning_ms: 80
+  camera_gap_invalid_ms: 100
+  robot_state_invalid_ms: 100
+  min_duration_s: 0.5
+  min_camera_frames: 5
+hardware_teleop_config: hardware_teleop/config/quest_hardware.yaml
