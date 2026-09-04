@@ -115,9 +115,13 @@ def pack_action_response(response: ActionResponse) -> list[bytes]:
 
 
 def unpack_action_response(parts: list[bytes]) -> ActionResponse:
+    if parts:
+        metadata = decode_metadata(parts[0])
+        if metadata.get("type") == "error":
+            raise RuntimeError(f"policy server error: {metadata.get('error', 'unknown error')}")
     if len(parts) != 2:
         raise ContractError(f"action response must contain two frames, got {len(parts)}")
-    meta = decode_metadata(parts[0])
+    meta = metadata
     shape = tuple(int(v) for v in meta["action_shape"])
     chunk = np.frombuffer(parts[1], dtype="<f4").reshape(shape).copy()
     if chunk.ndim != 2 or chunk.shape[1] != 8 or not np.isfinite(chunk).all():

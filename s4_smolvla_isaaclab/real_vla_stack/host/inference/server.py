@@ -4,7 +4,13 @@ import time
 
 import numpy as np
 
-from ...common.protocol import ActionResponse, pack_action_response, unpack_observation
+from ...common.protocol import (
+    PROTOCOL_VERSION,
+    ActionResponse,
+    encode_metadata,
+    pack_action_response,
+    unpack_observation,
+)
 
 
 def _decode_jpeg_rgb(payload: bytes) -> np.ndarray:
@@ -28,26 +34,39 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
         while True:
             parts = socket.recv_multipart()
             started = time.monotonic_ns()
-            request, head_jpeg, wrist_jpeg = unpack_observation(parts)
-            if request.contract_sha256 != runner.contract.sha256:
-                raise ValueError("request contract hash mismatch")
-            images = {
-                runner.contract.camera_keys[0]: _decode_jpeg_rgb(head_jpeg),
-                runner.contract.camera_keys[1]: _decode_jpeg_rgb(wrist_jpeg),
-            }
-            chunk = runner.predict_chunk(request.state, images, request.task)
-            inference_ms = (time.monotonic_ns() - started) / 1.0e6
-            socket.send_multipart(
-                pack_action_response(
-                    ActionResponse(
-                        runner.contract.sha256,
-                        request.session_id,
-                        request.request_id,
-                        inference_ms,
-                        runner.contract.dataset_fps,
-                        chunk,
+            try:
+                request, head_jpeg, wrist_jpeg = unpack_observation(parts)
+                if request.contract_sha256 != runner.contract.sha256:
+                    raise ValueError("request contract hash mismatch")
+                images = {
+                    runner.contract.camera_keys[0]: _decode_jpeg_rgb(head_jpeg),
+                    runner.contract.camera_keys[1]: _decode_jpeg_rgb(wrist_jpeg),
+                }
+                chunk = runner.predict_chunk(request.state, images, request.task)
+                inference_ms = (time.monotonic_ns() - started) / 1.0e6
+                socket.send_multipart(
+                    pack_action_response(
+                        ActionResponse(
+                            runner.contract.sha256,
+                            request.session_id,
+                            request.request_id,
+                            inference_ms,
+                            runner.contract.dataset_fps,
+                            chunk,
+                        )
                     )
                 )
-            )
+            except Exception as exc:
+                socket.send_multipart(
+                    [
+                        encode_metadata(
+                            {
+                                "protocol_version": PROTOCOL_VERSION,
+                                "type": "error",
+                                "error": f"{type(exc).__name__}: {exc}",
+                            }
+                        )
+                    ]
+                )
     finally:
         socket.close(linger=0)

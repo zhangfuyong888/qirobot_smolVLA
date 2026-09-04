@@ -13,6 +13,7 @@ from hardware_teleop.ros.robot_bridge import HardwareRobotBridge
 from real_vla.cameras.camera_manager import CameraManager
 from real_vla.config_loader import load_collection_config
 from real_vla.robot.gripper_adapter import BinaryGripper
+from real_vla.robot.home_manager import HomeManager
 from real_vla.robot.s4_adapter import S4Adapter
 
 from ...common.config import DEFAULT_PIPELINE_CONFIG, load_pipeline_config
@@ -23,6 +24,29 @@ from .logger import RolloutLogger
 from .observation import encode_jpeg, snapshot_observation
 from .policy_client import PolicyClient
 from .safety import validate_policy_chunk
+
+
+def _run_home(adapter: S4Adapter, bridge: HardwareRobotBridge, hardware, logger: RolloutLogger) -> None:
+    control_dt = 1.0 / float(hardware.hardware.control_rate_hz)
+    manager = HomeManager(
+        home_left_arm=hardware.startup.home_left_arm,
+        home_right_arm=hardware.startup.home_right_arm,
+        tolerance_rad=hardware.startup.position_tolerance_rad,
+        duration_s=hardware.startup.duration_s,
+        max_joint_step_rad=hardware.startup.max_joint_step_rad,
+        control_dt=control_dt,
+    )
+    manager.request_home(adapter.read_bimanual())
+    deadline = time.monotonic() + hardware.startup.duration_s + 10.0
+    while manager.active and time.monotonic() < deadline:
+        bridge.spin_once(timeout_sec=0.0)
+        command = manager.step()
+        adapter.publish(command, gripper_target=0.0, quest_trigger=0.0, allow_motion=True)
+        if manager.is_home(adapter.read_bimanual()):
+            logger.event("home", arrived_by=manager.arrived_by)
+            return
+        time.sleep(control_dt)
+    raise RuntimeError(f"return-home did not complete: {manager.status_line()}")
 
 
 def main() -> int:
@@ -41,6 +65,8 @@ def main() -> int:
     collection = load_collection_config()
     hardware = load_hardware_teleop_config(collection.hardware_teleop_config)
     cameras = CameraManager(collection.cameras, active_arm=cfg.contract.active_arm)
+    if cameras.names != cfg.contract.camera_sources:
+        raise RuntimeError(f"rollout cameras={cameras.names}, contract={cfg.contract.camera_sources}")
     bridge = HardwareRobotBridge(
         hardware.hardware,
         hardware.hands,
@@ -88,6 +114,16 @@ def main() -> int:
     next_control = started
     max_runtime = float(args.max_runtime_s or cfg.robot["rollout"]["max_episode_s"])
     try:
+        state_deadline = time.monotonic() + 5.0
+        while not bridge.state_ready and time.monotonic() < state_deadline:
+            bridge.spin_once(timeout_sec=0.05)
+        if not bridge.state_ready:
+            raise RuntimeError("robot state was not ready within 5 seconds")
+        if live and bool(cfg.robot["rollout"]["start_from_home"]):
+            _run_home(adapter, bridge, hardware, logger)
+            started = time.monotonic()
+            next_policy = started
+            next_control = started
         while time.monotonic() - started < max_runtime:
             bridge.spin_once(timeout_sec=0.0)
             if not bridge.state_ready:
@@ -149,12 +185,21 @@ def main() -> int:
             if now < next_control:
                 time.sleep(next_control - now)
             next_control = max(next_control + 1.0 / float(cfg.robot["rollout"]["control_hz"]), time.monotonic())
+        if live and bool(cfg.robot["rollout"]["return_home_on_finish"]):
+            _run_home(adapter, bridge, hardware, logger)
         logger.event("complete", reason="max_episode_s")
         return 0
     except BaseException as exc:
         logger.event("abort", reason=str(exc))
         if live:
-            bridge.hold_current_and_relinquish(f"rollout abort: {exc}")
+            try:
+                if bool(cfg.robot["rollout"]["return_home_on_abort"]):
+                    _run_home(adapter, bridge, hardware, logger)
+                else:
+                    bridge.hold_current_and_relinquish(f"rollout abort: {exc}")
+            except Exception as home_exc:
+                logger.event("home_failed", reason=str(home_exc))
+                bridge.hold_current_and_relinquish(f"rollout abort/home failure: {home_exc}")
         raise
     finally:
         cameras.close()
