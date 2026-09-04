@@ -75,8 +75,16 @@
   let calibrationViewerOrientation = null;
   let lastBoundarySafe = true;
   let enteringXr = false;
+  let lastHapticId = '';
+  let hapticTimers = [];
   const boundaryGuardMarginM = 0.35;
   const squeezePressed = { left: false, right: false };
+  const hapticPatterns = {
+    recording: [[0, 0.85, 180]],
+    ending: [[0, 0.75, 100], [180, 0.75, 100]],
+    saved: [[0, 0.65, 80], [140, 0.75, 80], [280, 0.90, 120]],
+    discarded: [[0, 0.80, 450]],
+  };
 
   function setStatus(text, kind = '') {
     statusNode.textContent = text;
@@ -88,6 +96,39 @@
     hudTitle.textContent = title;
     hudDetail.textContent = detail;
     setStatus(`${title}\n${detail}`, kind);
+  }
+
+  function pulseControllers(intensity, durationMs) {
+    if (!xrSession) return;
+    for (const source of xrSession.inputSources) {
+      const gamepad = source.gamepad;
+      if (!gamepad) continue;
+      const actuator = gamepad.hapticActuators && gamepad.hapticActuators[0];
+      try {
+        if (actuator && typeof actuator.pulse === 'function') {
+          Promise.resolve(actuator.pulse(intensity, durationMs)).catch(() => {});
+        } else if (gamepad.vibrationActuator &&
+                   typeof gamepad.vibrationActuator.playEffect === 'function') {
+          Promise.resolve(gamepad.vibrationActuator.playEffect('dual-rumble', {
+            duration: durationMs,
+            strongMagnitude: intensity,
+            weakMagnitude: intensity,
+          })).catch(() => {});
+        }
+      } catch (_) {
+        // Haptics are best-effort and must never interrupt controller streaming.
+      }
+    }
+  }
+
+  function playHapticCue(cue, cueId) {
+    if (!cueId || cueId === lastHapticId ||
+        !Object.prototype.hasOwnProperty.call(hapticPatterns, cue)) return;
+    lastHapticId = cueId;
+    for (const timer of hapticTimers) clearTimeout(timer);
+    hapticTimers = hapticPatterns[cue].map(([delayMs, intensity, durationMs]) =>
+      setTimeout(() => pulseControllers(intensity, durationMs), delayMs)
+    );
   }
 
   function errorText(error) {
@@ -167,6 +208,7 @@
         const msg = JSON.parse(event.data);
         if (msg && msg.type === 'hud') {
           applyHud(String(msg.title || ''), String(msg.detail || ''), String(msg.kind || 'ready'));
+          playHapticCue(String(msg.haptic || ''), String(msg.haptic_id || ''));
         }
       } catch (_) {
         // Ignore non-JSON control messages.

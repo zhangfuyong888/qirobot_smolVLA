@@ -20,7 +20,7 @@ class HomeManager:
         *,
         home_left_arm: tuple[float, ...] | np.ndarray,
         home_right_arm: tuple[float, ...] | np.ndarray,
-        tolerance_rad: float = 0.03,
+        tolerance_rad: float = 0.05,
         stable_time_s: float = 0.3,
         duration_s: float = 6.0,
         max_joint_step_rad: float = 0.025,

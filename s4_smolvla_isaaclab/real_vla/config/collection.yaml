@@ -12,7 +12,9 @@ gripper:
 home:
   gripper: open
   # Joint targets, duration and step limit come from quest_hardware.yaml.
-  tolerance_rad: 0.03
+  # Match the hardware startup tolerance. Gravity-off arms can settle
+  # 0.03-0.05 rad away from the commanded pose while still safely at Home.
+  tolerance_rad: 0.05
   stable_time_s: 0.3
 buttons:
   start: A

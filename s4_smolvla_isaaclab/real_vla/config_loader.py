@@ -255,7 +255,7 @@ def load_collection_config(path: Path | None = None) -> CollectionConfig:
         ),
         home=HomeConfig(
             gripper=str(home_raw.get("gripper", "open")),
-            tolerance_rad=float(home_raw.get("tolerance_rad", 0.03)),
+            tolerance_rad=float(home_raw.get("tolerance_rad", 0.05)),
             stable_time_s=float(home_raw.get("stable_time_s", 0.3)),
         ),
         buttons=ButtonsConfig(

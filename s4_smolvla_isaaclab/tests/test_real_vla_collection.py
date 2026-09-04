@@ -61,9 +61,20 @@ def test_collection_config_loads() -> None:
     assert config.active_wrist_name == "wrist_right"
     assert len(config.cameras.enabled_streams("right")) == 2
     assert config.robot.arm_dim == 7
+    assert config.home.tolerance_rad == pytest.approx(0.05)
     assert "pull the drawer open" in config.task.text
     assert "push it fully closed" in config.task.text
     assert "return home" in config.task.text
+
+
+def test_webxr_has_one_shot_collection_haptics() -> None:
+    source = (ROOT / "teleoperation/webxr/index.html").read_text(encoding="utf-8")
+    for cue in ("recording", "ending", "saved", "discarded"):
+        assert f"{cue}:" in source
+    assert "cueId === lastHapticId" in source
+    assert "playHapticCue(String(msg.haptic" in source
+    assert "hapticActuators" in source
+    assert "vibrationActuator" in source
 
 
 def test_real_vla_python_does_not_import_simulation_stack() -> None:

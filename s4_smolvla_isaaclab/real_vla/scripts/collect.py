@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import os
+import queue
 import shutil
 import sys
 import threading
@@ -104,6 +105,7 @@ class CollectionHooks(TeleopHooks):
         self._last_disk_check_s = 0.0
         self._disk_free_gb = float("inf")
         self._io_thread: threading.Thread | None = None
+        self._haptic_cues: queue.SimpleQueue[tuple[str, str]] = queue.SimpleQueue()
 
     def begin_tick(self, frame, now_s: float) -> TickRequest:
         if self._stop_requested:
@@ -181,10 +183,18 @@ class CollectionHooks(TeleopHooks):
             hand_triggers = None
         hud = self._hud()
         hud_out = None
-        if hud != self._last_hud or now_s - getattr(self, "_last_hud_send", 0.0) >= 0.5:
+        try:
+            haptic, haptic_id = self._haptic_cues.get_nowait()
+        except queue.Empty:
+            haptic = ""
+            haptic_id = ""
+        if haptic:
+            hud_out = {**hud, "haptic": haptic, "haptic_id": haptic_id}
+        elif hud != self._last_hud or now_s - getattr(self, "_last_hud_send", 0.0) >= 0.5:
+            hud_out = hud
+        if hud_out is not None:
             self._last_hud = hud
             self._last_hud_send = now_s
-            hud_out = hud
         return TickRequest(
             allow_teleop=allow_teleop,
             command_override=command_override,
@@ -385,9 +395,11 @@ class CollectionHooks(TeleopHooks):
         if transition.event == CollectionEvent.START:
             self.writer.begin_recording()
             self.recorder.start()
+            self._queue_haptic("recording")
             print(f"[REAL-VLA] recording episode_{self.writer.episode_id:06d}", flush=True)
         elif transition.event in {CollectionEvent.END, CollectionEvent.ABORT_RECORDING}:
             if transition.event == CollectionEvent.END:
+                self._queue_haptic("ending")
                 return
             self.recorder.stop()
             self.writer.stop_accepting(time.monotonic_ns())
@@ -437,14 +449,19 @@ class CollectionHooks(TeleopHooks):
         )
         self._io_thread.start()
 
+    def _queue_haptic(self, cue: str) -> None:
+        self._haptic_cues.put((cue, f"{time.monotonic_ns()}-{cue}"))
+
     def _io_worker(self, action: str) -> None:
         try:
             if action == "save":
                 path = self.writer.save()
                 print(f"[REAL-VLA] saved {path}", flush=True)
+                self._queue_haptic("saved")
             else:
                 self.writer.discard()
                 print("[REAL-VLA] discarded pending episode", flush=True)
+                self._queue_haptic("discarded")
             next_id = self.writer.next_episode_id()
             self.writer.prepare_episode(next_id, self.cameras.readers)
             if self.writer.is_prepared:
