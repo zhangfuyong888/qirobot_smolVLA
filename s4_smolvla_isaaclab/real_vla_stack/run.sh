@@ -21,6 +21,7 @@ case "$COMMAND" in
       echo "SmolVLA host Python not found; set S4_SMOLVLA_PYTHON" >&2
       exit 2
     fi
+    export PATH="$(dirname "$HOST_PYTHON"):$PATH"
     exec "$HOST_PYTHON" -m real_vla_stack.cli "$COMMAND" "$@"
     ;;
   rollout)
@@ -28,6 +29,7 @@ case "$COMMAND" in
       echo "Hardware Python not found; set S4_HW_TELEOP_PYTHON" >&2
       exit 2
     fi
+    export PATH="$(dirname "$ROBOT_PYTHON"):$PATH"
     exec "$ROBOT_PYTHON" -m real_vla_stack.robot.rollout.main "$@"
     ;;
   help|-h|--help)
