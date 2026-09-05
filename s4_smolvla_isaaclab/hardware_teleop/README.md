@@ -330,6 +330,13 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `command_watchdog_timeout_s` | `0.10` | 主循环无心跳后触发当前实测姿态保持 |
 | `shutdown_hold_duration_s` | `0.5` | 停机前重复发送实测手臂姿态的时间 |
 
+默认模式使用 `/lowcmd_replay + mode_ctrl=4`，只适用于未运行腿部 deploy 的独立遥操。
+如果检测到腿部 deploy，默认模式会拒绝启动；运行中后启动 deploy 也会停止遥操输出。
+同时运行 `S2_homie_controller.launch.py` 时追加 `--with-leg-deploy`，遥操会改用
+`/lowcmd + mode_ctrl=5`，由 SDK 合并 deploy 的 0-11 腿部命令和遥操的 12-25
+上肢命令。共存模式会校验 `/qi_topic_converter` 存在且没有额外命令发布者。
+启动前必须收到实际策略帧，运行中策略帧超过 250 ms 未更新也会停止遥操输出。
+
 
 #### `startup` 段
 

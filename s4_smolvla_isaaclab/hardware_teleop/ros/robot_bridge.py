@@ -35,6 +35,9 @@ class RosImportError(ImportError):
     """Raised when local ROS2 runtime or qi message types are unavailable."""
 
 
+_READY_CALLBACK_DRAIN_LIMIT = 8
+
+
 def _require_ros_types():
     try:
         import rclpy
@@ -60,6 +63,9 @@ class HardwareRobotBridge:
         project_root: Path | None = None,
         check_arm_command_publishers: bool = True,
         command_output_enabled: bool = True,
+        expected_command_publishers: tuple[str, ...] = (),
+        expected_command_mode_ctrl: int | None = None,
+        forbidden_command_publishers: tuple[tuple[str, str], ...] = (),
     ) -> None:
         rclpy, JointState, LowCmd, LowState, MotorCmd, HandCmd, HandsCmd = _require_ros_types()
         self._rclpy = rclpy
@@ -77,6 +83,22 @@ class HardwareRobotBridge:
         self._joint_order = list(REAL_ROBOT_BODY_JOINT_ORDER)
         self._arm_joint_names = set(ARM_JOINT_NAMES)
         self._command_output_enabled = bool(command_output_enabled)
+        self._expected_command_publishers = tuple(
+            self._normalize_node_label(label) for label in expected_command_publishers
+        )
+        self._expected_command_mode_ctrl = (
+            None
+            if expected_command_mode_ctrl is None
+            else int(expected_command_mode_ctrl)
+        )
+        if self._expected_command_publishers and self._expected_command_mode_ctrl is None:
+            raise ValueError(
+                "expected_command_mode_ctrl is required with expected command publishers"
+            )
+        self._forbidden_command_publishers = tuple(
+            (str(topic), self._normalize_node_label(label))
+            for topic, label in forbidden_command_publishers
+        )
 
         self._gravity_comp: ArmGravityCompensator | None = None
         self._gravity_enabled = False
@@ -97,6 +119,9 @@ class HardwareRobotBridge:
         self._has_published_lowcmd = False
         self._last_graph_check_time = 0.0
         self._last_external_arm_command_publishers: tuple[str, ...] = ()
+        self._last_command_publisher_conflicts: tuple[str, ...] = ()
+        self._last_expected_command_time = 0.0
+        self._last_expected_command_mode_ctrl: int | None = None
         self._lock = threading.Lock()
         self._spin_lock = threading.Lock()
         self._command_lock = threading.RLock()
@@ -134,7 +159,17 @@ class HardwareRobotBridge:
         else:
             raise ValueError(f"unsupported hardware.state_source: {ros_cfg.state_source!r}")
 
-        if self._command_output_enabled and check_arm_command_publishers:
+        if self._expected_command_publishers:
+            self._node.create_subscription(
+                LowCmd,
+                ros_cfg.arm_command_topic,
+                self._on_expected_command,
+                10,
+            )
+
+        if self._command_output_enabled and (
+            check_arm_command_publishers or self._forbidden_command_publishers
+        ):
             self._check_arm_command_publisher_count()
 
         self._lowcmd_pub = None
@@ -181,10 +216,28 @@ class HardwareRobotBridge:
             flush=True,
         )
 
+    def _on_expected_command(self, msg) -> None:
+        mode_ctrl = int(msg.mode_ctrl)
+        if mode_ctrl != self._expected_command_mode_ctrl:
+            return
+        with self._lock:
+            self._last_expected_command_time = time.monotonic()
+            self._last_expected_command_mode_ctrl = mode_ctrl
+
     def _arm_command_publisher_labels(
         self, *, discovery_timeout_s: float = 0.0
     ) -> tuple[str, ...]:
-        topic = self._ros_cfg.arm_command_topic
+        return self._publisher_labels(
+            self._ros_cfg.arm_command_topic,
+            discovery_timeout_s=discovery_timeout_s,
+        )
+
+    def _publisher_labels(
+        self,
+        topic: str,
+        *,
+        discovery_timeout_s: float = 0.0,
+    ) -> tuple[str, ...]:
         candidates = [topic]
         if topic.startswith("/"):
             candidates.append(topic.lstrip("/"))
@@ -211,6 +264,10 @@ class HardwareRobotBridge:
         return tuple(seen)
 
     @staticmethod
+    def _normalize_node_label(label: str) -> str:
+        return "/" + str(label).strip("/")
+
+    @staticmethod
     def _external_arm_command_publishers(labels: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(
             label
@@ -218,17 +275,46 @@ class HardwareRobotBridge:
             if label != "/hardware_quest_teleop_bridge"
         )
 
+    def _command_publisher_conflicts(
+        self,
+        labels: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        observed = tuple(self._normalize_node_label(label) for label in labels)
+        expected = self._expected_command_publishers
+        unexpected = tuple(label for label in observed if label not in expected)
+        missing = tuple(f"missing:{label}" for label in expected if label not in observed)
+        return unexpected + missing
+
+    def _forbidden_publisher_conflicts(self) -> tuple[str, ...]:
+        conflicts: list[str] = []
+        for topic, forbidden_label in self._forbidden_command_publishers:
+            labels = tuple(
+                self._normalize_node_label(label)
+                for label in self._publisher_labels(topic)
+            )
+            if forbidden_label in labels:
+                conflicts.append(f"forbidden:{forbidden_label}@{topic}")
+        return tuple(conflicts)
+
     def _check_arm_command_publisher_count(self) -> None:
         topic = self._ros_cfg.arm_command_topic
-        seen = list(
-            self._external_arm_command_publishers(
-                self._arm_command_publisher_labels(discovery_timeout_s=1.0)
+        discovery_timeout_s = 3.0 if self._expected_command_publishers else 1.0
+        seen = self._external_arm_command_publishers(
+            self._arm_command_publisher_labels(
+                discovery_timeout_s=discovery_timeout_s
             )
         )
-        if seen:
+        conflicts = (
+            self._command_publisher_conflicts(seen)
+            + self._forbidden_publisher_conflicts()
+        )
+        with self._lock:
+            self._last_external_arm_command_publishers = seen
+            self._last_command_publisher_conflicts = conflicts
+        if conflicts:
             raise RuntimeError(
-                f"Refusing to start: arm command topic {topic!r} already has publisher(s): "
-                f"{', '.join(seen)}. Stop every old teleop or replay controller first."
+                f"Refusing to start: command publisher contract for {topic!r} is not met: "
+                f"{', '.join(conflicts)}."
             )
 
     def is_arm_command_graph_conflicted(self, check_period_s: float = 0.2) -> bool:
@@ -236,14 +322,52 @@ class HardwareRobotBridge:
         now = time.monotonic()
         with self._lock:
             if now - self._last_graph_check_time < max(float(check_period_s), 0.0):
-                return bool(self._last_external_arm_command_publishers)
+                return bool(self._last_command_publisher_conflicts)
         labels = self._external_arm_command_publishers(
             self._arm_command_publisher_labels()
+        )
+        conflicts = (
+            self._command_publisher_conflicts(labels)
+            + self._forbidden_publisher_conflicts()
         )
         with self._lock:
             self._last_graph_check_time = now
             self._last_external_arm_command_publishers = labels
-        return bool(labels)
+            self._last_command_publisher_conflicts = conflicts
+        return bool(conflicts)
+
+    @property
+    def command_publisher_conflicts(self) -> tuple[str, ...]:
+        with self._lock:
+            return self._last_command_publisher_conflicts
+
+    @property
+    def expected_command_age_s(self) -> float:
+        if not self._expected_command_publishers:
+            return 0.0
+        with self._lock:
+            if self._last_expected_command_time <= 0.0:
+                return float("inf")
+            return max(time.monotonic() - self._last_expected_command_time, 0.0)
+
+    def is_expected_command_feed_stale(self, max_age_s: float) -> bool:
+        if not self._expected_command_publishers:
+            return False
+        return self.expected_command_age_s > max(float(max_age_s), 0.0)
+
+    def wait_for_expected_command(self, timeout_s: float) -> None:
+        if not self._expected_command_publishers:
+            return
+        deadline = time.monotonic() + max(float(timeout_s), 0.0)
+        while time.monotonic() < deadline:
+            self.spin_once(timeout_sec=0.05)
+            if self._last_expected_command_time > 0.0:
+                return
+        topic = self._ros_cfg.arm_command_topic
+        raise TimeoutError(
+            f"timed out waiting for leg-deploy mode_ctrl="
+            f"{self._expected_command_mode_ctrl} on {topic}"
+        )
 
     @property
     def state_ready(self) -> bool:
@@ -269,6 +393,9 @@ class HardwareRobotBridge:
     def spin_once(self, timeout_sec: float = 0.0) -> None:
         with self._spin_lock:
             self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
+            if timeout_sec <= 0.0:
+                for _ in range(_READY_CALLBACK_DRAIN_LIMIT - 1):
+                    self._rclpy.spin_once(self._node, timeout_sec=0.0)
 
     def wait_for_initial_state(self, timeout_s: float) -> None:
         deadline = time.monotonic() + max(timeout_s, 0.0)
@@ -585,6 +712,23 @@ class HardwareRobotBridge:
                 "state_rejection_count": self._state_rejection_count,
                 "last_state_rejection": self._last_state_rejection,
                 "external_arm_command_publishers": self._last_external_arm_command_publishers,
+                "expected_command_publishers": self._expected_command_publishers,
+                "expected_command_required_mode_ctrl": self._expected_command_mode_ctrl,
+                "forbidden_command_publishers": self._forbidden_command_publishers,
+                "command_publisher_conflicts": self._last_command_publisher_conflicts,
+                "expected_command_age_s": (
+                    0.0
+                    if not self._expected_command_publishers
+                    else (
+                        float("inf")
+                        if self._last_expected_command_time <= 0.0
+                        else max(
+                            time.monotonic() - self._last_expected_command_time,
+                            0.0,
+                        )
+                    )
+                ),
+                "expected_command_mode_ctrl": self._last_expected_command_mode_ctrl,
                 "left_hand_trigger": self._last_hand_trigger[0],
                 "right_hand_trigger": self._last_hand_trigger[1],
                 "arm_command_topic": self._ros_cfg.arm_command_topic,

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from hardware_teleop import config_loader
+from hardware_teleop.command_route import configure_command_route
 from hardware_teleop.config_loader import load_hardware_teleop_config
 
 
@@ -79,6 +80,19 @@ def test_hardware_config_loads() -> None:
         "left_wrist_yaw_joint",
         "right_shoulder_yaw_joint",
     )
+
+
+def test_leg_deploy_cli_selects_sdk_merge_route() -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    routed, expected = configure_command_route(
+        config,
+        with_leg_deploy=True,
+    )
+    assert routed.hardware.arm_command_topic == "/lowcmd"
+    assert routed.hardware.arm_command_mode_ctrl == 5
+    assert expected == ("/qi_topic_converter",)
+    assert config.hardware.arm_command_topic == "/lowcmd_replay"
+    assert config.hardware.arm_command_mode_ctrl == 4
 
 
 def test_hardware_config_rejects_bad_backend(tmp_path: Path) -> None:

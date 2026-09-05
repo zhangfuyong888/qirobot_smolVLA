@@ -42,10 +42,9 @@ class CameraManager:
             raise RuntimeError(f"camera warmup produced no frames: {missing}")
 
     def health_line(self) -> str:
-        now_ns = time.monotonic_ns()
         parts = []
-        for name, reader in self.readers.items():
-            stats = reader.buffer.stats(now_ns)
+        for name, stats in self.stats().items():
+            reader = self.readers[name]
             captured = int(stats["captured_frames"])
             fps = 0.0
             if captured > 1 and stats["max_frame_interval_ms"]:
@@ -56,6 +55,13 @@ class CameraManager:
             parts.append(f"{name.upper()} n={captured} drop={drops} age={stats['last_frame_age_ms']:.0f}ms")
             del fps
         return "  ".join(parts)
+
+    def stats(self) -> dict[str, dict[str, float | int]]:
+        now_ns = time.monotonic_ns()
+        return {
+            name: dict(reader.buffer.stats(now_ns))
+            for name, reader in self.readers.items()
+        }
 
     def close(self) -> None:
         for reader in self.readers.values():

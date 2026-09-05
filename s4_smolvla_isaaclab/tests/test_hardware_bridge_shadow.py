@@ -68,6 +68,7 @@ class _Rclpy:
     def __init__(self) -> None:
         self.node = _Node()
         self._ok = False
+        self.spin_count = 0
 
     def ok(self) -> bool:
         return self._ok
@@ -82,6 +83,7 @@ class _Rclpy:
     def spin_once(self, node: _Node, timeout_sec: float = 0.0) -> None:
         assert node is self.node
         assert timeout_sec >= 0.0
+        self.spin_count += 1
 
     def shutdown(self) -> None:
         self._ok = False
@@ -177,6 +179,114 @@ def test_runtime_graph_monitor_rejects_any_external_arm_source(monkeypatch) -> N
         )
     finally:
         bridge.close()
+
+
+def test_nonblocking_spin_drains_ready_ros_callbacks(monkeypatch) -> None:
+    _config, bridge = _make_bridge(monkeypatch)
+    try:
+        fake_rclpy = bridge._rclpy
+        bridge.spin_once(timeout_sec=0.0)
+        assert fake_rclpy.spin_count == robot_bridge._READY_CALLBACK_DRAIN_LIMIT
+
+        bridge.spin_once(timeout_sec=0.01)
+        assert fake_rclpy.spin_count == robot_bridge._READY_CALLBACK_DRAIN_LIMIT + 1
+    finally:
+        bridge.close()
+
+
+def test_leg_deploy_graph_contract_accepts_only_expected_converter(monkeypatch) -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    fake_rclpy = _Rclpy()
+    fake_rclpy.node.publisher_infos = [
+        SimpleNamespace(node_namespace="/", node_name="qi_topic_converter"),
+    ]
+    monkeypatch.setattr(
+        robot_bridge,
+        "_require_ros_types",
+        lambda: (fake_rclpy, _Message, _Message, _Message, _Message, _Message, _Message),
+    )
+    bridge = robot_bridge.HardwareRobotBridge(
+        replace(
+            config.hardware,
+            arm_command_topic="/lowcmd",
+            arm_command_mode_ctrl=5,
+        ),
+        config.hands,
+        gravity_cfg=replace(config.gravity, enabled=False),
+        project_root=config.project_root,
+        check_arm_command_publishers=True,
+        command_output_enabled=True,
+        expected_command_publishers=("/qi_topic_converter",),
+        expected_command_mode_ctrl=1,
+    )
+    try:
+        assert not bridge.is_arm_command_graph_conflicted(check_period_s=0.0)
+        assert bridge.diagnostics()["expected_command_publishers"] == (
+            "/qi_topic_converter",
+        )
+        assert bridge.is_expected_command_feed_stale(0.25)
+        bridge._on_expected_command(SimpleNamespace(mode_ctrl=1))
+        assert not bridge.is_expected_command_feed_stale(0.25)
+        bridge._on_expected_command(SimpleNamespace(mode_ctrl=4))
+        bridge._on_expected_command(SimpleNamespace(mode_ctrl=5))
+        assert bridge.diagnostics()["expected_command_mode_ctrl"] == 1
+        fake_rclpy.node.publisher_infos = []
+        assert bridge.is_arm_command_graph_conflicted(check_period_s=0.0)
+        assert bridge.command_publisher_conflicts == ("missing:/qi_topic_converter",)
+    finally:
+        bridge.close()
+
+
+def test_leg_deploy_graph_contract_rejects_extra_publisher(monkeypatch) -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    fake_rclpy = _Rclpy()
+    fake_rclpy.node.publisher_infos = [
+        SimpleNamespace(node_namespace="/", node_name="qi_topic_converter"),
+        SimpleNamespace(node_namespace="/legacy", node_name="old_controller"),
+    ]
+    monkeypatch.setattr(
+        robot_bridge,
+        "_require_ros_types",
+        lambda: (fake_rclpy, _Message, _Message, _Message, _Message, _Message, _Message),
+    )
+    with np.testing.assert_raises_regex(RuntimeError, "/legacy/old_controller"):
+        robot_bridge.HardwareRobotBridge(
+            replace(
+                config.hardware,
+                arm_command_topic="/lowcmd",
+                arm_command_mode_ctrl=5,
+            ),
+            config.hands,
+            gravity_cfg=replace(config.gravity, enabled=False),
+            project_root=config.project_root,
+            check_arm_command_publishers=True,
+            command_output_enabled=True,
+            expected_command_publishers=("/qi_topic_converter",),
+            expected_command_mode_ctrl=1,
+        )
+
+
+def test_standalone_route_rejects_running_leg_deploy(monkeypatch) -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    fake_rclpy = _Rclpy()
+    fake_rclpy.node.publisher_infos = [
+        SimpleNamespace(node_namespace="/", node_name="qi_topic_converter"),
+    ]
+    monkeypatch.setattr(
+        robot_bridge,
+        "_require_ros_types",
+        lambda: (fake_rclpy, _Message, _Message, _Message, _Message, _Message, _Message),
+    )
+    with np.testing.assert_raises_regex(RuntimeError, "forbidden:/qi_topic_converter@/lowcmd"):
+        robot_bridge.HardwareRobotBridge(
+            config.hardware,
+            config.hands,
+            gravity_cfg=replace(config.gravity, enabled=False),
+            project_root=config.project_root,
+            check_arm_command_publishers=True,
+            command_output_enabled=True,
+            forbidden_command_publishers=(("/lowcmd", "/qi_topic_converter"),),
+        )
 
 
 def test_shutdown_holds_measured_arms_then_relinquishes(monkeypatch) -> None:

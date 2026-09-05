@@ -10,8 +10,12 @@ class Recorder:
     def __init__(self, writer: EpisodeWriter) -> None:
         self.writer = writer
         self.enabled = False
+        self.state_count = 0
+        self.action_count = 0
 
     def start(self) -> None:
+        self.state_count = 0
+        self.action_count = 0
         self.enabled = True
 
     def stop(self) -> None:
@@ -20,7 +24,9 @@ class Recorder:
     def on_state(self, state: PolicyState) -> None:
         if self.enabled:
             self.writer.record_state(state)
+            self.state_count += 1
 
     def on_action(self, command: PublishedCommand) -> None:
         if self.enabled:
             self.writer.record_action(command)
+            self.action_count += 1

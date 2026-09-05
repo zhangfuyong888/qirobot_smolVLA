@@ -28,7 +28,12 @@ from hardware_teleop.config_loader import (  # noqa: E402
     HardwareStartupConfig,
     load_hardware_teleop_config,
 )
-from hardware_teleop.hooks import TeleopHooks, TeleopTick, TickRequest  # noqa: E402
+from hardware_teleop.hooks import (  # noqa: E402
+    TeleopHooks,
+    TeleopStatus,
+    TeleopTick,
+    TickRequest,
+)
 from hardware_teleop.pink_main import build_parser as build_teleop_parser  # noqa: E402
 from hardware_teleop.pink_main import run_pink_hardware_teleop  # noqa: E402
 from s4_robot.control_mapping import ACTION_SLICES  # noqa: E402
@@ -43,6 +48,10 @@ from real_vla.collection.episode_writer import (  # noqa: E402
 from real_vla.collection.recorder import Recorder  # noqa: E402
 from real_vla.collection.schema import PolicyState, PublishedCommand  # noqa: E402
 from real_vla.collection.state_machine import CollectionEvent, CollectionState, CollectionStateMachine  # noqa: E402
+from real_vla.console_dashboard import (  # noqa: E402
+    CollectionConsoleDashboard,
+    CollectionDashboardStatus,
+)
 from real_vla.config_loader import CollectionConfig, load_collection_config  # noqa: E402
 from real_vla.input.quest_buttons import QuestButtonDecoder  # noqa: E402
 from real_vla.robot.gripper_adapter import OPEN, BinaryGripper, gripper_to_hand6  # noqa: E402
@@ -69,6 +78,7 @@ class CollectionHooks(TeleopHooks):
         writer: EpisodeWriter,
         hands_cfg: HardwareHandsConfig,
         startup_cfg: HardwareStartupConfig,
+        dashboard_enabled: bool = True,
     ) -> None:
         self.config = config
         self.cameras = cameras
@@ -106,6 +116,14 @@ class CollectionHooks(TeleopHooks):
         self._disk_free_gb = float("inf")
         self._io_thread: threading.Thread | None = None
         self._haptic_cues: queue.SimpleQueue[tuple[str, str]] = queue.SimpleQueue()
+        self._camera_start_counts: dict[str, int] = {}
+        self._camera_end_counts: dict[str, int] = {}
+        self._episode_duration_s = 0.0
+        self.dashboard = CollectionConsoleDashboard(
+            enabled=dashboard_enabled,
+            event_log_path=writer.session_dir / "runtime.log",
+            refresh_interval_s=1.0,
+        )
 
     def begin_tick(self, frame, now_s: float) -> TickRequest:
         if self._stop_requested:
@@ -113,7 +131,7 @@ class CollectionHooks(TeleopHooks):
         if not self._started:
             self.machine.on_startup_ok()
             self._started = True
-            print("[REAL-VLA] HOMING  wait; Grip ignored until READY", flush=True)
+            self._emit("HOMING: wait; Grip ignored until READY")
 
         edges = self.buttons.update(frame, now_s)
         self._log_buttons(frame, edges, now_s)
@@ -122,9 +140,9 @@ class CollectionHooks(TeleopHooks):
             and edges.a_rising
             and not self.writer.is_prepared
         ):
-            print(
-                f"[REAL-VLA] A ignored: recorder not ready ({self.writer.prepare_error or 'preparing'})",
-                flush=True,
+            self._emit(
+                f"A ignored: recorder not ready ({self.writer.prepare_error or 'preparing'})",
+                "warning",
             )
             edges = replace(edges, a_rising=False)
         if now_s - self._last_disk_check_s >= 1.0:
@@ -235,7 +253,7 @@ class CollectionHooks(TeleopHooks):
                     if self.machine.state == CollectionState.RETURNING_HOME:
                         self.writer.mark_invalid(reason)
                     else:
-                        print(f"[REAL-VLA] {reason}; collection stopped", flush=True)
+                        self._emit(f"{reason}; collection stopped", "error")
                         self._stop_requested = True
                         return
                 transition = self.machine.on_home_arrived()
@@ -245,7 +263,7 @@ class CollectionHooks(TeleopHooks):
             transition = self.machine.on_writer_finalized()
             self._on_transition(transition, tick.monotonic_s)
 
-        if tick.monotonic_s - getattr(self, "_last_report", 0.0) >= 0.5:
+        if not self.dashboard.enabled and tick.monotonic_s - getattr(self, "_last_report", 0.0) >= 0.5:
             self._last_report = tick.monotonic_s
             extra = ""
             if self.machine.state in {
@@ -259,6 +277,85 @@ class CollectionHooks(TeleopHooks):
                 f"disk={self._disk_free_gb:.1f}GB{extra}",
                 flush=True,
             )
+
+    def on_status(self, status: TeleopStatus) -> bool:
+        if not self.dashboard.enabled:
+            return False
+        camera_stats = self.cameras.stats()
+        capture_end = bool(self._camera_end_counts) and not self.recorder.enabled
+        show_episode = self.machine.state in {
+            CollectionState.RECORDING,
+            CollectionState.RETURNING_HOME,
+            CollectionState.REVIEW,
+        }
+        for name, stats in camera_stats.items():
+            current = int(stats.get("captured_frames", 0))
+            if capture_end:
+                current = self._camera_end_counts.get(name, current)
+            start = self._camera_start_counts.get(name, current)
+            stats["episode_frames"] = max(current - start, 0) if show_episode else 0
+
+        duration_s = self._episode_duration_s
+        if self.recorder.enabled and self.writer.meta.t_start_ns > 0:
+            duration_s = max(time.monotonic_ns() - self.writer.meta.t_start_ns, 0) / 1.0e9
+            self._episode_duration_s = duration_s
+        elif self.machine.state == CollectionState.REVIEW:
+            duration_s = float(self.writer.meta.duration_s)
+            self._episode_duration_s = duration_s
+        elif self.machine.state != CollectionState.RETURNING_HOME:
+            duration_s = 0.0
+
+        if self.machine.state == CollectionState.REVIEW and self.writer.quality is not None:
+            quality = self.writer.quality.label
+        elif self.machine.state in {CollectionState.RECORDING, CollectionState.RETURNING_HOME}:
+            quality = "COLLECTING"
+        else:
+            quality = "WAITING"
+
+        if self.machine.state == CollectionState.READY:
+            allowed_arms = "BOTH"
+        elif self.machine.state == CollectionState.RECORDING:
+            allowed_arms = self.config.active_arm.upper()
+        elif self.machine.state in {
+            CollectionState.HOMING,
+            CollectionState.HOMING_TO_RECORD,
+            CollectionState.RETURNING_HOME,
+        }:
+            allowed_arms = "AUTO HOME"
+        else:
+            allowed_arms = "NONE"
+
+        home_status = ""
+        if self.machine.state in {
+            CollectionState.HOMING,
+            CollectionState.HOMING_TO_RECORD,
+            CollectionState.RETURNING_HOME,
+        }:
+            home_status = f"{self.home.status_line()} via={self.home.arrived_by or '-'}"
+
+        saved_episodes = sum(1 for path in self.writer.episodes_dir.glob("episode_*") if path.is_dir())
+        view = CollectionDashboardStatus(
+            state=self.machine.state.value,
+            episode_id=self.writer.episode_id,
+            saved_episodes=saved_episodes,
+            allowed_arms=allowed_arms,
+            duration_s=duration_s,
+            state_count=self.recorder.state_count,
+            action_count=self.recorder.action_count,
+            quality=quality,
+            disk_free_gb=self._disk_free_gb,
+            session_name=self.writer.session_dir.name,
+            home_status=home_status,
+            camera_stats=camera_stats,
+        )
+        return self.dashboard.render(status, view)
+
+    def on_client_log(self, level: str, message: str) -> bool:
+        if not self.dashboard.enabled:
+            return False
+        normalized = "error" if level == "error" else "warning" if level == "warning" else "info"
+        self.dashboard.add_event(f"WebXR: {message}", normalized)
+        return True
 
     def _record_tick(self, tick: TeleopTick) -> None:
         gripper = self.gripper.state
@@ -387,51 +484,67 @@ class CollectionHooks(TeleopHooks):
                 f"state={self.machine.state.value} "
                 f"btnL={_fmt_buttons(left)} btnR={_fmt_buttons(right)}"
             )
-            if line != self._last_button_log:
+            if line != self._last_button_log and not self.dashboard.enabled:
                 self._last_button_log = line
                 print(line, flush=True)
 
     def _on_transition(self, transition, now_s: float) -> None:
         del now_s
         if transition.message:
-            print(f"[REAL-VLA] {transition.message}", flush=True)
+            self._emit(transition.message)
         if transition.event is None:
             return
         if transition.event == CollectionEvent.HOME_DONE and self.home.arrived_by:
-            print(
-                f"[REAL-VLA] home accepted via {self.home.arrived_by} "
-                f"({self.home.status_line()})",
-                flush=True,
+            self._emit(
+                f"Home accepted via {self.home.arrived_by} ({self.home.status_line()})",
+                "success",
             )
         if transition.event == CollectionEvent.START:
             self.writer.begin_recording()
             self.recorder.start()
+            self._episode_duration_s = 0.0
+            self._camera_start_counts = {
+                name: int(stats["captured_frames"])
+                for name, stats in self.cameras.stats().items()
+            }
+            self._camera_end_counts = {}
             self._queue_haptic("recording")
-            print(f"[REAL-VLA] recording episode_{self.writer.episode_id:06d}", flush=True)
+            self._emit(f"Recording episode_{self.writer.episode_id:06d}", "success")
         elif transition.event in {CollectionEvent.END, CollectionEvent.ABORT_RECORDING}:
             if transition.event == CollectionEvent.END:
                 self._queue_haptic("ending")
+                self._emit("B accepted: recording automatic return Home")
                 return
             self.recorder.stop()
             self.writer.stop_accepting(time.monotonic_ns())
             self.writer.finalize_async()
         elif transition.event == CollectionEvent.RETURN_HOME_DONE:
             if self.recorder.enabled:
+                self._camera_end_counts = {
+                    name: int(stats["captured_frames"])
+                    for name, stats in self.cameras.stats().items()
+                }
                 self.recorder.stop()
                 self.writer.stop_accepting(time.monotonic_ns())
                 self.writer.finalize_async()
         elif transition.event == CollectionEvent.WRITER_DONE or (
             transition.state == CollectionState.REVIEW
         ):
-            print(self.writer.review_summary(), flush=True)
+            if self.writer.quality is None or not self.writer.quality.valid:
+                level = "error"
+            elif self.writer.quality.warning:
+                level = "warning"
+            else:
+                level = "success"
+            self._emit(self.writer.review_summary(), level)
         elif transition.event == CollectionEvent.SAVE:
-            print("[REAL-VLA] saving in background...", flush=True)
+            self._emit("Saving in background...")
             self._spawn_io("save")
         elif transition.event == CollectionEvent.DISCARD:
-            print("[REAL-VLA] discarding in background...", flush=True)
+            self._emit("Discarding in background...", "warning")
             self._spawn_io("discard")
         elif transition.event == CollectionEvent.LOW_DISK:
-            print("[REAL-VLA] A ignored: LOW DISK SPACE", flush=True)
+            self._emit("A ignored: LOW DISK SPACE", "error")
 
     def shutdown(self) -> None:
         """Finish any active writer without issuing additional robot motion."""
@@ -446,11 +559,12 @@ class CollectionHooks(TeleopHooks):
             self.writer.cancel_prepared()
         if self.writer.active_dir is not None and self.writer._finalize_thread is not None:
             if not self.writer.wait_finalized(timeout_s=40.0):
-                print("[REAL-VLA] writer shutdown timed out; pending episode kept", flush=True)
+                self._emit("Writer shutdown timed out; pending episode kept", "error")
+        self.dashboard.close()
 
     def _spawn_io(self, action: str) -> None:
         if self._io_thread is not None and self._io_thread.is_alive():
-            print("[REAL-VLA] save/discard already in progress", flush=True)
+            self._emit("Save/discard already in progress", "warning")
             return
         self._io_thread = threading.Thread(
             target=self._io_worker,
@@ -463,30 +577,34 @@ class CollectionHooks(TeleopHooks):
     def _queue_haptic(self, cue: str) -> None:
         self._haptic_cues.put((cue, f"{time.monotonic_ns()}-{cue}"))
 
+    def _emit(self, message: str, level: str = "info") -> None:
+        self.dashboard.add_event(message, level)
+        if not self.dashboard.enabled:
+            print(f"[REAL-VLA] {message}", flush=True)
+
+    def close_dashboard(self) -> None:
+        self.dashboard.close()
+
     def _io_worker(self, action: str) -> None:
         try:
             if action == "save":
                 path = self.writer.save()
-                print(f"[REAL-VLA] saved {path}", flush=True)
+                self._emit(f"Saved {path}", "success")
                 self._queue_haptic("saved")
             else:
                 self.writer.discard()
-                print("[REAL-VLA] discarded pending episode", flush=True)
+                self._emit("Discarded pending episode", "warning")
                 self._queue_haptic("discarded")
             next_id = self.writer.next_episode_id()
             self.writer.prepare_episode(next_id, self.cameras.readers)
             if self.writer.is_prepared:
-                print(
-                    f"[REAL-VLA] recorder ready episode_{next_id:06d}  A: START",
-                    flush=True,
-                )
+                self._emit(f"Recorder ready episode_{next_id:06d}; A: START", "success")
             else:
-                print(
-                    f"[REAL-VLA] recorder prepare failed: {self.writer.prepare_error}",
-                    flush=True,
-                )
-        except Exception:
-            traceback.print_exc()
+                self._emit(f"Recorder prepare failed: {self.writer.prepare_error}", "error")
+        except Exception as exc:
+            self._emit(f"{action} failed: {type(exc).__name__}: {exc}", "error")
+            if not self.dashboard.enabled:
+                traceback.print_exc()
 
 
 def _fmt_buttons(values: tuple[float, ...]) -> str:
@@ -537,6 +655,9 @@ def main(argv: list[str] | None = None) -> int:
     teleop_args = teleop_parser.parse_args(remaining)
     collection = load_collection_config(args.config)
     teleop_args.hardware_config = collection.hardware_teleop_config
+    dashboard_requested = not teleop_args.input_debug
+    if dashboard_requested:
+        teleop_args.report_period_s = 1.0
     # Startup homing is joint-space and can recover an elbow that is outside
     # Pink's URDF range. Skipping it seeds IK from the measured pose and can
     # crash before HomeManager ever runs.
@@ -586,6 +707,7 @@ def main(argv: list[str] | None = None) -> int:
         writer,
         hands_cfg=config.hands,
         startup_cfg=config.startup,
+        dashboard_enabled=dashboard_requested,
     )
     try:
         cameras.start()
@@ -607,9 +729,11 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(config, ik=replace(config.ik, backend=str(teleop_args.ik_backend)))
         run_pink_hardware_teleop(config, teleop_args, hooks=hooks)
     except KeyboardInterrupt:
+        hooks.close_dashboard()
         print("\n[REAL-VLA] interrupted", flush=True)
         return 130
     except BaseException:
+        hooks.close_dashboard()
         print("[FATAL] real VLA collection failed:", flush=True)
         traceback.print_exc()
         return 1

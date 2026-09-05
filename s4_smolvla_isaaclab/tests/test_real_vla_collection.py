@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import ast
+import io
+import math
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -14,7 +16,12 @@ from real_vla.config_loader import load_collection_config
 from real_vla.input.quest_buttons import QuestButtonDecoder
 from real_vla.robot.gripper_adapter import BinaryGripper, GRASP, OPEN
 from real_vla.robot.home_manager import HomeManager
-from hardware_teleop.pink_main import _request_arm_enabled
+from hardware_teleop.pink_main import _request_arm_enabled, build_parser
+from hardware_teleop.hooks import TeleopStatus
+from real_vla.console_dashboard import (
+    CollectionConsoleDashboard,
+    CollectionDashboardStatus,
+)
 from teleoperation.protocol import ControllerFrame, ControllerSample
 
 
@@ -62,7 +69,7 @@ def test_collection_config_loads() -> None:
     assert config.active_wrist_name == "wrist_right"
     assert len(config.cameras.enabled_streams("right")) == 2
     assert config.robot.arm_dim == 7
-    assert config.home.tolerance_rad == pytest.approx(0.05)
+    assert config.home.tolerance_rad == pytest.approx(0.08)
     assert "pull the drawer open" in config.task.text
     assert "push it fully closed" in config.task.text
     assert "return home" in config.task.text
@@ -76,6 +83,11 @@ def test_tick_arm_cap_can_narrow_but_not_widen_cli_limit() -> None:
     assert _request_arm_enabled("right", None, "right") is True
 
 
+def test_hardware_parser_exposes_explicit_leg_deploy_mode() -> None:
+    args = build_parser().parse_args(["--with-leg-deploy"])
+    assert args.with_leg_deploy is True
+
+
 def test_webxr_has_one_shot_collection_haptics() -> None:
     source = (ROOT / "teleoperation/webxr/index.html").read_text(encoding="utf-8")
     for cue in ("recording", "ending", "saved", "discarded"):
@@ -84,6 +96,83 @@ def test_webxr_has_one_shot_collection_haptics() -> None:
     assert "playHapticCue(String(msg.haptic" in source
     assert "hapticActuators" in source
     assert "vibrationActuator" in source
+
+
+def test_collection_dashboard_renders_status_and_event_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    output = io.StringIO()
+    event_log = tmp_path / "runtime.log"
+    dashboard = CollectionConsoleDashboard(
+        enabled=True,
+        event_log_path=event_log,
+        stream=output,
+        force_terminal=True,
+    )
+    dashboard.add_event("Recording episode_000004", "success")
+    teleop = TeleopStatus(
+        monotonic_s=10.0,
+        loop_hz=30.0,
+        target_hz=30.0,
+        quest_clients=1,
+        quest_frame_age_s=0.018,
+        input_stale=False,
+        state_feed_stale=False,
+        arm_graph_conflict=False,
+        left_active=False,
+        right_active=True,
+        left_grip=0.0,
+        right_grip=1.0,
+        left_trigger=0.0,
+        right_trigger=0.7,
+        left_tracking=True,
+        right_tracking=True,
+        left_requires_release=False,
+        right_requires_release=False,
+        calibrated=True,
+        boundary_safe=True,
+        boundary_distance_m=None,
+        fault_reason="",
+        proximal_tracking_error_rad=0.04,
+        left_tcp_error_m=0.01,
+        right_tcp_error_m=0.02,
+        state_age_s=0.008,
+        command_output_enabled=True,
+        output_relinquished=False,
+        joint_limit_active_joints=0,
+        minimum_joint_limit_margin_rad=math.inf,
+    )
+    collection = CollectionDashboardStatus(
+        state="RECORDING",
+        episode_id=4,
+        saved_episodes=3,
+        allowed_arms="RIGHT",
+        duration_s=2.0,
+        state_count=60,
+        action_count=60,
+        quality="COLLECTING",
+        disk_free_gb=200.0,
+        session_name="session_test",
+        home_status="",
+        camera_stats={
+            "head": {
+                "last_frame_age_ms": 12.0,
+                "writer_drops": 0,
+                "read_failures": 0,
+                "episode_frames": 59,
+            }
+        },
+    )
+    assert dashboard.render(teleop, collection) is True
+    dashboard.close()
+    rendered = output.getvalue()
+    assert "S4 REAL-VLA COLLECTION" in rendered
+    assert "MOVING RIGHT" in rendered
+    assert "STATE/ACTION 60/60" in rendered
+    assert "Recording episode_000004" in rendered
+    assert "[success] Recording episode_000004" in event_log.read_text(encoding="utf-8")
 
 
 def test_real_vla_python_does_not_import_simulation_stack() -> None:

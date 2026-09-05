@@ -21,6 +21,13 @@ from hardware_teleop.config_loader import (  # noqa: E402
     HardwareTeleopConfig,
     load_hardware_teleop_config,
 )
+from hardware_teleop.command_route import (  # noqa: E402
+    LEG_DEPLOY_COMMAND_MAX_AGE_S,
+    LEG_DEPLOY_COMMAND_TOPIC,
+    LEG_DEPLOY_POLICY_MODE_CTRL,
+    LEG_DEPLOY_PUBLISHER,
+    configure_command_route,
+)
 from hardware_teleop.hand_mapping import command_hand_trigger  # noqa: E402
 from hardware_teleop.ik import create_pure_hardware_ik_backend  # noqa: E402
 from hardware_teleop.joint_mapping import (  # noqa: E402
@@ -33,7 +40,12 @@ from hardware_teleop.safety import (  # noqa: E402
     TeleopFaultLatch,
     find_verified_arm_replay_sdk_process,
 )
-from hardware_teleop.hooks import TeleopHooks, TeleopTick, TickRequest  # noqa: E402
+from hardware_teleop.hooks import (  # noqa: E402
+    TeleopHooks,
+    TeleopStatus,
+    TeleopTick,
+    TickRequest,
+)
 from hardware_teleop.startup import run_startup_homing  # noqa: E402
 from s4_pipeline.config import load_project_config  # noqa: E402
 from s4_robot.control_mapping import ACTION_SLICES  # noqa: E402
@@ -64,6 +76,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--report-period-s", type=float, default=0.5)
     parser.add_argument("--max-runtime-s", type=float, default=0.0)
     parser.add_argument("--input-debug", action="store_true")
+    parser.add_argument(
+        "--with-leg-deploy",
+        action="store_true",
+        help=(
+            "Use the SDK teleop-policy merge route (/lowcmd, mode_ctrl=5). "
+            "Requires a running /qi_topic_converter publisher from the leg deploy."
+        ),
+    )
     parser.add_argument(
         "--ik-backend",
         choices=("pink",),
@@ -180,6 +200,10 @@ def run_pink_hardware_teleop(
     validate_runtime_imports(
         robot_profile=os.environ.get("S4_HW_TELEOP_RUNTIME_RESOLVED") == "system"
     )
+    config, expected_command_publishers = configure_command_route(
+        config,
+        with_leg_deploy=bool(getattr(args, "with_leg_deploy", False)),
+    )
     pink_cfg = replace(
         config.teleop.controller.pink,
         position_cost=config.hardware.commissioning_position_cost,
@@ -266,6 +290,7 @@ def run_pink_hardware_teleop(
         key,
         PROJECT_ROOT / "teleoperation/webxr",
         ui_profile="collection" if hooks is not None else "hardware",
+        log_handler=None if hooks is None else hooks.on_client_log,
     )
 
     if not args.shadow and config.startup.require_sdk_arm_replay:
@@ -284,9 +309,35 @@ def run_pink_hardware_teleop(
             project_root=config.project_root,
             check_arm_command_publishers=config.startup.check_arm_command_publishers,
             command_output_enabled=not args.shadow,
+            expected_command_publishers=expected_command_publishers,
+            expected_command_mode_ctrl=(
+                LEG_DEPLOY_POLICY_MODE_CTRL if expected_command_publishers else None
+            ),
+            forbidden_command_publishers=(
+                ()
+                if expected_command_publishers
+                else ((LEG_DEPLOY_COMMAND_TOPIC, LEG_DEPLOY_PUBLISHER),)
+            ),
         )
     except RosImportError as exc:
         raise RuntimeError(str(exc)) from exc
+    except RuntimeError as exc:
+        if f"forbidden:{LEG_DEPLOY_PUBLISHER}@{LEG_DEPLOY_COMMAND_TOPIC}" in str(exc):
+            raise RuntimeError(
+                "leg deploy is running on /lowcmd; restart teleoperation with "
+                "--with-leg-deploy so the SDK can merge legs and arms"
+            ) from exc
+        raise
+    if expected_command_publishers and not args.shadow:
+        try:
+            bridge.wait_for_expected_command(timeout_s=3.0)
+        except BaseException:
+            _close_failed_initialization(bridge, command_output_enabled=True)
+            raise
+        print(
+            "[HW-PINK] verified live leg-deploy command feed on /lowcmd",
+            flush=True,
+        )
 
     control_dt = 1.0 / float(config.hardware.control_rate_hz)
     hands_enabled = (config.hands.enabled or args.enable_hands) and not args.disable_hands
@@ -314,6 +365,7 @@ def run_pink_hardware_teleop(
         f"{config.hardware.commissioning_translation_sign[2]:+.0f}) "
         f"arm_topic={config.hardware.arm_command_topic} "
         f"mode_ctrl={config.hardware.arm_command_mode_ctrl} "
+        f"leg_deploy_merge={int(bool(expected_command_publishers))} "
         f"hands={int(hands_enabled)} "
         f"hands_topic={config.hardware.hands_cmd_topic}",
         flush=True,
@@ -434,7 +486,14 @@ def run_pink_hardware_teleop(
             mapped = mapper.update(frame, hold_left_tcp, hold_right_tcp, mapping_dt, now)
             state_feed_stale = bridge.is_state_feed_stale(config.hardware.max_state_age_s)
             arm_command_graph_conflict = bridge.is_arm_command_graph_conflicted()
-            state_feed_ok = not state_feed_stale and not arm_command_graph_conflict
+            leg_deploy_feed_stale = bridge.is_expected_command_feed_stale(
+                LEG_DEPLOY_COMMAND_MAX_AGE_S
+            )
+            state_feed_ok = not (
+                state_feed_stale
+                or arm_command_graph_conflict
+                or leg_deploy_feed_stale
+            )
 
             if state_feed_stale:
                 if fault.trip(
@@ -445,15 +504,41 @@ def run_pink_hardware_teleop(
                         flush=True,
                     )
             elif arm_command_graph_conflict:
-                if fault.trip("external arm-replay publisher detected"):
+                conflicts = bridge.command_publisher_conflicts
+                reason = "command publisher contract changed"
+                if conflicts:
+                    reason += f": {', '.join(conflicts)}"
+                if (
+                    f"forbidden:{LEG_DEPLOY_PUBLISHER}@{LEG_DEPLOY_COMMAND_TOPIC}"
+                    in conflicts
+                ):
+                    reason = (
+                        "leg deploy appeared on the standalone route; restart "
+                        "teleoperation with --with-leg-deploy"
+                    )
+                if fault.trip(reason):
                     bridge.relinquish_without_arm_hold(fault.reason)
                     print(
-                        "[HW-PINK][SAFETY] external arm-replay source detected; "
+                        "[HW-PINK][SAFETY] command publisher contract changed; "
                         "arm output stopped",
                         flush=True,
                     )
                     raise RuntimeError(
-                        "external arm-replay publisher detected; restart only after it is stopped"
+                        f"{reason}; restart only after the ROS command graph is corrected"
+                    )
+            elif leg_deploy_feed_stale:
+                if fault.trip(
+                    "leg-deploy command feed stale for "
+                    f"{bridge.expected_command_age_s:.3f}s"
+                ):
+                    bridge.relinquish_without_arm_hold(fault.reason)
+                    print(
+                        "[HW-PINK][SAFETY] leg-deploy command feed stale; "
+                        "arm output stopped",
+                        flush=True,
+                    )
+                    raise RuntimeError(
+                        f"{fault.reason}; restart only after the leg deploy is healthy"
                     )
 
             if fault.clear_if_released(
@@ -688,31 +773,79 @@ def run_pink_hardware_teleop(
                 left_sample = None if frame is None else frame.left
                 right_sample = None if frame is None else frame.right
                 diag = bridge.diagnostics()
-                print(
-                    f"[HW-PINK] loop={loop_hz:.1f}Hz target={config.hardware.control_rate_hz:.1f}Hz "
-                    f"shadow={args.shadow} stale={mapped.stale} state_feed_stale={state_feed_stale} "
-                    f"arm_graph_conflict={arm_command_graph_conflict} "
-                    f"active(L/R)={int(left_active)}/{int(right_active)} "
-                    f"grip(L/R)={mapper.clutch_value(left_sample):.2f}/{mapper.clutch_value(right_sample):.2f} "
-                    f"trig(L/R)={left_trigger:.2f}/{right_trigger:.2f} "
-                    f"trig_raw(L/R)="
-                    f"{0.0 if left_sample is None else float(left_sample.trigger):.2f}/"
-                    f"{0.0 if right_sample is None else float(right_sample.trigger):.2f} "
-                    f"hands={int(hands_enabled)} "
-                    f"track(L/R)={int(mapped.left.tracking_valid)}/{int(mapped.right.tracking_valid)} "
-                    f"calibrated={int(mapped.calibrated)} "
-                    f"calib_yaw={mapped.calibration_yaw_rad:+.3f}rad "
-                    f"boundary_safe={int(mapped.boundary_safe)} "
-                    f"boundary_distance="
-                    f"{'n/a' if mapped.boundary_distance_m is None else f'{mapped.boundary_distance_m:.2f}m'} "
-                    f"fault={fault.reason!r} "
-                    f"proximal_track_err={proximal_tracking_error:.3f}rad "
-                    f"tcp_err(L/R)={left_error:.3f}/{right_error:.3f}m "
-                    f"state_age={bridge.last_state_age_s:.3f}s "
-                    f"grav_sign={diag['gravity_sign']:+.1f} "
-                    f"grav_tau_max={float(diag['gravity_tau_abs_max']):.2f}Nm",
-                    flush=True,
+                ik_diag = ik_backend.diagnostics()
+                grip_left = mapper.clutch_value(left_sample)
+                grip_right = mapper.clutch_value(right_sample)
+                quest_stats = store.stats()
+                status = TeleopStatus(
+                    monotonic_s=now,
+                    loop_hz=loop_hz,
+                    target_hz=float(config.hardware.control_rate_hz),
+                    quest_clients=int(quest_stats["clients"]),
+                    quest_frame_age_s=float(mapped.frame_age_s),
+                    input_stale=bool(mapped.stale),
+                    state_feed_stale=bool(state_feed_stale),
+                    arm_graph_conflict=bool(arm_command_graph_conflict),
+                    left_active=bool(left_active),
+                    right_active=bool(right_active),
+                    left_grip=float(grip_left),
+                    right_grip=float(grip_right),
+                    left_trigger=float(left_trigger),
+                    right_trigger=float(right_trigger),
+                    left_tracking=bool(mapped.left.tracking_valid),
+                    right_tracking=bool(mapped.right.tracking_valid),
+                    left_requires_release=bool(mapper.states["left"].requires_release),
+                    right_requires_release=bool(mapper.states["right"].requires_release),
+                    calibrated=bool(mapped.calibrated),
+                    boundary_safe=bool(mapped.boundary_safe),
+                    boundary_distance_m=mapped.boundary_distance_m,
+                    fault_reason=str(fault.reason),
+                    proximal_tracking_error_rad=float(proximal_tracking_error),
+                    left_tcp_error_m=left_error,
+                    right_tcp_error_m=right_error,
+                    state_age_s=float(bridge.last_state_age_s),
+                    command_output_enabled=bool(diag["command_output_enabled"]),
+                    output_relinquished=bool(diag["command_output_relinquished"]),
+                    joint_limit_active_joints=int(ik_diag["joint_limit_active_joints"]),
+                    minimum_joint_limit_margin_rad=float(
+                        ik_diag["minimum_joint_limit_margin_rad"]
+                    ),
                 )
+                try:
+                    status_consumed = hooks is not None and hooks.on_status(status)
+                except Exception as exc:
+                    status_consumed = False
+                    print(
+                        f"[HW-PINK][WARNING] status hook failed; using plain logs: "
+                        f"{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                if not status_consumed:
+                    print(
+                        f"[HW-PINK] loop={loop_hz:.1f}Hz target={config.hardware.control_rate_hz:.1f}Hz "
+                        f"shadow={args.shadow} stale={mapped.stale} state_feed_stale={state_feed_stale} "
+                        f"arm_graph_conflict={arm_command_graph_conflict} "
+                        f"active(L/R)={int(left_active)}/{int(right_active)} "
+                        f"grip(L/R)={grip_left:.2f}/{grip_right:.2f} "
+                        f"trig(L/R)={left_trigger:.2f}/{right_trigger:.2f} "
+                        f"trig_raw(L/R)="
+                        f"{0.0 if left_sample is None else float(left_sample.trigger):.2f}/"
+                        f"{0.0 if right_sample is None else float(right_sample.trigger):.2f} "
+                        f"hands={int(hands_enabled)} "
+                        f"track(L/R)={int(mapped.left.tracking_valid)}/{int(mapped.right.tracking_valid)} "
+                        f"calibrated={int(mapped.calibrated)} "
+                        f"calib_yaw={mapped.calibration_yaw_rad:+.3f}rad "
+                        f"boundary_safe={int(mapped.boundary_safe)} "
+                        f"boundary_distance="
+                        f"{'n/a' if mapped.boundary_distance_m is None else f'{mapped.boundary_distance_m:.2f}m'} "
+                        f"fault={fault.reason!r} "
+                        f"proximal_track_err={proximal_tracking_error:.3f}rad "
+                        f"tcp_err(L/R)={left_error:.3f}/{right_error:.3f}m "
+                        f"state_age={bridge.last_state_age_s:.3f}s "
+                        f"grav_sign={diag['gravity_sign']:+.1f} "
+                        f"grav_tau_max={float(diag['gravity_tau_abs_max']):.2f}Nm",
+                        flush=True,
+                    )
                 if args.input_debug:
                     cmd_q14 = bimanual_to_arm_q14(command_action)
                     proximal = np.r_[0:4, 7:11]
@@ -731,7 +864,7 @@ def run_pink_hardware_teleop(
                         f"base_dL={np.round(mapped.left.base_delta, 3).tolist()} "
                         f"xr_dR={np.round(mapped.right.xr_delta, 3).tolist()} "
                         f"base_dR={np.round(mapped.right.base_delta, 3).tolist()} "
-                        f"ik={ik_backend.diagnostics()} bridge={diag}",
+                        f"ik={ik_diag} bridge={diag}",
                         flush=True,
                     )
                 last_report = now

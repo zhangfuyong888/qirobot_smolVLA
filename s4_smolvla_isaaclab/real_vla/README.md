@@ -29,8 +29,25 @@ SDK 已在跑的前提下：
 
 ```bash
 cd /home/coral/qirobot_smolVLA/s4_smolvla_isaaclab
-sudo -E bash run.sh real-collect --arm-output --input-debug
+sudo -E bash run.sh real-collect --arm-output
 ```
+
+如果同时运行 `S2_homie_controller.launch.py` 控制腿部，必须使用 SDK 的融合入口：
+
+```bash
+sudo -E bash run.sh real-collect --arm-output --with-leg-deploy
+```
+
+腿部 deploy 已运行时必须使用 `--with-leg-deploy`；遗漏该参数会被安全检查拒绝。
+
+此模式要求先启动腿部 deploy，并验证 `/lowcmd` 上唯一的既有发布者是
+`/qi_topic_converter`；启动前还必须收到实际腿部策略帧。运行中该发布者消失、
+策略帧超过 250 ms 未更新或出现第三个发布者时，遥操会立即停止输出。
+不要把默认的 `/lowcmd_replay + mode_ctrl=4` 模式与腿部 deploy 同时运行。
+
+正常采集会显示每秒刷新一次的彩色状态表，关键事件同时写入当前 session 的
+`runtime.log`。需要完整 IK/bridge 滚屏日志时追加 `--input-debug`，旧调试输出
+保持不变。
 
 Quest 仍打开 `https://192.168.110.35:8443`。
 

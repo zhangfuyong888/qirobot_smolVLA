@@ -43,6 +43,40 @@ class TeleopTick:
     mapping_dt: float
 
 
+@dataclass(frozen=True)
+class TeleopStatus:
+    monotonic_s: float
+    loop_hz: float
+    target_hz: float
+    quest_clients: int
+    quest_frame_age_s: float
+    input_stale: bool
+    state_feed_stale: bool
+    arm_graph_conflict: bool
+    left_active: bool
+    right_active: bool
+    left_grip: float
+    right_grip: float
+    left_trigger: float
+    right_trigger: float
+    left_tracking: bool
+    right_tracking: bool
+    left_requires_release: bool
+    right_requires_release: bool
+    calibrated: bool
+    boundary_safe: bool
+    boundary_distance_m: float | None
+    fault_reason: str
+    proximal_tracking_error_rad: float
+    left_tcp_error_m: float
+    right_tcp_error_m: float
+    state_age_s: float
+    command_output_enabled: bool
+    output_relinquished: bool
+    joint_limit_active_joints: int
+    minimum_joint_limit_margin_rad: float
+
+
 class TeleopHooks:
     def begin_tick(self, frame: ControllerFrame | None, now_s: float) -> TickRequest:
         del frame, now_s
@@ -50,3 +84,13 @@ class TeleopHooks:
 
     def end_tick(self, tick: TeleopTick) -> None:
         del tick
+
+    def on_status(self, status: TeleopStatus) -> bool:
+        """Return true when the hook rendered the periodic status itself."""
+        del status
+        return False
+
+    def on_client_log(self, level: str, message: str) -> bool:
+        """Return true when the hook consumed a WebXR client log message."""
+        del level, message
+        return False

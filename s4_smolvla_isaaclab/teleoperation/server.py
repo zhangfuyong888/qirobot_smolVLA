@@ -7,6 +7,7 @@ import json
 import ssl
 import threading
 from pathlib import Path
+from typing import Callable
 
 from aiohttp import WSMsgType, web
 
@@ -23,6 +24,7 @@ class QuestWebServer:
         key_path: Path | None,
         web_root: Path,
         ui_profile: str = "teleoperation",
+        log_handler: Callable[[str, str], bool] | None = None,
     ) -> None:
         self.store = store
         self.host = host
@@ -31,6 +33,7 @@ class QuestWebServer:
         self.key_path = key_path
         self.web_root = Path(web_root)
         self.ui_profile = str(ui_profile)
+        self.log_handler = log_handler
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._runner: web.AppRunner | None = None
@@ -41,6 +44,19 @@ class QuestWebServer:
     @property
     def secure(self) -> bool:
         return self.cert_path is not None and self.key_path is not None
+
+    def _log_consumed(self, level: str, message: str) -> bool:
+        if self.log_handler is None:
+            return False
+        try:
+            return bool(self.log_handler(level, message))
+        except Exception as exc:
+            print(
+                f"[TELEOP][WEBXR][warning] log handler failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+            return False
 
     def _ssl_context(self) -> ssl.SSLContext | None:
         if not self.secure:
@@ -78,12 +94,15 @@ class QuestWebServer:
                         if isinstance(payload, dict) and payload.get("type") == "client_log":
                             level = str(payload.get("level", "info"))[:20]
                             text = str(payload.get("message", ""))[:300]
-                            print(f"[TELEOP][WEBXR][{level}] {text}", flush=True)
+                            if not self._log_consumed(level, text):
+                                print(f"[TELEOP][WEBXR][{level}] {text}", flush=True)
                             continue
                         frame = parse_controller_frame(message.data)
                         self.store.publish(frame)
                     except (ValueError, TypeError, json.JSONDecodeError) as exc:
-                        print(f"[TELEOP][WEBXR][error] rejected message: {str(exc)[:300]}", flush=True)
+                        text = f"rejected message: {str(exc)[:300]}"
+                        if not self._log_consumed("error", text):
+                            print(f"[TELEOP][WEBXR][error] {text}", flush=True)
                         await websocket.send_json({"type": "error", "message": str(exc)[:300]})
                 elif message.type == WSMsgType.ERROR:
                     break
