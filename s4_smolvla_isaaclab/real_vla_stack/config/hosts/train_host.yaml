@@ -1,5 +1,5 @@
 paths:
-  raw_root: /home/zfy/real_datasets
+  raw_root: /home/zfy/real_vla_data
   lerobot_root: /home/zfy/lerobot_datasets
   output_root: /home/zfy/real_outputs
   model_root: /home/zfy/models

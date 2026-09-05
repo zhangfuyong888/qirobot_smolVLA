@@ -66,9 +66,12 @@ sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
   --report /tmp/real_vla_audit.json
 ```
 
-只有 `INVALID` 和读取失败的 `ERROR` 会被视为不可用。`WARN` 通常是未超过
-无效阈值的短时相机间隔，继续保留；`REVIEW` 需要人工查看视频确认任务是否完成。
-确认清单后，可恢复地隔离确定无效的数据（不会删除）：
+`INVALID`、读取失败的 `ERROR` 和未完成保存的 `PENDING` 会被视为不可用。
+`WARN` 通常是未超过无效阈值的短时相机间隔，继续保留；`REVIEW` 需要人工查看视频确认任务是否完成。
+审计启动时会先检查当前 Python 能否导入 OpenCV；缺少 `cv2` 时命令立即报依赖错误，
+不会把所有视频误报为无效。若自动选择的硬件 Conda 环境没有 OpenCV，可显式使用
+`sudo -E env S4_HW_TELEOP_RUNTIME=system bash run.sh real-audit-dataset ...`。
+确认清单后，可恢复地隔离确定无效的数据和 pending 数据（不会删除）：
 
 ```bash
 sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \

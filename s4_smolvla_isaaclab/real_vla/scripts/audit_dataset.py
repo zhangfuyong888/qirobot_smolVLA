@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import sys
@@ -18,6 +19,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from real_vla.config_loader import load_collection_config  # noqa: E402
 from real_vla.data.validation import validate_saved_episode  # noqa: E402
+
+
+def _require_video_decoder() -> None:
+    """Fail once, clearly, instead of marking every video invalid when cv2 is absent."""
+    try:
+        importlib.import_module("cv2")
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "OpenCV (the 'cv2' Python package) is required to audit MKV videos, "
+            f"but it cannot be imported by {sys.executable}: {exc}. "
+            "Install OpenCV in this environment or select a runtime that provides it "
+            "(for example S4_HW_TELEOP_RUNTIME=system)."
+        ) from exc
 
 
 def _review_notes(trajectory: dict[str, np.ndarray]) -> list[str]:
@@ -55,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--quarantine-invalid",
         action="store_true",
-        help="move INVALID/ERROR episodes into a timestamped quarantine tree",
+        help="move INVALID/ERROR episodes and PENDING data into a timestamped quarantine tree",
     )
     parser.add_argument("--yes", action="store_true", help="confirm quarantine operation")
     parser.add_argument("--fail-on-invalid", action="store_true")
@@ -67,6 +81,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"dataset root does not exist: {root}")
     if args.quarantine_invalid and not args.yes:
         parser.error("--quarantine-invalid requires --yes")
+    try:
+        _require_video_decoder()
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
     episodes = sorted(
         path for path in root.glob("session_*/episodes/episode_*") if path.is_dir()
@@ -75,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     stamp = time.strftime("%Y%m%d_%H%M%S")
     quarantine_root = root / "quarantine" / stamp
     records: list[dict] = []
+    pending_records: list[dict] = []
     counts: Counter[str] = Counter()
 
     print(f"Auditing {len(episodes)} saved episodes under {root}", flush=True)
@@ -123,13 +142,27 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
-    status_names = ("PASS", "WARN", "REVIEW", "INVALID", "ERROR")
+    for path in pending:
+        action = "kept"
+        if args.quarantine_invalid:
+            target = _quarantine_target(root, path, quarantine_root)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                raise FileExistsError(f"pending quarantine target already exists: {target}")
+            os.replace(path, target)
+            action = f"quarantined:{target}"
+        counts["PENDING"] += 1
+        pending_records.append({"path": str(path), "status": "PENDING", "action": action})
+        print(f"[PENDING] {path}: {action}", flush=True)
+
+    status_names = ("PASS", "WARN", "REVIEW", "INVALID", "ERROR", "PENDING")
     report = {
         "schema_version": "s4_real_vla_audit_v1",
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "root": str(root),
         "counts": {name: counts[name] for name in status_names},
         "pending": [str(path) for path in pending],
+        "pending_records": pending_records,
         "quarantine_root": str(quarantine_root) if args.quarantine_invalid else None,
         "episodes": records,
     }
@@ -142,8 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Report: {report_path}")
 
     summary = " ".join(f"{name}={counts[name]}" for name in status_names)
-    print(f"SUMMARY {summary} PENDING={len(pending)}")
-    unusable = counts["INVALID"] + counts["ERROR"]
+    print(f"SUMMARY {summary}")
+    unusable = counts["INVALID"] + counts["ERROR"] + counts["PENDING"]
     return 2 if args.fail_on_invalid and unusable else 0
 
 
