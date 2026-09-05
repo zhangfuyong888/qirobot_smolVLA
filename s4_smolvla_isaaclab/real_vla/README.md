@@ -59,6 +59,22 @@ Quest 仍打开 `https://192.168.110.35:8443`。
 
 数据默认写到 `/home/coral/real_vla_data/session_*/episodes/`。
 
+批量检查所有已保存 episode（默认只读，不移动数据）：
+
+```bash
+sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
+  --report /tmp/real_vla_audit.json
+```
+
+只有 `INVALID` 和读取失败的 `ERROR` 会被视为不可用。`WARN` 通常是未超过
+无效阈值的短时相机间隔，继续保留；`REVIEW` 需要人工查看视频确认任务是否完成。
+确认清单后，可恢复地隔离确定无效的数据（不会删除）：
+
+```bash
+sudo -E bash run.sh real-audit-dataset /home/coral/real_vla_data \
+  --quarantine-invalid --yes --report /tmp/real_vla_quarantine.json
+```
+
 ## 目录
 
 ```
@@ -69,7 +85,7 @@ real_vla/
   cameras/          RealSense capture threads
   collection/       状态机、异步 writer、quality、causal sync 报告
   data/             episode 读取；lerobot_export 为 NotImplemented
-  scripts/          collect / camera_test / inspect / validate
+  scripts/          collect / camera_test / inspect / validate / audit
 ```
 
 普通 `bash run.sh teleop-hardware --arm-output` 行为不变。采集只通过 `TeleopHooks` 观察 tick 和最终下发关节。

@@ -241,6 +241,7 @@ Core commands:
   real-collect-cameras               Snapshot RealSense serials for left/right wrist labeling
   real-inspect-episode DIR           Print one saved real_vla episode
   real-validate-episode DIR          Re-run quality checks on one episode
+  real-audit-dataset [ROOT]          Validate all episodes; optionally quarantine invalid data
   record [--episodes N] [--resume]    Record/continue successful HDF5 demonstrations
   collect-convert [options]           Collect, validate and convert; never train
   collect-train [options]             Guarded collect, convert, check, then train
@@ -387,6 +388,11 @@ EOF
         shift
         use_hardware_teleop_env
         "$S4_HW_TELEOP_PYTHON" real_vla/scripts/validate_episode.py "$@"
+        ;;
+    real-audit-dataset)
+        shift
+        use_hardware_teleop_env
+        "$S4_HW_TELEOP_PYTHON" real_vla/scripts/audit_dataset.py "$@"
         ;;
     teleop-cert)
         shift
