@@ -38,7 +38,7 @@ def test_hardware_config_loads() -> None:
     assert config.hardware.commissioning_translation_sign == pytest.approx((-1.0, -1.0, 1.0))
     assert config.hardware.commissioning_workspace_min == pytest.approx((-0.25, -0.65, -0.30))
     assert config.hardware.commissioning_workspace_max == pytest.approx((0.90, 0.65, 0.75))
-    assert config.hardware.command_watchdog_timeout_s == pytest.approx(0.10)
+    assert config.hardware.command_watchdog_timeout_s == pytest.approx(0.25)
     assert config.hardware.shutdown_hold_duration_s == pytest.approx(0.5)
     assert config.hardware.arm_kd == pytest.approx(3.0)
     assert config.ik.backend == "pink"

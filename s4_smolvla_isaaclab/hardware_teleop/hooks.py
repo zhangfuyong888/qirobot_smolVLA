@@ -94,3 +94,7 @@ class TeleopHooks:
         """Return true when the hook consumed a WebXR client log message."""
         del level, message
         return False
+
+    def on_runtime_event(self, level: str, message: str) -> None:
+        """Observe safety stops and process-level runtime events."""
+        del level, message

@@ -310,6 +310,7 @@ def test_shutdown_holds_measured_arms_then_relinquishes(monkeypatch) -> None:
         bridge._commanded_arms = {name: 0.5 for name in ARM_JOINT_NAMES}
         bridge._has_published_lowcmd = True
         assert bridge.hold_current_and_relinquish("unit test")
+        assert bridge.release_reason == "unit test"
         assert bridge.diagnostics()["command_output_relinquished"] is True
         messages = fake_rclpy.node.publishers[0].messages
         assert messages

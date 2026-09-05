@@ -327,7 +327,7 @@ teleop_config: configs/teleoperation/meta_quest3.yaml
 | `max_tcp_translation_speed_m_s` | `0.40` | TCP 目标平移速度上限                         |
 | `max_tcp_rotation_speed_rad_s` | `0.80`  | TCP 目标旋转速度上限                         |
 | `commissioning_input_filter_tau_s` | `0.06` | 手柄目标一阶滤波时间常数                  |
-| `command_watchdog_timeout_s` | `0.10` | 主循环无心跳后触发当前实测姿态保持 |
+| `command_watchdog_timeout_s` | `0.25` | 主循环无心跳后触发当前实测姿态保持；容忍短时相机、磁盘和 ROS 调度抖动 |
 | `shutdown_hold_duration_s` | `0.5` | 停机前重复发送实测手臂姿态的时间 |
 
 默认模式使用 `/lowcmd_replay + mode_ctrl=4`，只适用于未运行腿部 deploy 的独立遥操。

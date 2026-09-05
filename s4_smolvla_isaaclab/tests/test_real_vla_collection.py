@@ -16,7 +16,7 @@ from real_vla.config_loader import load_collection_config
 from real_vla.input.quest_buttons import QuestButtonDecoder
 from real_vla.robot.gripper_adapter import BinaryGripper, GRASP, OPEN
 from real_vla.robot.home_manager import HomeManager
-from hardware_teleop.pink_main import _request_arm_enabled, build_parser
+from hardware_teleop.pink_main import _notify_runtime_event, _request_arm_enabled, build_parser
 from hardware_teleop.hooks import TeleopStatus
 from real_vla.console_dashboard import (
     CollectionConsoleDashboard,
@@ -86,6 +86,19 @@ def test_tick_arm_cap_can_narrow_but_not_widen_cli_limit() -> None:
 def test_hardware_parser_exposes_explicit_leg_deploy_mode() -> None:
     args = build_parser().parse_args(["--with-leg-deploy"])
     assert args.with_leg_deploy is True
+
+
+def test_runtime_event_is_forwarded_to_collection_hook() -> None:
+    class Hook:
+        def __init__(self) -> None:
+            self.events = []
+
+        def on_runtime_event(self, level: str, message: str) -> None:
+            self.events.append((level, message))
+
+    hook = Hook()
+    _notify_runtime_event(hook, "error", "command heartbeat timeout")
+    assert hook.events == [("error", "command heartbeat timeout")]
 
 
 def test_webxr_has_one_shot_collection_haptics() -> None:

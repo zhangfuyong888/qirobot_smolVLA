@@ -59,6 +59,22 @@ from teleoperation.protocol import LatestFrameStore  # noqa: E402
 from teleoperation.server import QuestWebServer  # noqa: E402
 
 
+def _notify_runtime_event(
+    hooks: TeleopHooks | None,
+    level: str,
+    message: str,
+) -> None:
+    if hooks is None:
+        return
+    try:
+        hooks.on_runtime_event(level, message)
+    except Exception as exc:
+        print(
+            f"[HW-PINK][WARNING] runtime event hook failed: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Control the real S4 robot with Quest 3 and Pink IK (no Isaac)."
@@ -499,6 +515,12 @@ def run_pink_hardware_teleop(
                 if fault.trip(
                     f"robot state stale for {bridge.last_state_age_s:.3f}s"
                 ):
+                    _notify_runtime_event(
+                        hooks,
+                        "warning",
+                        f"Robot state stale ({bridge.last_state_age_s:.3f}s); "
+                        "motion paused until state recovers and both Grips are released",
+                    )
                     print(
                         "[HW-PINK][SAFETY] robot state feed stale; arm output stopped",
                         flush=True,
@@ -518,6 +540,7 @@ def run_pink_hardware_teleop(
                     )
                 if fault.trip(reason):
                     bridge.relinquish_without_arm_hold(fault.reason)
+                    _notify_runtime_event(hooks, "error", f"Safety stop: {fault.reason}")
                     print(
                         "[HW-PINK][SAFETY] command publisher contract changed; "
                         "arm output stopped",
@@ -532,6 +555,7 @@ def run_pink_hardware_teleop(
                     f"{bridge.expected_command_age_s:.3f}s"
                 ):
                     bridge.relinquish_without_arm_hold(fault.reason)
+                    _notify_runtime_event(hooks, "error", f"Safety stop: {fault.reason}")
                     print(
                         "[HW-PINK][SAFETY] leg-deploy command feed stale; "
                         "arm output stopped",
@@ -547,6 +571,7 @@ def run_pink_hardware_teleop(
                 state_feed_ok=state_feed_ok,
             ):
                 ik_backend.set_posture_reference(command_q14)
+                _notify_runtime_event(hooks, "success", "Safety pause cleared")
                 print("[HW-PINK][SAFETY] fault cleared after both grips were released", flush=True)
 
             left_active = (
@@ -704,8 +729,15 @@ def run_pink_hardware_teleop(
                 command_action[ACTION_SLICES.right_hand],
             )
             if not args.shadow and bridge.output_relinquished:
+                reason = bridge.release_reason or "unknown safety reason"
+                _notify_runtime_event(
+                    hooks,
+                    "error",
+                    f"Arm command output relinquished: {reason}",
+                )
                 print(
-                    "[HW-PINK][SAFETY] arm-replay output relinquished; leaving control loop",
+                    f"[HW-PINK][SAFETY] arm-replay output relinquished ({reason}); "
+                    "leaving control loop",
                     flush=True,
                 )
                 break
@@ -717,8 +749,15 @@ def run_pink_hardware_teleop(
                     hold_commanded=False,
                 )
                 if bridge.output_relinquished:
+                    reason = bridge.release_reason or "unknown safety reason"
+                    _notify_runtime_event(
+                        hooks,
+                        "error",
+                        f"Arm command output relinquished: {reason}",
+                    )
                     print(
-                        "[HW-PINK][SAFETY] arm-replay output relinquished; leaving control loop",
+                        f"[HW-PINK][SAFETY] arm-replay output relinquished ({reason}); "
+                        "leaving control loop",
                         flush=True,
                     )
                     break

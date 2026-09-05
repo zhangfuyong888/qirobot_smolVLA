@@ -390,6 +390,10 @@ class HardwareRobotBridge:
     def output_relinquished(self) -> bool:
         return bool(self._output_relinquished)
 
+    @property
+    def release_reason(self) -> str:
+        return str(self._release_reason)
+
     def spin_once(self, timeout_sec: float = 0.0) -> None:
         with self._spin_lock:
             self._rclpy.spin_once(self._node, timeout_sec=timeout_sec)
@@ -526,6 +530,7 @@ class HardwareRobotBridge:
             if not has_lowcmd_output:
                 if self._hands_ever_commanded:
                     self._publish_hands_unlocked(0.0, 0.0)
+                self._release_reason = reason
                 self._output_relinquished = True
                 return True
             self._release_active = True

@@ -74,9 +74,10 @@ hardware:
   commissioning_invert_translation: false
   commissioning_invert_orientation: false
   commissioning_translation_sign: [-1.0, -1.0, 1.0]
-  # If the main loop stops feeding commands, the watchdog opens both hands,
-  # briefly repeats the measured arm pose, then stops this process publishing.
-  command_watchdog_timeout_s: 0.10
+  # Allow short camera/disk/ROS scheduling stalls without ending a collection.
+  # This remains below the SDK fusion hold window and above max_state_age_s, so
+  # stale robot state blocks motion before the watchdog relinquishes.
+  command_watchdog_timeout_s: 0.25
   shutdown_hold_duration_s: 0.5
 
 startup:

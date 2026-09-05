@@ -357,6 +357,9 @@ class CollectionHooks(TeleopHooks):
         self.dashboard.add_event(f"WebXR: {message}", normalized)
         return True
 
+    def on_runtime_event(self, level: str, message: str) -> None:
+        self._emit(message, level)
+
     def _record_tick(self, tick: TeleopTick) -> None:
         gripper = self.gripper.state
         state_valid = not (
@@ -729,10 +732,15 @@ def main(argv: list[str] | None = None) -> int:
             config = replace(config, ik=replace(config.ik, backend=str(teleop_args.ik_backend)))
         run_pink_hardware_teleop(config, teleop_args, hooks=hooks)
     except KeyboardInterrupt:
+        hooks.on_runtime_event("warning", "Collection interrupted by operator (SIGINT)")
         hooks.close_dashboard()
         print("\n[REAL-VLA] interrupted", flush=True)
         return 130
-    except BaseException:
+    except BaseException as exc:
+        hooks.on_runtime_event(
+            "error",
+            f"Collection process failed: {type(exc).__name__}: {exc}",
+        )
         hooks.close_dashboard()
         print("[FATAL] real VLA collection failed:", flush=True)
         traceback.print_exc()
