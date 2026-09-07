@@ -306,7 +306,7 @@ def test_shutdown_holds_measured_arms_then_relinquishes(monkeypatch) -> None:
         command_output_enabled=True,
     )
     try:
-        bridge._positions = {name: 0.012 for name in ARM_JOINT_NAMES}
+        bridge._accept_arm_positions({name: 0.012 for name in ARM_JOINT_NAMES})
         bridge._commanded_arms = {name: 0.5 for name in ARM_JOINT_NAMES}
         bridge._has_published_lowcmd = True
         assert bridge.hold_current_and_relinquish("unit test")
@@ -321,5 +321,31 @@ def test_shutdown_holds_measured_arms_then_relinquishes(monkeypatch) -> None:
         held_count = len(messages)
         assert bridge.publish_arm_command(bimanual_default_action()) == {}
         assert len(fake_rclpy.node.publishers[0].messages) == held_count
+    finally:
+        bridge.close()
+
+
+def test_shutdown_refuses_open_loop_hold_when_feedback_is_stale(monkeypatch) -> None:
+    config = load_hardware_teleop_config(ROOT / "hardware_teleop/config/quest_hardware.yaml")
+    fake_rclpy = _Rclpy()
+    monkeypatch.setattr(
+        robot_bridge,
+        "_require_ros_types",
+        lambda: (fake_rclpy, _Message, _Message, _Message, _Message, _Message, _Message),
+    )
+    bridge = robot_bridge.HardwareRobotBridge(
+        replace(config.hardware, max_state_age_s=0.01),
+        config.hands,
+        gravity_cfg=replace(config.gravity, enabled=False),
+        project_root=config.project_root,
+        check_arm_command_publishers=False,
+        command_output_enabled=True,
+    )
+    try:
+        bridge._positions = {name: 0.012 for name in ARM_JOINT_NAMES}
+        bridge._has_published_lowcmd = True
+        assert not bridge.hold_current_and_relinquish("stale unit test")
+        assert bridge.output_relinquished
+        assert not fake_rclpy.node.publishers[0].messages
     finally:
         bridge.close()

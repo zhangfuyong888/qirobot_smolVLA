@@ -28,6 +28,20 @@ def test_buffer_rejects_old_response_and_stale_chunk() -> None:
         buffer.sample(101_000_000)
 
 
+def test_buffer_uses_observation_time_and_skips_delayed_actions() -> None:
+    buffer = ActionBuffer(policy_hz=20, execute_horizon=4, max_chunk_age_ms=500)
+    chunk = np.zeros((4, 8), dtype=np.float32)
+    chunk[:, :7] = np.arange(4, dtype=np.float32)[:, None]
+    buffer.replace(
+        chunk,
+        request_id=1,
+        source_at_ns=1_000_000_000,
+        received_at_ns=1_100_000_000,
+    )
+    # A 100 ms inference/transport delay means execution starts at policy step 2.
+    assert buffer.sample(1_100_000_000)[:7] == pytest.approx(np.full(7, 2.0))
+
+
 def test_policy_sanity_rejects_gross_jump() -> None:
     chunk = np.zeros((3, 8))
     chunk[1, 0] = 1.0

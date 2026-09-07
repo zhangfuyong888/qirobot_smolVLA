@@ -10,7 +10,9 @@ rollout:
   execute_horizon: 8
   start_from_home: true
   return_home_on_finish: true
-  return_home_on_abort: true
+  # Faults hold briefly and relinquish; an automatic fault-time trajectory can
+  # create a second collision with the drawer or workspace.
+  return_home_on_abort: false
   max_episode_s: 30
 freshness:
   max_chunk_age_ms: 500
@@ -19,6 +21,13 @@ safety:
   reject_non_finite: true
   max_policy_target_jump_rad: 0.20
   max_policy_tracking_error_rad: 0.25
+  # Stop if the actuator does not follow the already step-limited command.
+  max_command_tracking_error_rad: 0.18
 gripper:
   open_threshold: 0.35
   grasp_threshold: 0.65
+logging:
+  # In shadow mode, keep two JPEGs and the state every ten policy requests
+  # (about 2 Hz at the configured 20 Hz policy rate), plus every validated
+  # eight-step execution chunk in events.jsonl.
+  shadow_snapshot_every_n_requests: 10

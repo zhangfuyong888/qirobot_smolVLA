@@ -28,7 +28,13 @@ class PolicyRunner:
 
         self.contract = contract
         self.checkpoint = resolve_checkpoint(checkpoint)
-        self.device = torch.device(device if device != "cuda" or torch.cuda.is_available() else "cpu")
+        requested_device = torch.device(device)
+        if requested_device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError(
+                "policy server requires CUDA but torch.cuda.is_available() is false; "
+                "refusing an unsafe silent CPU fallback"
+            )
+        self.device = requested_device
         config = PreTrainedConfig.from_pretrained(self.checkpoint, local_files_only=True)
         configured_vlm = Path(config.vlm_model_name).expanduser()
         if not configured_vlm.is_dir():

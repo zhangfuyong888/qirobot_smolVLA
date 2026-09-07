@@ -12,8 +12,16 @@ dependencies:
   - qpsolvers=4.12.0
   - daqp=0.8.7
   - quadprog=0.1.13
-  - pytest
   - h5py
-  - opencv
-  - msgpack
-  - pyzmq
+  - pip
+  - pip:
+      # Keep the ROS-side wire/image stack explicit. The rollout process uses
+      # these packages without importing Torch or LeRobot.
+      - opencv-python-headless==4.11.0.86
+      - msgpack==1.1.2
+      - pyzmq==27.0.2
+      # Match Ubuntu 22.04 / ROS2 Humble's Python tooling. Newer pytest releases
+      # are incompatible with Humble's launch_testing pytest hooks.
+      - lark==1.1.1
+      - typeguard==2.2.2
+      - pytest==6.2.5

@@ -65,22 +65,25 @@ print(
 PY
 
 echo "[HW-PINK][SYSTEM] target=$TARGET"
-echo "[HW-PINK][SYSTEM] packages: scipy=1.15.2 aiohttp=3.14.3 qpsolvers=4.12.0 daqp=0.8.7 quadprog=0.1.13"
+echo "[HW-PINK][SYSTEM] packages: scipy=1.15.2 aiohttp=3.14.3 qpsolvers=4.12.0 daqp=0.8.7 quadprog=0.1.13 opencv=4.11.0.86 msgpack=1.1.2 pyzmq=27.0.2"
 
 if [[ "$MODE" == "install" ]]; then
     mkdir -p "$TARGET"
     # aiohttp has pure networking dependencies that are also kept in TARGET.
     "$PYTHON_BIN" -m pip install \
-        --only-binary=:all: --upgrade --target "$TARGET" \
+        --only-binary=:all: --upgrade --timeout 120 --retries 8 --target "$TARGET" \
         "aiohttp==3.14.3"
     # Keep the robot's NumPy and ROS Pinocchio. --no-deps prevents pip from
     # copying or upgrading either package in this project-local directory.
     "$PYTHON_BIN" -m pip install \
-        --only-binary=:all: --upgrade --no-deps --target "$TARGET" \
+        --only-binary=:all: --upgrade --no-deps --timeout 120 --retries 8 --target "$TARGET" \
         "scipy==1.15.2" \
         "qpsolvers==4.12.0" \
         "daqp==0.8.7" \
-        "quadprog==0.1.13"
+        "quadprog==0.1.13" \
+        "opencv-python-headless==4.11.0.86" \
+        "msgpack==1.1.2" \
+        "pyzmq==27.0.2"
 fi
 
 if [[ ! -d "$TARGET" ]]; then
@@ -91,13 +94,16 @@ fi
 
 PYTHONPATH="$TARGET:${PYTHONPATH:-}" "$PYTHON_BIN" - <<'PY'
 import aiohttp
+import cv2
 import daqp
 import importlib.metadata
+import msgpack
 import numpy as np
 import pinocchio
 import qpsolvers
 import quadprog
 import scipy
+import zmq
 
 expected = {
     "aiohttp": (aiohttp.__version__, "3.14.3"),
@@ -105,6 +111,9 @@ expected = {
     "qpsolvers": (qpsolvers.__version__, "4.12.0"),
     "daqp": (importlib.metadata.version("daqp"), "0.8.7"),
     "quadprog": (importlib.metadata.version("quadprog"), "0.1.13"),
+    "opencv-python-headless": (importlib.metadata.version("opencv-python-headless"), "4.11.0.86"),
+    "msgpack": (msgpack.__version__, "1.1.2"),
+    "pyzmq": (zmq.__version__, "27.0.2"),
 }
 for name, (actual, wanted) in expected.items():
     if actual != wanted:

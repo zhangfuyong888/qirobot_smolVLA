@@ -22,7 +22,7 @@ bash real_vla_stack/run.sh train --profile smoke
 bash real_vla_stack/run.sh checkpoint-check
 bash real_vla_stack/run.sh serve
 
-# On the robot (shadow is the default):
+# On the robot (shadow is the default; run.sh sources the ROS environment):
 bash real_vla_stack/run.sh rollout
 ```
 
@@ -36,3 +36,86 @@ mismatched hash before actions enter the buffer. Images use causal latest-before
 alignment, RGB uint8 HWC in the dataset, and JPEG over a ZeroMQ multipart LAN protocol.
 Arm targets are interpolated from 20 Hz policy time to 30 Hz control time; the logical
 gripper remains stepwise. A stale chunk is never repeated indefinitely.
+
+## Runtime environments and command route
+
+The host process uses `environment/smolvla.yml`. The robot process uses
+`hardware_teleop/environment.yml` plus ROS2 Humble and the locally built `qi`
+messages. Recreate or update those Conda environments from the corresponding
+YAML files; do not rely on packages from the user's Python site directory.
+
+The live rollout does **not** publish directly to the standing-controller topic
+`/lowcmd`. It constructs `qi/msg/LowCmd` frames and publishes them to the reviewed
+SDK arm-only route `/lowcmd_replay` with `mode_ctrl=4`; non-arm motors are disabled
+in that message. The active hand is published separately on `/handscmd`. Direct
+`/lowcmd` output is reserved for the separately reviewed leg-deploy route and is
+not selected by `real_vla_stack/robot/rollout/main.py`.
+
+Shadow mode still captures observations and calls the LAN policy server, but the
+ROS command publishers are not created. Live output requires both
+`rollout.mode: live` and the `--live` command-line flag.
+
+## Runtime safety behavior
+
+- One persistent network worker owns the ZeroMQ socket; the 30 Hz control loop
+  never shares that socket across threads.
+- Action time starts at observation capture, not response arrival. Delayed action
+  steps are skipped, and a response older than `max_chunk_age_ms` is rejected.
+- Robot feedback age and command-publisher conflicts are checked continuously.
+  Stale feedback or a new conflicting publisher causes immediate output
+  relinquishment; the robot does not attempt an open-loop return-home move.
+- The default fault policy does not return home: network, camera, policy, or
+  action faults briefly hold only while feedback is fresh, then relinquish.
+  Return-home remains enabled after normal episode completion.
+- The measured arm must stay within `max_command_tracking_error_rad` of the last
+  step-limited command. A stalled or badly lagging actuator relinquishes output.
+- Before any live motion, a separate preflight session must complete one real
+  camera/network/GPU inference and pass the same action checks. The deployment
+  session then starts at request zero and resets policy state.
+- CUDA is fail-closed: a server configured with `device: cuda` does not silently
+  fall back to CPU.
+- Live startup verifies the running SDK executable against the configured
+  approved SHA256 list and refuses to coexist with the leg-deploy
+  `/qi_topic_converter` route on `/lowcmd`.
+- Control events are written by a background logger. Shadow saves both camera
+  JPEGs and state at the configured interval and records each candidate execution
+  chunk in `events.jsonl`.
+
+## Commissioning sequence
+
+1. Build messages and validate the robot runtime:
+
+   ```bash
+   bash run.sh teleop-hardware-build
+   bash run.sh teleop-hardware-system-prepare --check
+   source hardware_teleop/scripts/source_ros_env.sh
+   ros2 topic hz lowstate
+   ros2 topic info /lowcmd_replay --verbose
+   ```
+
+2. On the inference host, validate and serve one explicit checkpoint:
+
+   ```bash
+   bash real_vla_stack/run.sh checkpoint-check --checkpoint /absolute/path/to/checkpoint
+   bash real_vla_stack/run.sh serve --checkpoint /absolute/path/to/checkpoint
+   ```
+
+3. Keep `rollout.mode: shadow`, then run on the robot:
+
+   ```bash
+   bash real_vla_stack/run.sh rollout --max-runtime-s 30
+   ```
+
+   Inspect `~/real_rollouts/rollout_*/events.jsonl` and the saved
+   `observations/*.jpg`. There must be no `abort` or `policy_error`, camera order
+   and color must be correct, and candidate joint/gripper values must be plausible.
+
+4. Clear the workspace, keep a person on the hardware emergency stop, set
+   `rollout.mode: live`, and start with a five-second trial:
+
+   ```bash
+   bash real_vla_stack/run.sh rollout --live --max-runtime-s 5
+   ```
+
+   Increase to 10 seconds and then the configured episode duration only after the
+   short run starts, executes, returns home, and relinquishes cleanly.

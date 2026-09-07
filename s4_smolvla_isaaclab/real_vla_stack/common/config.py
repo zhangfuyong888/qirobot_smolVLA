@@ -80,6 +80,32 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
         alignment="causal_latest_before",
     )
     contract.validate()
-    if robot["rollout"]["policy_hz"] != contract.dataset_fps:
+    network = robot["network"]
+    rollout = robot["rollout"]
+    freshness = robot["freshness"]
+    safety = robot["safety"]
+    if float(rollout["policy_hz"]) != contract.dataset_fps:
         raise ContractError("robot rollout policy_hz must equal dataset_fps")
+    if float(rollout["control_hz"]) < float(rollout["policy_hz"]):
+        raise ContractError("robot rollout control_hz must be at least policy_hz")
+    horizon = int(rollout["execute_horizon"])
+    if horizon <= 0 or horizon > int(host["model"]["chunk_size"]):
+        raise ContractError("execute_horizon must be positive and no larger than chunk_size")
+    if float(network["request_timeout_ms"]) <= 0 or float(network["connect_timeout_ms"]) <= 0:
+        raise ContractError("policy network timeouts must be positive")
+    if float(network["request_timeout_ms"]) > float(freshness["max_chunk_age_ms"]):
+        raise ContractError("request_timeout_ms cannot exceed max_chunk_age_ms")
+    if int(freshness["max_consecutive_timeouts"]) < 0:
+        raise ContractError("max_consecutive_timeouts cannot be negative")
+    if float(freshness["max_chunk_age_ms"]) < 1000.0 * (horizon - 1) / contract.dataset_fps:
+        raise ContractError("max_chunk_age_ms is shorter than the configured execution horizon")
+    for key in (
+        "max_policy_target_jump_rad",
+        "max_policy_tracking_error_rad",
+        "max_command_tracking_error_rad",
+    ):
+        if float(safety[key]) <= 0:
+            raise ContractError(f"robot safety.{key} must be positive")
+    if int(robot.get("logging", {}).get("shadow_snapshot_every_n_requests", 10)) < 0:
+        raise ContractError("shadow_snapshot_every_n_requests cannot be negative")
     return PipelineConfig(source, task_path, host_path, robot_path, task, host, robot, contract)

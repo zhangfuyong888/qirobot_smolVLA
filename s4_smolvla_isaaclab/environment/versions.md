@@ -39,3 +39,21 @@ real forward/backward steps.
 This Docker record is intentionally separate from the workstation snapshot
 above. Host NVIDIA driver libraries are injected by NVIDIA Container Toolkit
 and are not baked into the image.
+
+## Real-robot LAN rollout dependencies
+
+Validated on 2026-09-07 with user-site packages disabled:
+
+| Process | Environment | Rollout-specific packages |
+|---|---|---|
+| Policy server | `smolvla`, Python 3.12 | OpenCV headless 4.13.0.92, msgpack 1.1.2, pyzmq 27.0.2 |
+| Robot client | `s4_hardware_teleop`, Python 3.10 | NumPy 2.2.6, OpenCV headless 4.11.0.86, msgpack 1.1.2, pyzmq 27.0.2 |
+| ROS/Python compatibility | `s4_hardware_teleop` | lark 1.1.1, typeguard 2.2.2, pytest 6.2.5 |
+
+Both environments passed `pip check`. The final rollout-focused suites passed
+41 tests in the robot environment and 22 tests in the host environment (the
+host command disables unrelated system ROS pytest plugin auto-loading). The
+project-local system-Python runtime also passed with ROS Pinocchio 3.9.0,
+OpenCV headless 4.11.0.86, msgpack 1.1.2 and pyzmq 27.0.2. ROS2 Humble and the
+locally built `qi` messages remain system/workspace dependencies and must be sourced with
+`hardware_teleop/scripts/source_ros_env.sh` before starting a robot rollout.

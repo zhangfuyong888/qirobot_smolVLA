@@ -13,6 +13,25 @@ from ...common.protocol import (
 )
 
 
+class RequestSessionGuard:
+    """Reset policy state between rollouts and reject replayed requests."""
+
+    def __init__(self) -> None:
+        self.session_id: str | None = None
+        self.request_id = -1
+
+    def accept(self, runner, request) -> None:
+        if request.session_id != self.session_id:
+            if request.request_id != 0:
+                raise ValueError("a new rollout session must start with request_id=0")
+            runner.reset()
+            self.session_id = request.session_id
+            self.request_id = -1
+        if request.request_id <= self.request_id:
+            raise ValueError("request is stale, duplicated, or out of order")
+        self.request_id = request.request_id
+
+
 def _decode_jpeg_rgb(payload: bytes) -> np.ndarray:
     import cv2
 
@@ -29,6 +48,7 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
     socket = context.socket(zmq.REP)
     socket.setsockopt(zmq.LINGER, 0)
     socket.bind(f"tcp://{bind}:{int(port)}")
+    sessions = RequestSessionGuard()
     print(f"[REAL-VLA-SERVER] ready tcp://{bind}:{port} contract={runner.contract.sha256}", flush=True)
     try:
         while True:
@@ -38,6 +58,9 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                 request, head_jpeg, wrist_jpeg = unpack_observation(parts)
                 if request.contract_sha256 != runner.contract.sha256:
                     raise ValueError("request contract hash mismatch")
+                if request.task != runner.contract.task:
+                    raise ValueError("request task does not match the deployed contract")
+                sessions.accept(runner, request)
                 images = {
                     runner.contract.camera_keys[0]: _decode_jpeg_rgb(head_jpeg),
                     runner.contract.camera_keys[1]: _decode_jpeg_rgb(wrist_jpeg),

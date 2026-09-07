@@ -522,9 +522,14 @@ class HardwareRobotBridge:
         """Briefly hold measured arms, then stop this process from publishing."""
         if not self._command_output_enabled:
             return True
+        if self._output_relinquished:
+            return True
+        if self.is_state_feed_stale(self._ros_cfg.max_state_age_s):
+            self.relinquish_without_arm_hold(
+                f"{reason}; feedback stale, refusing open-loop hold"
+            )
+            return False
         with self._command_lock:
-            if self._output_relinquished:
-                return True
             with self._lock:
                 has_lowcmd_output = self._has_published_lowcmd
             if not has_lowcmd_output:
@@ -585,7 +590,12 @@ class HardwareRobotBridge:
             heartbeat = self._last_command_heartbeat
             if heartbeat > 0.0 and time.monotonic() - heartbeat > self._ros_cfg.command_watchdog_timeout_s:
                 try:
-                    self.hold_current_and_relinquish("command heartbeat timeout")
+                    if self.is_state_feed_stale(self._ros_cfg.max_state_age_s):
+                        self.relinquish_without_arm_hold(
+                            "command heartbeat timeout with stale feedback"
+                        )
+                    else:
+                        self.hold_current_and_relinquish("command heartbeat timeout")
                 except Exception as exc:
                     self._output_relinquished = True
                     print(f"[HW-TELEOP][SAFETY] watchdog fallback failed: {exc}", flush=True)

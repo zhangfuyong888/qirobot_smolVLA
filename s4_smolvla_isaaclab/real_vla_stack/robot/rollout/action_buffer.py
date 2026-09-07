@@ -14,9 +14,17 @@ class ActionBuffer:
     max_chunk_age_ms: float
     chunk: np.ndarray | None = None
     received_at_ns: int = 0
+    source_at_ns: int = 0
     request_id: int = -1
 
-    def replace(self, chunk: np.ndarray, *, request_id: int, received_at_ns: int) -> None:
+    def replace(
+        self,
+        chunk: np.ndarray,
+        *,
+        request_id: int,
+        received_at_ns: int,
+        source_at_ns: int | None = None,
+    ) -> None:
         value = np.asarray(chunk, dtype=np.float32)
         if value.ndim != 2 or value.shape[1] != 8 or not np.isfinite(value).all():
             raise ContractError(f"chunk must be finite [N,8], got {value.shape}")
@@ -24,17 +32,23 @@ class ActionBuffer:
             raise ContractError("chunk is shorter than execute_horizon")
         if request_id <= self.request_id:
             raise ContractError(f"stale/out-of-order response request_id={request_id}, latest={self.request_id}")
+        source_ns = int(received_at_ns if source_at_ns is None else source_at_ns)
+        if source_ns < 0 or source_ns > int(received_at_ns):
+            raise ContractError("policy chunk source timestamp is invalid")
         self.chunk = value[: self.execute_horizon].copy()
         self.received_at_ns = int(received_at_ns)
+        self.source_at_ns = source_ns
         self.request_id = int(request_id)
 
     def sample(self, now_ns: int) -> np.ndarray:
         if self.chunk is None:
             raise PolicyStaleError("no policy action chunk received")
-        age_ms = (int(now_ns) - self.received_at_ns) / 1.0e6
+        age_ms = (int(now_ns) - self.source_at_ns) / 1.0e6
         if age_ms < 0 or age_ms > self.max_chunk_age_ms:
             raise PolicyStaleError(f"policy chunk age {age_ms:.1f}ms exceeds {self.max_chunk_age_ms:.1f}ms")
-        elapsed_s = max((int(now_ns) - self.received_at_ns) / 1.0e9, 0.0)
+        # Chunk step zero corresponds to the observation time, not the response
+        # arrival time. Skip actions made obsolete by transport/inference delay.
+        elapsed_s = max((int(now_ns) - self.source_at_ns) / 1.0e9, 0.0)
         position = min(elapsed_s * self.policy_hz, len(self.chunk) - 1)
         low = int(np.floor(position))
         high = min(low + 1, len(self.chunk) - 1)
