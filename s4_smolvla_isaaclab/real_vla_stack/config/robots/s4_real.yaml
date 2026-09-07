@@ -4,13 +4,13 @@ network:
   connect_timeout_ms: 1000
   request_timeout_ms: 500
 rollout:
-  mode: shadow
+  mode: live
   control_hz: 30
   policy_hz: 20
-  execute_horizon: 20
+  execute_horizon: 35
   # Request a fresh plan every ten 20 Hz policy steps (500 ms). The remaining
   # half of the 20-step window covers normal LAN/inference delay and one retry.
-  replan_interval_steps: 10
+  replan_interval_steps: 20
   # Let both USB cameras settle auto exposure/white balance before the first
   # policy observation. The on-robot cameras stabilize within about 2 seconds.
   camera_warmup_s: 2.0
@@ -25,9 +25,9 @@ freshness:
   max_response_age_ms: 500
   # After this age, stop advancing the policy trajectory and hold the last
   # published absolute target while an immediate retry is in flight.
-  max_motion_chunk_age_ms: 1200
+  max_motion_chunk_age_ms: 1800
   # Recovery deadline. Exceeding it aborts and relinquishes output.
-  max_chunk_age_ms: 1800
+  max_chunk_age_ms: 2400
   max_consecutive_timeouts: 2
   # One stochastic outlier is discarded. Three consecutive unsafe chunks abort.
   max_consecutive_policy_rejections: 2
