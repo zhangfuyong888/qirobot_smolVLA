@@ -1,5 +1,5 @@
 network:
-  policy_server: 192.168.110.35
+  policy_server: 192.168.110.87
   policy_port: 5555
   connect_timeout_ms: 1000
   request_timeout_ms: 500
@@ -7,7 +7,13 @@ rollout:
   mode: shadow
   control_hz: 30
   policy_hz: 20
-  execute_horizon: 8
+  execute_horizon: 20
+  # Request a fresh plan every ten 20 Hz policy steps (500 ms). The remaining
+  # half of the 20-step window covers normal LAN/inference delay and one retry.
+  replan_interval_steps: 10
+  # Let both USB cameras settle auto exposure/white balance before the first
+  # policy observation. The on-robot cameras stabilize within about 2 seconds.
+  camera_warmup_s: 2.0
   start_from_home: true
   return_home_on_finish: true
   # Faults hold briefly and relinquish; an automatic fault-time trajectory can
@@ -15,14 +21,27 @@ rollout:
   return_home_on_abort: false
   max_episode_s: 30
 freshness:
-  max_chunk_age_ms: 500
+  # Responses older than this are never accepted as a new plan.
+  max_response_age_ms: 500
+  # After this age, stop advancing the policy trajectory and hold the last
+  # published absolute target while an immediate retry is in flight.
+  max_motion_chunk_age_ms: 1200
+  # Recovery deadline. Exceeding it aborts and relinquishes output.
+  max_chunk_age_ms: 1800
   max_consecutive_timeouts: 2
+  # One stochastic outlier is discarded. Three consecutive unsafe chunks abort.
+  max_consecutive_policy_rejections: 2
 safety:
   reject_non_finite: true
   max_policy_target_jump_rad: 0.20
   max_policy_tracking_error_rad: 0.25
   # Stop if the actuator does not follow the already step-limited command.
   max_command_tracking_error_rad: 0.18
+  # Live commissioning limits. These sit below the generic teleop bridge's
+  # final 0.032 rad/publish guard and add acceleration limiting for smoothness.
+  max_rollout_joint_velocity_rad_s: 0.25
+  max_rollout_joint_acceleration_rad_s2: 0.75
+  chunk_blend_duration_ms: 100
 gripper:
   open_threshold: 0.35
   grasp_threshold: 0.65

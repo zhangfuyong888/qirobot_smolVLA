@@ -55,12 +55,18 @@ Shadow mode still captures observations and calls the LAN policy server, but the
 ROS command publishers are not created. Live output requires both
 `rollout.mode: live` and the `--live` command-line flag.
 
+For a final no-motion check of the exact live configuration, add
+`--preflight-only` together with `--live`. It exits after SDK, feedback, camera,
+network, inference and action-contract checks, before Home or policy commands.
+
 ## Runtime safety behavior
 
 - One persistent network worker owns the ZeroMQ socket; the 30 Hz control loop
   never shares that socket across threads.
 - Action time starts at observation capture, not response arrival. Delayed action
-  steps are skipped, and a response older than `max_chunk_age_ms` is rejected.
+  steps are skipped, and a response older than `max_response_age_ms` is rejected.
+  At `max_motion_chunk_age_ms` the controller freezes the last absolute target;
+  it waits only until `max_chunk_age_ms` for recovery before aborting.
 - Robot feedback age and command-publisher conflicts are checked continuously.
   Stale feedback or a new conflicting publisher causes immediate output
   relinquishment; the robot does not attempt an open-loop return-home move.
@@ -69,9 +75,29 @@ ROS command publishers are not created. Live output requires both
   Return-home remains enabled after normal episode completion.
 - The measured arm must stay within `max_command_tracking_error_rad` of the last
   step-limited command. A stalled or badly lagging actuator relinquishes output.
+- Live commands are paced from the previous actual publication, so a delayed
+  camera or network iteration skips a control tick instead of sending catch-up
+  bursts. A rollout-specific velocity/acceleration filter sits ahead of the
+  hardware bridge's final per-message joint-step limiter.
+- Policy requests use `replan_interval_steps`, independently of the 20 Hz action
+  timeline. The commissioned `20/10` horizon/replan pair retains twenty policy
+  steps and requests a replacement after ten. A replacement chunk is
+  delay-aligned, checked against current state, and blended from the last
+  published target over `chunk_blend_duration_ms`.
+- A single unsafe stochastic chunk is logged and discarded. The last fresh plan
+  remains active; consecutive rejection beyond the configured limit, or expiry
+  of that plan, still aborts and relinquishes command output.
 - Before any live motion, a separate preflight session must complete one real
-  camera/network/GPU inference and pass the same action checks. The deployment
-  session then starts at request zero and resets policy state.
+  camera/network/GPU inference and pass the non-execution action checks. The
+  deployment session then starts at request zero and resets policy state.
+- Both cameras receive the configured startup warm-up interval before the first
+  policy observation so auto exposure and white balance have settled.
+- When `start_from_home` is enabled, the pre-home policy chunk is never executed,
+  so preflight checks its timing, shape, finite values, adjacent steps and
+  gripper range but defers only the first-target/observation-state comparison.
+  After deterministic homing, chunk step zero is checked against the state sent
+  with its observation, while the delay-aligned execution target is separately
+  checked against current measured state before any policy action is published.
 - CUDA is fail-closed: a server configured with `device: cuda` does not silently
   fall back to CPU.
 - Live startup verifies the running SDK executable against the configured

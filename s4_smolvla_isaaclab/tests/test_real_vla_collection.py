@@ -332,6 +332,8 @@ def test_home_manager_can_require_measured_home() -> None:
     measured[0] = 0.1
     assert manager.is_home(measured, now_s=0.1, require_measured=True) is False
     assert manager.arrived_by == ""
+    assert manager.is_home(measured, now_s=10.0, require_measured=True) is False
+    assert manager.arrived_by == ""
 
 
 def test_quality_flags_writer_drops() -> None:

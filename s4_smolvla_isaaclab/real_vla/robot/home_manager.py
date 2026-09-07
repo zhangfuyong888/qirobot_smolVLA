@@ -119,7 +119,8 @@ class HomeManager:
         elif not require_measured and self.last_command_error <= self.tolerance_rad:
             arrived_by = "command"
         elif (
-            self.interpolation_done
+            not require_measured
+            and self.interpolation_done
             and self._started_s is not None
             and now - self._started_s >= self.duration_s + max(self.stable_time_s, 1.0)
         ):
