@@ -10,18 +10,29 @@ class JointCommandFilter:
         self,
         *,
         control_hz: float,
-        max_velocity_rad_s: float,
-        max_acceleration_rad_s2: float,
+        max_velocity_rad_s: float | list[float] | np.ndarray,
+        max_acceleration_rad_s2: float | list[float] | np.ndarray,
     ) -> None:
         self.dt = 1.0 / float(control_hz)
-        self.max_velocity = float(max_velocity_rad_s)
-        self.max_acceleration = float(max_acceleration_rad_s2)
+        self.max_velocity = self._limits(max_velocity_rad_s, "velocity")
+        self.max_acceleration = self._limits(max_acceleration_rad_s2, "acceleration")
         self._position: np.ndarray | None = None
         self._velocity = np.zeros(7, dtype=np.float64)
+        self._limited = np.zeros(7, dtype=bool)
+
+    @staticmethod
+    def _limits(values: float | list[float] | np.ndarray, name: str) -> np.ndarray:
+        value = np.asarray(values, dtype=np.float64)
+        if value.ndim == 0:
+            value = np.full(7, float(value), dtype=np.float64)
+        if value.shape != (7,) or not np.isfinite(value).all() or np.any(value <= 0):
+            raise ValueError(f"{name} limits must be finite positive scalar or [7]")
+        return value
 
     def reset(self, position_q7: np.ndarray) -> None:
         self._position = np.asarray(position_q7, dtype=np.float64).reshape(7).copy()
         self._velocity.fill(0.0)
+        self._limited.fill(False)
 
     def step(self, target_q7: np.ndarray) -> np.ndarray:
         target = np.asarray(target_q7, dtype=np.float64).reshape(7)
@@ -29,8 +40,9 @@ class JointCommandFilter:
             self.reset(target)
             return target.copy()
         error = target - self._position
+        unconstrained_velocity = error / self.dt
         desired_velocity = np.clip(
-            error / self.dt,
+            unconstrained_velocity,
             -self.max_velocity,
             self.max_velocity,
         )
@@ -40,6 +52,7 @@ class JointCommandFilter:
             self._velocity - max_dv,
             self._velocity + max_dv,
         )
+        self._limited = ~np.isclose(velocity, unconstrained_velocity, atol=1.0e-12)
         step = velocity * self.dt
         # Never pass through a nearby target while braking.
         overshoot = np.abs(step) > np.abs(error)
@@ -52,3 +65,7 @@ class JointCommandFilter:
     @property
     def velocity(self) -> np.ndarray:
         return self._velocity.copy()
+
+    @property
+    def limited_joints(self) -> np.ndarray:
+        return self._limited.copy()

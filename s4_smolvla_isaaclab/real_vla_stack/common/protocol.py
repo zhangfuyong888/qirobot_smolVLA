@@ -8,7 +8,7 @@ import numpy as np
 from .errors import ContractError
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,8 @@ class ObservationRequest:
     task: str
     state: np.ndarray
     image_timestamps_ns: tuple[int, int]
+    rtc_inference_delay_steps: int = 0
+    previous_accepted_request_id: int = -1
 
 
 @dataclass(frozen=True)
@@ -30,6 +32,12 @@ class ActionResponse:
     inference_ms: float
     policy_fps: int
     action_chunk: np.ndarray
+    rtc_enabled: bool = False
+    rtc_inference_delay_steps: int = 0
+    rtc_execution_horizon: int = 0
+    rtc_prev_leftover_steps: int = 0
+    raw_chunk_length: int = 0
+    checkpoint: str = ""
 
 
 def encode_metadata(payload: dict[str, Any]) -> bytes:
@@ -65,6 +73,8 @@ def pack_observation(request: ObservationRequest, head_jpeg: bytes, wrist_jpeg: 
         "state_dtype": "float32",
         "state_shape": [8],
         "image_transport": "jpeg",
+        "rtc_inference_delay_steps": int(request.rtc_inference_delay_steps),
+        "previous_accepted_request_id": int(request.previous_accepted_request_id),
     }
     return [encode_metadata(metadata), state.tobytes(), bytes(head_jpeg), bytes(wrist_jpeg)]
 
@@ -90,6 +100,8 @@ def unpack_observation(parts: list[bytes]) -> tuple[ObservationRequest, bytes, b
             str(meta["task"]),
             state,
             timestamps,
+            int(meta.get("rtc_inference_delay_steps", 0)),
+            int(meta.get("previous_accepted_request_id", -1)),
         ),
         parts[2],
         parts[3],
@@ -110,6 +122,12 @@ def pack_action_response(response: ActionResponse) -> list[bytes]:
         "policy_fps": int(response.policy_fps),
         "action_shape": list(chunk.shape),
         "action_dtype": "float32",
+        "rtc_enabled": bool(response.rtc_enabled),
+        "rtc_inference_delay_steps": int(response.rtc_inference_delay_steps),
+        "rtc_execution_horizon": int(response.rtc_execution_horizon),
+        "rtc_prev_leftover_steps": int(response.rtc_prev_leftover_steps),
+        "raw_chunk_length": int(response.raw_chunk_length or chunk.shape[0]),
+        "checkpoint": str(response.checkpoint),
     }
     return [encode_metadata(meta), chunk.tobytes()]
 
@@ -133,4 +151,10 @@ def unpack_action_response(parts: list[bytes]) -> ActionResponse:
         float(meta["inference_ms"]),
         int(meta["policy_fps"]),
         chunk,
+        bool(meta.get("rtc_enabled", False)),
+        int(meta.get("rtc_inference_delay_steps", 0)),
+        int(meta.get("rtc_execution_horizon", 0)),
+        int(meta.get("rtc_prev_leftover_steps", 0)),
+        int(meta.get("raw_chunk_length", shape[0])),
+        str(meta.get("checkpoint", "")),
     )

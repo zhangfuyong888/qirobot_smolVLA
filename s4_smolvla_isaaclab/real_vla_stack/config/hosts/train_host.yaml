@@ -10,15 +10,18 @@ training:
   device: cuda
   batch_size: 16
   num_workers: 16
-  save_freq: 20000
+  save_freq: 50000
   seed: 42
   profiles:
     smoke: 300
     overfit: 5000
     baseline: 200000
-    full: 500000
+    full: 400000
 model:
   policy: smolvla
+  # Full LeRobot policy snapshot. Production training fails closed when this
+  # directory is absent or does not contain the pretrained action expert.
+  pretrained_policy: /home/zfy/smolVLA/s4_smolvla_isaaclab/models/lerobot/smolvla_base
   chunk_size: 50
   n_obs_steps: 1
   max_state_dim: 50
@@ -38,5 +41,10 @@ server:
   device: cuda
   image_transport: jpeg
   jpeg_quality: 90
+  rtc:
+    # Enable only after the pretrained fine-tune passes offline probes.
+    enabled: false
+    execution_horizon: 10
+    max_guidance_weight: 10.0
 deployment:
-  checkpoint: latest
+  checkpoint: null

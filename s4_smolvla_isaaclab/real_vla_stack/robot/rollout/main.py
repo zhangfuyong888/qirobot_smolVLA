@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 import uuid
@@ -285,12 +286,8 @@ def main() -> int:
     )
     command_filter = JointCommandFilter(
         control_hz=float(cfg.robot["rollout"]["control_hz"]),
-        max_velocity_rad_s=float(
-            cfg.robot["safety"]["max_rollout_joint_velocity_rad_s"]
-        ),
-        max_acceleration_rad_s2=float(
-            cfg.robot["safety"]["max_rollout_joint_acceleration_rad_s2"]
-        ),
+        max_velocity_rad_s=cfg.robot["safety"]["max_rollout_joint_velocity_rad_s"],
+        max_acceleration_rad_s2=cfg.robot["safety"]["max_rollout_joint_acceleration_rad_s2"],
     )
     session_id = uuid.uuid4().hex
     run_root = (
@@ -305,6 +302,18 @@ def main() -> int:
     request_id = 0
     timeouts = 0
     policy_rejections = 0
+    total_policy_rejections = 0
+    rtc_delay_estimate_steps = 0
+    previous_accepted_request_id = -1
+    rtt_samples: list[float] = []
+    observation_age_samples: list[float] = []
+    inference_samples: list[float] = []
+    command_count = 0
+    rollout_limited_count = 0
+    hardware_limited_count = 0
+    gripper_transition_count = 0
+    gripper_raw_max = float("-inf")
+    deployed_checkpoint = ""
     stale_hold_request_id: int | None = None
     live_motion_enabled = False
     started = time.monotonic()
@@ -392,6 +401,10 @@ def main() -> int:
                     observation_age_ms = (
                         result.received_at_ns - result.observation.robot_timestamp_ns
                     ) / 1.0e6
+                    rtc_delay_estimate_steps = max(
+                        rtc_delay_estimate_steps,
+                        math.ceil(observation_age_ms * cfg.contract.dataset_fps / 1000.0),
+                    )
                     if observation_age_ms < 0 or observation_age_ms > float(
                         cfg.robot["freshness"]["max_response_age_ms"]
                     ):
@@ -402,6 +415,11 @@ def main() -> int:
                     if int(response.policy_fps) != cfg.contract.dataset_fps:
                         raise PolicyStaleError(
                             f"policy response fps={response.policy_fps}, expected={cfg.contract.dataset_fps}"
+                        )
+                    expected_rtc = bool(cfg.host.get("server", {}).get("rtc", {}).get("enabled", False))
+                    if response.rtc_enabled != expected_rtc:
+                        raise PolicyStaleError(
+                            f"policy server RTC enabled={response.rtc_enabled}, expected={expected_rtc}"
                         )
                     timeouts = 0
                     try:
@@ -434,6 +452,7 @@ def main() -> int:
                         )
                     except ContractError as action_exc:
                         policy_rejections += 1
+                        total_policy_rejections += 1
                         # Retry on the next control iteration instead of waiting
                         # for the normal replan interval while the old plan ages.
                         next_policy = now
@@ -453,6 +472,7 @@ def main() -> int:
                                 f"last={action_exc}"
                             ) from action_exc
                     else:
+                        previous_request_id = buffer.request_id
                         published_before_replace = adapter.last_published()
                         transition_from_q7 = (
                             measured_q
@@ -467,6 +487,23 @@ def main() -> int:
                             source_at_ns=result.observation.robot_timestamp_ns,
                             transition_from_q7=transition_from_q7,
                         )
+                        previous_accepted_request_id = response.request_id
+                        deployed_checkpoint = response.checkpoint
+                        rtt_samples.append(float(result.rtt_ms))
+                        observation_age_samples.append(float(observation_age_ms))
+                        inference_samples.append(float(response.inference_ms))
+                        if response.rtc_enabled:
+                            logger.event(
+                                "rtc_chunk",
+                                old_request_id=previous_request_id,
+                                new_request_id=response.request_id,
+                                delay_steps=response.rtc_inference_delay_steps,
+                                old_remaining_steps=response.rtc_prev_leftover_steps,
+                                first_target_jump_rad=float(
+                                    np.max(np.abs(execution_target[:7] - transition_from_q7))
+                                ),
+                                rtc_guided=response.rtc_prev_leftover_steps > 0,
+                            )
                         policy_rejections = 0
                         stale_hold_request_id = None
                         event = {
@@ -474,6 +511,13 @@ def main() -> int:
                             "rtt_ms": result.rtt_ms,
                             "inference_ms": response.inference_ms,
                             "observation_age_ms": observation_age_ms,
+                            "rtc_enabled": response.rtc_enabled,
+                            "rtc_inference_delay_steps": response.rtc_inference_delay_steps,
+                            "rtc_execution_horizon": response.rtc_execution_horizon,
+                            "rtc_prev_leftover_steps": response.rtc_prev_leftover_steps,
+                            "raw_chunk_length": response.raw_chunk_length,
+                            "physical_chunk_length": int(response.action_chunk.shape[0]),
+                            "checkpoint": response.checkpoint,
                         }
                         if not live:
                             event["execute_chunk"] = buffer.chunk.tolist()
@@ -497,6 +541,8 @@ def main() -> int:
                     cfg.contract.task,
                     state,
                     image_ts,
+                    rtc_delay_estimate_steps,
+                    previous_accepted_request_id,
                 )
                 head_jpeg = encode_jpeg(
                     images[0], int(cfg.host["server"]["jpeg_quality"])
@@ -557,23 +603,51 @@ def main() -> int:
                     action = buffer.sample(sample_ns)
                 filtered_q = command_filter.step(action[:7])
                 rollout_limited = not np.allclose(filtered_q, action[:7], atol=1.0e-9)
-                gripper_target = gripper.update(float(action[7]))
+                gripper_before = float(gripper.state)
+                policy_gripper_raw = float(action[7])
+                gripper_target = gripper.update(policy_gripper_raw)
+                gripper_after = float(gripper.state)
                 command = adapter.overlay_active_arm(measured_bimanual, filtered_q)
                 published = adapter.publish(command, gripper_target=gripper_target, quest_trigger=0.0, allow_motion=True)
+                command_count += 1
+                rollout_limited_count += int(rollout_limited)
+                hardware_limited_count += int(published.limited)
+                gripper_transition_count += int(gripper_before != gripper_after)
+                gripper_raw_max = max(gripper_raw_max, policy_gripper_raw)
                 logger.event(
                     "command",
                     request_id=buffer.request_id,
                     target=published.as_8d().tolist(),
                     policy_target=action.tolist(),
                     rollout_limited=rollout_limited,
+                    rollout_limited_joints=command_filter.limited_joints.tolist(),
                     hardware_limited=published.limited,
+                    policy_gripper_raw=policy_gripper_raw,
+                    gripper_state_before=gripper_before,
+                    gripper_state_after=gripper_after,
+                    gripper_transition=gripper_before != gripper_after,
+                    published_gripper_target=float(gripper_target),
                 )
             next_control = time.monotonic() + 1.0 / float(
                 cfg.robot["rollout"]["control_hz"]
             )
         if live and bool(cfg.robot["rollout"]["return_home_on_finish"]):
             _run_home(adapter, bridge, hardware, logger)
-        logger.event("complete", reason="max_episode_s")
+        logger.event(
+            "complete",
+            reason="max_episode_s",
+            checkpoint=deployed_checkpoint,
+            mean_rtt_ms=float(np.mean(rtt_samples)) if rtt_samples else None,
+            p95_rtt_ms=float(np.percentile(rtt_samples, 95)) if rtt_samples else None,
+            mean_inference_ms=float(np.mean(inference_samples)) if inference_samples else None,
+            mean_observation_age_ms=float(np.mean(observation_age_samples)) if observation_age_samples else None,
+            rollout_limited_ratio=rollout_limited_count / command_count if command_count else None,
+            hardware_limited_ratio=hardware_limited_count / command_count if command_count else None,
+            gripper_raw_max=gripper_raw_max if np.isfinite(gripper_raw_max) else None,
+            gripper_transitions=gripper_transition_count,
+            replans=len(rtt_samples),
+            rejected_chunks=total_policy_rejections,
+        )
         return 0
     except BaseException as exc:
         logger.event("abort", reason=str(exc))

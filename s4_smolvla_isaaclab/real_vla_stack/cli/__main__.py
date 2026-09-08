@@ -16,13 +16,18 @@ def main() -> int:
     convert = sub.add_parser("convert")
     convert.add_argument("--overwrite", action="store_true")
     sub.add_parser("dataset-check")
+    sub.add_parser("analyze-dynamics")
     train = sub.add_parser("train")
     train.add_argument("--profile", choices=["smoke", "overfit", "baseline", "full"])
     train.add_argument("--dry-run", action="store_true")
     checkpoint = sub.add_parser("checkpoint-check")
-    checkpoint.add_argument("--checkpoint", type=Path)
+    checkpoint.add_argument("--checkpoint", type=Path, required=True)
+    probe = sub.add_parser("behavior-probe")
+    probe.add_argument("--checkpoint", type=Path, required=True)
+    probe.add_argument("--samples", type=int, default=10)
+    probe.add_argument("--max-episodes", type=int)
     serve = sub.add_parser("serve")
-    serve.add_argument("--checkpoint", type=Path)
+    serve.add_argument("--checkpoint", type=Path, required=True)
     args = parser.parse_args()
     cfg = load_pipeline_config(args.config)
     if args.command == "raw-check":
@@ -49,12 +54,33 @@ def main() -> int:
             )
         )
         return 0
+    if args.command == "analyze-dynamics":
+        from real_vla_stack.host.dataset.analyze_action_dynamics import analyze_action_dynamics
+
+        root = cfg.host_path_value("lerobot_root") / str(cfg.host["dataset"]["repo_id"])
+        print(json.dumps(analyze_action_dynamics(root, fps=cfg.contract.dataset_fps), indent=2))
+        return 0
     if args.command == "train":
         from real_vla_stack.host.training.launcher import launch_training
 
         command = launch_training(cfg, profile=args.profile, dry_run=args.dry_run)
         if args.dry_run:
             print(shlex.join(command))
+        return 0
+    if args.command == "behavior-probe":
+        from real_vla_stack.host.training.behavior_probe import probe_checkpoint_behavior
+
+        print(
+            json.dumps(
+                probe_checkpoint_behavior(
+                    cfg,
+                    args.checkpoint,
+                    samples_per_observation=args.samples,
+                    max_episodes=args.max_episodes,
+                ),
+                indent=2,
+            )
+        )
         return 0
     if args.command in {"checkpoint-check", "serve"}:
         from real_vla_stack.host.training.checkpoint import check_checkpoint, resolve_deployment_checkpoint
@@ -68,7 +94,15 @@ def main() -> int:
         from real_vla_stack.host.inference.server import serve_policy
 
         server = cfg.host["server"]
-        runner = PolicyRunner(model, cfg.contract, device=str(server["device"]))
+        rtc = server.get("rtc", {})
+        runner = PolicyRunner(
+            model,
+            cfg.contract,
+            device=str(server["device"]),
+            rtc_enabled=bool(rtc.get("enabled", False)),
+            rtc_execution_horizon=int(rtc.get("execution_horizon", 10)),
+            rtc_max_guidance_weight=float(rtc.get("max_guidance_weight", 10.0)),
+        )
         serve_policy(runner, bind=str(server["bind"]), port=int(server["port"]))
         return 0
     raise AssertionError(args.command)

@@ -12,6 +12,7 @@ import yaml
 
 from ...common.config import PipelineConfig
 from ..dataset.lerobot_validator import validate_lerobot_dataset
+from .preflight import preflight_pretrained_policy
 
 
 def training_command(config: PipelineConfig, *, profile: str | None = None) -> tuple[list[str], Path]:
@@ -22,12 +23,16 @@ def training_command(config: PipelineConfig, *, profile: str | None = None) -> t
         raise ValueError(f"unknown training profile {selected!r}")
     steps = int(training["profiles"][selected])
     dataset_root = config.host_path_value("lerobot_root") / str(config.host["dataset"]["repo_id"])
-    output = config.host_path_value("output_root") / f"{config.contract.task_id}_{selected}"
-    model_root = config.host_path_value("model_root")
-    vlm = model_root / str(model["vlm_model_name"])
+    pretrained_value = model.get("pretrained_policy")
+    pretrained = (
+        Path(os.path.expandvars(os.path.expanduser(str(pretrained_value)))).resolve()
+        if pretrained_value
+        else None
+    )
+    mode = "smolvla_base_ft" if pretrained is not None else "scratch_expert_legacy"
+    output = config.host_path_value("output_root") / f"{config.contract.task_id}_{mode}_{selected}"
     command = [
         "lerobot-train",
-        "--policy.type=smolvla",
         f"--dataset.repo_id={config.host['dataset']['repo_id']}",
         f"--dataset.root={dataset_root}",
         "--dataset.video_backend=pyav",
@@ -40,28 +45,53 @@ def training_command(config: PipelineConfig, *, profile: str | None = None) -> t
         f"--seed={int(training['seed'])}",
         "--resume=false",
         f"--policy.device={training['device']}",
-        f"--policy.chunk_size={int(model['chunk_size'])}",
-        f"--policy.n_action_steps={int(model['chunk_size'])}",
-        f"--policy.n_obs_steps={int(model['n_obs_steps'])}",
-        f"--policy.max_state_dim={int(model['max_state_dim'])}",
-        f"--policy.max_action_dim={int(model['max_action_dim'])}",
-        f"--policy.resize_imgs_with_padding={model['resize_imgs_with_padding']}",
         f"--policy.freeze_vision_encoder={str(model['freeze_vision_encoder']).lower()}",
         f"--policy.train_expert_only={str(model['train_expert_only']).lower()}",
         f"--policy.train_state_proj={str(model['train_state_proj']).lower()}",
-        f"--policy.load_vlm_weights={str(model['load_vlm_weights']).lower()}",
-        f"--policy.vlm_model_name={vlm}",
         f"--policy.optimizer_lr={model['optimizer_lr']}",
         f"--policy.optimizer_weight_decay={model['optimizer_weight_decay']}",
         f"--policy.optimizer_grad_clip_norm={model['optimizer_grad_clip_norm']}",
         "--policy.push_to_hub=false",
     ]
+    if pretrained is not None:
+        command.insert(1, f"--policy.path={pretrained}")
+        command.insert(2, "--policy.strict_pretrained_loading=true")
+        # smolvla_base ships generic 6D/three-camera feature metadata. Clearing
+        # only this dataset contract lets make_policy infer the drawer 8D + two
+        # camera features without changing any latent architecture dimensions.
+        command.insert(3, "--policy.input_features=null")
+    else:
+        model_root = config.host_path_value("model_root")
+        vlm = model_root / str(model["vlm_model_name"])
+        scratch_args = [
+            "--policy.type=smolvla",
+            f"--policy.chunk_size={int(model['chunk_size'])}",
+            f"--policy.n_action_steps={int(model['chunk_size'])}",
+            f"--policy.n_obs_steps={int(model['n_obs_steps'])}",
+            f"--policy.max_state_dim={int(model['max_state_dim'])}",
+            f"--policy.max_action_dim={int(model['max_action_dim'])}",
+            f"--policy.resize_imgs_with_padding={model['resize_imgs_with_padding']}",
+            f"--policy.load_vlm_weights={str(model['load_vlm_weights']).lower()}",
+            f"--policy.vlm_model_name={vlm}",
+        ]
+        command[1:1] = scratch_args
     return command, output
 
 
 def launch_training(config: PipelineConfig, *, profile: str | None = None, dry_run: bool = False) -> list[str]:
     dataset_root = config.host_path_value("lerobot_root") / str(config.host["dataset"]["repo_id"])
     validate_lerobot_dataset(dataset_root, config.contract)
+    pretrained = config.host["model"].get("pretrained_policy")
+    if pretrained:
+        report = preflight_pretrained_policy(
+            Path(os.path.expandvars(os.path.expanduser(str(pretrained)))).resolve(),
+            config.contract,
+            expected_chunk_size=int(config.host["model"]["chunk_size"]),
+            expected_n_obs_steps=int(config.host["model"]["n_obs_steps"]),
+            train_expert_only=bool(config.host["model"]["train_expert_only"]),
+            train_state_proj=bool(config.host["model"]["train_state_proj"]),
+        )
+        print("[REAL-VLA-TRAIN] pretrained preflight", json.dumps(report, sort_keys=True), flush=True)
     command, output = training_command(config, profile=profile)
     adjacent_cli = Path(sys.executable).resolve().parent / command[0]
     resolved_cli = adjacent_cli if adjacent_cli.is_file() else shutil.which(command[0])

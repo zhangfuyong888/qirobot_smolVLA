@@ -18,9 +18,11 @@ The hard boundary is intentional:
 bash real_vla_stack/run.sh raw-check
 bash real_vla_stack/run.sh convert
 bash real_vla_stack/run.sh dataset-check
+bash real_vla_stack/run.sh analyze-dynamics
 bash real_vla_stack/run.sh train --profile smoke
-bash real_vla_stack/run.sh checkpoint-check
-bash real_vla_stack/run.sh serve
+bash real_vla_stack/run.sh checkpoint-check --checkpoint /absolute/path/to/checkpoint
+bash real_vla_stack/run.sh behavior-probe --checkpoint /absolute/path/to/checkpoint --samples 10
+bash real_vla_stack/run.sh serve --checkpoint /absolute/path/to/checkpoint
 
 # On the robot (shadow is the default; run.sh sources the ROS environment):
 bash real_vla_stack/run.sh rollout
@@ -36,6 +38,45 @@ mismatched hash before actions enter the buffer. Images use causal latest-before
 alignment, RGB uint8 HWC in the dataset, and JPEG over a ZeroMQ multipart LAN protocol.
 Arm targets are interpolated from 20 Hz policy time to 30 Hz control time; the logical
 gripper remains stepwise. A stale chunk is never repeated indefinitely.
+
+Production training is initialized from the full local `lerobot/smolvla_base`
+snapshot configured by `model.pretrained_policy`. Startup fails closed unless the
+snapshot contains its policy config, model weights, processors, normalization
+state, Action Expert, and state/action projections. Pretrained mode does not
+override architecture fields such as `max_state_dim`, `max_action_dim`, or VLM
+layout. LeRobot rebuilds normalization from the drawer dataset. The `smoke`,
+`overfit`, `baseline`, and `full` profiles are 300, 5k, 200k, and 400k steps;
+long runs save every 50k steps.
+
+## RTC rollout
+
+RTC support follows the pinned LeRobot implementation and is disabled by default
+until a pretrained fine-tune passes the offline behavior probe. Enable it with
+`server.rtc.enabled: true`; the initial profile uses a 10-step execution horizon
+and maximum guidance weight 10.
+
+- `prev_chunk_left_over` is the unprocessed, normalized model-space output from
+  `predict_action_chunk`, shaped `[T, 8]`; LeRobot pads it internally to the
+  policy's `max_action_dim`.
+- The server stores this raw chunk separately from the postprocessed physical
+  joint targets sent to the robot. Robot-side radians and binary gripper values
+  are never fed back as RTC guidance.
+- The robot acknowledges the last chunk it actually accepted. A rejected chunk
+  is never promoted to the server's RTC prefix state.
+- Prefix position is derived from monotonic observation timestamps. Delay is
+  measured as total observation age on the robot and converted with
+  `ceil(age * dataset_fps)`, matching LeRobot's latency handling.
+- LeRobot fully guides the delay prefix, tapers guidance through the execution
+  horizon, and leaves the remainder of the new chunk unguided. The robot executes
+  the postprocessed chunk on its original observation-time axis.
+
+Robot-side chunk blend defaults to zero in the RTC-ready configuration. Hard
+jump/tracking checks, hardware limits, and data-derived per-joint dynamics guards
+remain active. Compare rollout logs with:
+
+```bash
+python scripts/compare_rollout_logs.py /path/to/rollout_A /path/to/rollout_B
+```
 
 ## Runtime environments and command route
 

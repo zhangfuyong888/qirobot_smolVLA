@@ -11,13 +11,10 @@ from ..inference.policy_runner import resolve_checkpoint
 
 
 def resolve_deployment_checkpoint(config: PipelineConfig, value: str | None = None) -> Path:
-    configured = value or str(config.host["deployment"]["checkpoint"])
-    if configured != "latest":
-        return resolve_checkpoint(Path(configured))
-    candidates = sorted(config.host_path_value("output_root").glob("*/checkpoints/last"))
-    if not candidates:
-        raise FileNotFoundError("no checkpoints/last found below output_root")
-    return resolve_checkpoint(max(candidates, key=lambda path: path.stat().st_mtime_ns))
+    configured = value or config.host["deployment"].get("checkpoint")
+    if configured is None or str(configured).strip().lower() == "latest":
+        raise ValueError("deployment requires an explicit checkpoint path; 'latest' is forbidden")
+    return resolve_checkpoint(Path(str(configured)))
 
 
 def check_checkpoint(
@@ -64,6 +61,10 @@ def check_checkpoint(
         "task": config.contract.task,
         "policy_fps": config.contract.dataset_fps,
         "chunk_size": int(config.host["model"]["chunk_size"]),
+        "training_mode": (
+            "pretrained_finetune" if payload.get("pretrained_path") else "scratch_expert_legacy"
+        ),
+        "base_policy": payload.get("pretrained_path"),
     }
     if run_inference:
         import numpy as np

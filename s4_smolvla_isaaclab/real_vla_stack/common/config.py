@@ -123,10 +123,22 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
         "max_rollout_joint_velocity_rad_s",
         "max_rollout_joint_acceleration_rad_s2",
     ):
-        if float(safety[key]) <= 0:
-            raise ContractError(f"robot safety.{key} must be positive")
+        values = safety[key]
+        if isinstance(values, (int, float)):
+            values = [values] * 7
+        if not isinstance(values, list) or len(values) != 7:
+            raise ContractError(f"robot safety.{key} must be a scalar or seven-element list")
+        if any(float(value) <= 0 for value in values):
+            raise ContractError(f"robot safety.{key} values must be positive")
     if float(safety["chunk_blend_duration_ms"]) < 0:
         raise ContractError("robot safety.chunk_blend_duration_ms cannot be negative")
     if int(robot.get("logging", {}).get("shadow_snapshot_every_n_requests", 10)) < 0:
         raise ContractError("shadow_snapshot_every_n_requests cannot be negative")
+    rtc = host.get("server", {}).get("rtc", {})
+    if rtc:
+        rtc_horizon = int(rtc.get("execution_horizon", 0))
+        if rtc_horizon <= 0 or rtc_horizon > int(host["model"]["chunk_size"]):
+            raise ContractError("server.rtc.execution_horizon must be within the policy chunk")
+        if float(rtc.get("max_guidance_weight", 0.0)) <= 0:
+            raise ContractError("server.rtc.max_guidance_weight must be positive")
     return PipelineConfig(source, task_path, host_path, robot_path, task, host, robot, contract)

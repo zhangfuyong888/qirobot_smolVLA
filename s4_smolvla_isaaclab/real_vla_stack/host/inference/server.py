@@ -65,8 +65,17 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                     runner.contract.camera_keys[0]: _decode_jpeg_rgb(head_jpeg),
                     runner.contract.camera_keys[1]: _decode_jpeg_rgb(wrist_jpeg),
                 }
-                chunk = runner.predict_chunk(request.state, images, request.task)
+                chunk = runner.predict_chunk(
+                    request.state,
+                    images,
+                    request.task,
+                    observation_timestamp_ns=request.robot_timestamp_ns,
+                    inference_delay_steps=request.rtc_inference_delay_steps,
+                    request_id=request.request_id,
+                    previous_accepted_request_id=request.previous_accepted_request_id,
+                )
                 inference_ms = (time.monotonic_ns() - started) / 1.0e6
+                diagnostics = runner.last_diagnostics
                 socket.send_multipart(
                     pack_action_response(
                         ActionResponse(
@@ -76,6 +85,12 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                             inference_ms,
                             runner.contract.dataset_fps,
                             chunk,
+                            bool(diagnostics.get("rtc_enabled", False)),
+                            int(diagnostics.get("rtc_inference_delay_steps", 0)),
+                            int(diagnostics.get("rtc_execution_horizon", 0)),
+                            int(diagnostics.get("rtc_prev_leftover_steps", 0)),
+                            int(diagnostics.get("raw_chunk_length", len(chunk))),
+                            str(runner.checkpoint),
                         )
                     )
                 )

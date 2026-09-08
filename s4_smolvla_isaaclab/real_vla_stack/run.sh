@@ -16,7 +16,7 @@ export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-$HF_HOME/datasets}"
 export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$HF_HOME/transformers}"
 
 case "$COMMAND" in
-  raw-check|convert|dataset-check|train|checkpoint-check|serve)
+  raw-check|convert|dataset-check|analyze-dynamics|train|checkpoint-check|behavior-probe|serve)
     if [[ -z "$HOST_PYTHON" || ! -x "$HOST_PYTHON" ]]; then
       echo "SmolVLA host Python not found; set S4_SMOLVLA_PYTHON" >&2
       exit 2
@@ -61,7 +61,7 @@ case "$COMMAND" in
     exec "$ROBOT_PYTHON" -m real_vla_stack.robot.rollout.main "$@"
     ;;
   help|-h|--help)
-    echo "Usage: bash real_vla_stack/run.sh {raw-check|convert|dataset-check|train|checkpoint-check|serve|rollout} [options]"
+    echo "Usage: bash real_vla_stack/run.sh {raw-check|convert|dataset-check|analyze-dynamics|train|checkpoint-check|behavior-probe|serve|rollout} [options]"
     ;;
   *)
     echo "Unknown command: $COMMAND" >&2
