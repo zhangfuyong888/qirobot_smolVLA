@@ -18,6 +18,8 @@ def test_joint_filter_limits_velocity_and_acceleration() -> None:
     assert first == pytest.approx(np.full(7, 0.01))
     assert second == pytest.approx(np.full(7, 0.03))
     assert filt.velocity == pytest.approx(np.full(7, 0.2))
+    assert filt.velocity_limited_joints.tolist() == [True] * 7
+    assert filt.acceleration_limited_joints.tolist() == [True] * 7
 
 
 def test_joint_filter_brakes_before_reversing() -> None:

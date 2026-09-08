@@ -151,6 +151,10 @@ class PolicyRunner:
         self.rtc_state.reset()
         self.last_diagnostics = {}
 
+    def reset_rtc_history(self) -> None:
+        """Drop guidance history without resetting the loaded policy."""
+        self.rtc_state.reset()
+
     def predict_chunk(
         self,
         state: np.ndarray,
@@ -161,6 +165,7 @@ class PolicyRunner:
         inference_delay_steps: int = 0,
         request_id: int | None = None,
         previous_accepted_request_id: int = -1,
+        reset_rtc_history: bool = False,
     ) -> np.ndarray:
         import torch
         from lerobot.policies import prepare_observation_for_inference
@@ -184,7 +189,9 @@ class PolicyRunner:
         prev_raw_remaining_steps = 0
         elapsed_policy_position = 0.0
         leftover_start_index = 0
-        if self.rtc_enabled:
+        if self.rtc_enabled and reset_rtc_history:
+            self.reset_rtc_history()
+        if self.rtc_enabled and not reset_rtc_history:
             self.rtc_state.acknowledge(previous_accepted_request_id)
         if self.rtc_enabled and self.rtc_state.accepted_raw_chunk is not None:
             if observation_timestamp_ns is None or self.rtc_state.accepted_observation_ns is None:
@@ -234,6 +241,7 @@ class PolicyRunner:
             "rtc_leftover_start_index": leftover_start_index,
             "raw_chunk_length": int(raw_chunk.shape[1]),
             "rtc_source_request_id": self.rtc_state.accepted_request_id,
+            "rtc_history_reset": bool(self.rtc_enabled and reset_rtc_history),
         }
         result = chunk.squeeze(0).detach().cpu().numpy().astype(np.float32)
         if result.ndim != 2 or result.shape[1] != 8 or not np.isfinite(result).all():

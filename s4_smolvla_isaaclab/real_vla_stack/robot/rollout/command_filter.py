@@ -19,6 +19,8 @@ class JointCommandFilter:
         self._position: np.ndarray | None = None
         self._velocity = np.zeros(7, dtype=np.float64)
         self._limited = np.zeros(7, dtype=bool)
+        self._velocity_limited = np.zeros(7, dtype=bool)
+        self._acceleration_limited = np.zeros(7, dtype=bool)
 
     @staticmethod
     def _limits(values: float | list[float] | np.ndarray, name: str) -> np.ndarray:
@@ -33,6 +35,8 @@ class JointCommandFilter:
         self._position = np.asarray(position_q7, dtype=np.float64).reshape(7).copy()
         self._velocity.fill(0.0)
         self._limited.fill(False)
+        self._velocity_limited.fill(False)
+        self._acceleration_limited.fill(False)
 
     def step(self, target_q7: np.ndarray) -> np.ndarray:
         target = np.asarray(target_q7, dtype=np.float64).reshape(7)
@@ -46,13 +50,19 @@ class JointCommandFilter:
             -self.max_velocity,
             self.max_velocity,
         )
+        self._velocity_limited = ~np.isclose(
+            desired_velocity, unconstrained_velocity, atol=1.0e-12
+        )
         max_dv = self.max_acceleration * self.dt
         velocity = np.clip(
             desired_velocity,
             self._velocity - max_dv,
             self._velocity + max_dv,
         )
-        self._limited = ~np.isclose(velocity, unconstrained_velocity, atol=1.0e-12)
+        self._acceleration_limited = ~np.isclose(
+            velocity, desired_velocity, atol=1.0e-12
+        )
+        self._limited = self._velocity_limited | self._acceleration_limited
         step = velocity * self.dt
         # Never pass through a nearby target while braking.
         overshoot = np.abs(step) > np.abs(error)
@@ -69,3 +79,11 @@ class JointCommandFilter:
     @property
     def limited_joints(self) -> np.ndarray:
         return self._limited.copy()
+
+    @property
+    def velocity_limited_joints(self) -> np.ndarray:
+        return self._velocity_limited.copy()
+
+    @property
+    def acceleration_limited_joints(self) -> np.ndarray:
+        return self._acceleration_limited.copy()

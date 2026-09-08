@@ -32,6 +32,7 @@ from ...common.errors import (
 from ...common.protocol import ObservationRequest
 from .action_buffer import ActionBuffer, sample_policy_chunk
 from .command_filter import JointCommandFilter
+from .execution_sync import ExecutionSyncGuard
 from .logger import RolloutLogger
 from .observation import encode_jpeg, snapshot_observation
 from .policy_client import AsyncPolicyClient
@@ -344,6 +345,13 @@ def main() -> int:
         max_velocity_rad_s=cfg.robot["safety"]["max_rollout_joint_velocity_rad_s"],
         max_acceleration_rad_s2=cfg.robot["safety"]["max_rollout_joint_acceleration_rad_s2"],
     )
+    execution_sync = ExecutionSyncGuard(
+        policy_lag_rad=float(cfg.robot["safety"]["rtc_reset_policy_lag_rad"]),
+        contact_tracking_error_rad=float(
+            cfg.robot["safety"]["contact_tracking_error_rad"]
+        ),
+        trigger_cycles=int(cfg.robot["safety"]["execution_sync_trigger_cycles"]),
+    )
     session_id = uuid.uuid4().hex
     run_root = (
         Path.home()
@@ -370,6 +378,10 @@ def main() -> int:
     command_count = 0
     rollout_limited_count = 0
     rollout_limited_per_joint = np.zeros(7, dtype=np.int64)
+    velocity_limited_count = 0
+    velocity_limited_per_joint = np.zeros(7, dtype=np.int64)
+    acceleration_limited_count = 0
+    acceleration_limited_per_joint = np.zeros(7, dtype=np.int64)
     hardware_limited_count = 0
     gripper_transition_count = 0
     gripper_raw_max = float("-inf")
@@ -377,6 +389,10 @@ def main() -> int:
     last_command_request_id = -1
     deployed_checkpoint = ""
     stale_hold_request_id: int | None = None
+    sync_hold_q: np.ndarray | None = None
+    last_policy_execution_lag_rad: float | None = None
+    rtc_resync_count = 0
+    stale_response_count = 0
     live_motion_enabled = False
     started = time.monotonic()
     next_policy = started
@@ -447,11 +463,38 @@ def main() -> int:
                 float(cfg.robot["safety"]["max_command_tracking_error_rad"]),
                 live=live,
             )
+            tracking_error_max = (
+                None if tracking_error is None else float(np.max(tracking_error))
+            )
+            if execution_sync.observe(
+                policy_execution_lag_rad=last_policy_execution_lag_rad,
+                command_tracking_error_rad=tracking_error_max,
+                gripper_closed=bool(gripper.state >= 0.5),
+            ):
+                published_for_hold = adapter.last_published()
+                sync_hold_q = (
+                    measured_q.copy()
+                    if published_for_hold is None
+                    or not published_for_hold.motion_allowed
+                    else np.asarray(
+                        published_for_hold.arm_target_q, dtype=np.float64
+                    ).copy()
+                )
+                next_policy = now
+                logger.event(
+                    "execution_sync_hold",
+                    reason=execution_sync.reason,
+                    policy_execution_lag_rad=last_policy_execution_lag_rad,
+                    command_tracking_error_rad=tracking_error_max,
+                    gripper_closed=bool(gripper.state >= 0.5),
+                    hold_q=sync_hold_q.tolist(),
+                )
 
             result = client.poll()
             if result is not None:
                 if result.error is not None:
                     timeouts += 1
+                    next_policy = now
                     logger.event(
                         "policy_error",
                         request_id=result.observation.request_id,
@@ -479,6 +522,9 @@ def main() -> int:
                     if observation_age_ms < 0 or observation_age_ms > float(
                         cfg.robot["freshness"]["max_response_age_ms"]
                     ):
+                        timeouts += 1
+                        stale_response_count += 1
+                        next_policy = now
                         logger.event(
                             "stale_rejected",
                             request_id=response.request_id,
@@ -486,11 +532,18 @@ def main() -> int:
                             max_response_age_ms=float(
                                 cfg.robot["freshness"]["max_response_age_ms"]
                             ),
+                            consecutive=timeouts,
                         )
-                        raise PolicyStaleError(
-                            f"policy response observation age {observation_age_ms:.1f}ms exceeds "
-                            f"{float(cfg.robot['freshness']['max_response_age_ms']):.1f}ms"
-                        )
+                        if timeouts > int(
+                            cfg.robot["freshness"]["max_consecutive_timeouts"]
+                        ):
+                            raise PolicyStaleError(
+                                "too many consecutive stale/timeout policy responses"
+                            )
+                        # The old accepted chunk remains active. Retry on a clean
+                        # request without ever inserting this stale response.
+                        next_control = time.monotonic()
+                        continue
                     if int(response.policy_fps) != cfg.contract.dataset_fps:
                         raise PolicyStaleError(
                             f"policy response fps={response.policy_fps}, expected={cfg.contract.dataset_fps}"
@@ -499,6 +552,13 @@ def main() -> int:
                     if response.rtc_enabled != expected_rtc:
                         raise PolicyStaleError(
                             f"policy server RTC enabled={response.rtc_enabled}, expected={expected_rtc}"
+                        )
+                    if (
+                        result.observation.rtc_reset_history
+                        and not response.rtc_history_reset
+                    ):
+                        raise PolicyStaleError(
+                            "policy server did not acknowledge requested RTC history reset"
                         )
                     if str(Path(response.checkpoint).expanduser().resolve()) != expected_checkpoint:
                         raise PolicyStaleError(
@@ -512,6 +572,13 @@ def main() -> int:
                     )
                     timeouts = 0
                     policy_gripper_preclip = np.asarray(response.action_chunk[:, 7]).copy()
+                    response_tracking_limit = float(
+                        cfg.robot["safety"][
+                            "resync_target_error_rad"
+                            if result.observation.rtc_reset_history
+                            else "max_policy_tracking_error_rad"
+                        ]
+                    )
                     try:
                         safe_chunk = validate_policy_chunk(
                             response.action_chunk,
@@ -521,9 +588,7 @@ def main() -> int:
                             max_target_jump_rad=float(
                                 cfg.robot["safety"]["max_policy_target_jump_rad"]
                             ),
-                            max_tracking_error_rad=float(
-                                cfg.robot["safety"]["max_policy_tracking_error_rad"]
-                            ),
+                            max_tracking_error_rad=response_tracking_limit,
                         )
                         execution_target = sample_policy_chunk(
                             safe_chunk[
@@ -536,13 +601,22 @@ def main() -> int:
                         validate_execution_target(
                             execution_target[:7],
                             measured_q7=measured_q,
-                            max_tracking_error_rad=float(
-                                cfg.robot["safety"]["max_policy_tracking_error_rad"]
-                            ),
+                            max_tracking_error_rad=response_tracking_limit,
                         )
                     except ContractError as action_exc:
                         policy_rejections += 1
                         total_policy_rejections += 1
+                        execution_sync.force_resync("unsafe_policy_chunk")
+                        published_for_hold = adapter.last_published()
+                        sync_hold_q = (
+                            measured_q.copy()
+                            if published_for_hold is None
+                            or not published_for_hold.motion_allowed
+                            else np.asarray(
+                                published_for_hold.arm_target_q,
+                                dtype=np.float64,
+                            ).copy()
+                        )
                         # Retry on the next control iteration instead of waiting
                         # for the normal replan interval while the old plan ages.
                         next_policy = now
@@ -553,6 +627,8 @@ def main() -> int:
                             consecutive=policy_rejections,
                             rtt_ms=result.rtt_ms,
                             observation_age_ms=observation_age_ms,
+                            rtc_reset_pending=True,
+                            hold_q=sync_hold_q.tolist(),
                         )
                         if policy_rejections > int(
                             cfg.robot["freshness"]["max_consecutive_policy_rejections"]
@@ -578,6 +654,17 @@ def main() -> int:
                             transition_from_q7=transition_from_q7,
                         )
                         previous_accepted_request_id = response.request_id
+                        if result.observation.rtc_reset_history:
+                            execution_sync.acknowledge_resync()
+                            sync_hold_q = None
+                            rtc_resync_count += 1
+                            logger.event(
+                                "execution_sync_recovered",
+                                request_id=response.request_id,
+                                execution_target_error_rad=float(
+                                    np.max(np.abs(execution_target[:7] - measured_q))
+                                ),
+                            )
                         deployed_checkpoint = response.checkpoint
                         rtt_samples.append(float(result.rtt_ms))
                         observation_age_samples.append(float(observation_age_ms))
@@ -600,6 +687,7 @@ def main() -> int:
                                     execution_target[:7] - transition_from_q7
                                 ).tolist(),
                                 rtc_guided=response.rtc_prev_leftover_steps > 0,
+                                rtc_history_reset=response.rtc_history_reset,
                                 ack_simulated=not live,
                             )
                         policy_rejections = 0
@@ -619,6 +707,9 @@ def main() -> int:
                             "rtc_source_request_id": response.rtc_source_request_id,
                             "rtc_elapsed_policy_position": response.rtc_elapsed_policy_position,
                             "rtc_leftover_start_index": response.rtc_leftover_start_index,
+                            "rtc_history_reset": response.rtc_history_reset,
+                            "rtc_reset_requested": result.observation.rtc_reset_history,
+                            "execution_lag_at_request_rad": result.observation.execution_lag_rad,
                             "rtc_latency_window_p95_ms": rtc_latency.estimate_ms,
                             "rtc_next_delay_steps": rtc_delay_estimate_steps,
                             "raw_chunk_length": response.raw_chunk_length,
@@ -651,6 +742,8 @@ def main() -> int:
                     image_ts,
                     rtc_delay_estimate_steps,
                     previous_accepted_request_id,
+                    execution_sync.reset_pending,
+                    float(last_policy_execution_lag_rad or 0.0),
                 )
                 head_jpeg = encode_jpeg(
                     images[0], int(cfg.host["server"]["jpeg_quality"])
@@ -688,7 +781,14 @@ def main() -> int:
                         f"policy recovery age {chunk_age_ms:.1f}ms exceeds "
                         f"{float(cfg.robot['freshness']['max_chunk_age_ms']):.1f}ms"
                     )
-                if chunk_age_ms > float(
+                if execution_sync.hold and sync_hold_q is not None:
+                    action = np.concatenate(
+                        [
+                            np.asarray(sync_hold_q, dtype=np.float32),
+                            [float(gripper.state)],
+                        ]
+                    )
+                elif chunk_age_ms > float(
                     cfg.robot["freshness"]["max_motion_chunk_age_ms"]
                 ):
                     published_hold = adapter.last_published()
@@ -712,6 +812,10 @@ def main() -> int:
                 filtered_q = command_filter.step(action[:7])
                 rollout_limited = not np.allclose(filtered_q, action[:7], atol=1.0e-9)
                 limited_joints = command_filter.limited_joints
+                velocity_limited_joints = command_filter.velocity_limited_joints
+                acceleration_limited_joints = (
+                    command_filter.acceleration_limited_joints
+                )
                 gripper_before = float(gripper.state)
                 policy_gripper_raw = float(action[7])
                 gripper_target = gripper.update(policy_gripper_raw)
@@ -731,9 +835,25 @@ def main() -> int:
                 published_jump = np.abs(
                     np.asarray(published.arm_target_q, dtype=np.float64) - continuity_reference
                 )
+                last_policy_execution_lag_rad = float(
+                    np.max(
+                        np.abs(
+                            np.asarray(action[:7], dtype=np.float64)
+                            - np.asarray(published.arm_target_q, dtype=np.float64)
+                        )
+                    )
+                )
                 command_count += 1
                 rollout_limited_count += int(rollout_limited)
                 rollout_limited_per_joint += limited_joints.astype(np.int64)
+                velocity_limited_count += int(np.any(velocity_limited_joints))
+                velocity_limited_per_joint += velocity_limited_joints.astype(np.int64)
+                acceleration_limited_count += int(
+                    np.any(acceleration_limited_joints)
+                )
+                acceleration_limited_per_joint += (
+                    acceleration_limited_joints.astype(np.int64)
+                )
                 hardware_limited_count += int(published.limited)
                 gripper_transition_count += int(gripper_before != gripper_after)
                 gripper_raw_max = max(gripper_raw_max, policy_gripper_raw)
@@ -753,6 +873,13 @@ def main() -> int:
                         None if tracking_error is None else float(np.max(tracking_error))
                     ),
                     rollout_limited_joints=limited_joints.tolist(),
+                    velocity_limited_joints=velocity_limited_joints.tolist(),
+                    acceleration_limited_joints=(
+                        acceleration_limited_joints.tolist()
+                    ),
+                    policy_execution_lag_rad=last_policy_execution_lag_rad,
+                    execution_sync_hold=execution_sync.hold,
+                    rtc_reset_pending=execution_sync.reset_pending,
                     hardware_limited=published.limited,
                     chunk_boundary=is_chunk_boundary,
                     boundary_policy_jump_per_joint=policy_jump.tolist(),
@@ -782,6 +909,22 @@ def main() -> int:
             rollout_limited_ratio_per_joint=(
                 (rollout_limited_per_joint / command_count).tolist() if command_count else None
             ),
+            velocity_limited_ratio=(
+                velocity_limited_count / command_count if command_count else None
+            ),
+            velocity_limited_ratio_per_joint=(
+                (velocity_limited_per_joint / command_count).tolist()
+                if command_count
+                else None
+            ),
+            acceleration_limited_ratio=(
+                acceleration_limited_count / command_count if command_count else None
+            ),
+            acceleration_limited_ratio_per_joint=(
+                (acceleration_limited_per_joint / command_count).tolist()
+                if command_count
+                else None
+            ),
             hardware_limited_ratio=hardware_limited_count / command_count if command_count else None,
             mean_tracking_error_per_joint=(
                 np.mean(np.stack(tracking_error_samples), axis=0).tolist()
@@ -802,6 +945,8 @@ def main() -> int:
             gripper_transitions=gripper_transition_count,
             replans=len(rtt_samples),
             rejected_chunks=total_policy_rejections,
+            stale_responses=stale_response_count,
+            rtc_resyncs=rtc_resync_count,
         )
         return 0
     except BaseException as exc:
@@ -824,6 +969,12 @@ def main() -> int:
                 if command_count
                 else None
             ),
+            velocity_limited_ratio=(
+                velocity_limited_count / command_count if command_count else None
+            ),
+            acceleration_limited_ratio=(
+                acceleration_limited_count / command_count if command_count else None
+            ),
             hardware_limited_ratio=(
                 hardware_limited_count / command_count if command_count else None
             ),
@@ -842,6 +993,10 @@ def main() -> int:
             gripper_transitions=gripper_transition_count,
             replans=len(rtt_samples),
             rejected_chunks=total_policy_rejections,
+            stale_responses=stale_response_count,
+            rtc_resyncs=rtc_resync_count,
+            execution_sync_hold=execution_sync.hold,
+            execution_sync_reason=execution_sync.reason or None,
         )
         if live:
             unsafe_to_move = (not live_motion_enabled) or isinstance(

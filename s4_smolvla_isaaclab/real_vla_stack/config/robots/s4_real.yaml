@@ -2,7 +2,9 @@ network:
   policy_server: 192.168.110.87
   policy_port: 5555
   connect_timeout_ms: 1000
-  request_timeout_ms: 500
+  # Transport may wait through one transient server/Wi-Fi stall. Responses are
+  # still rejected by max_response_age_ms below and are never executed stale.
+  request_timeout_ms: 1000
 rollout:
   mode: live
   control_hz: 30
@@ -39,6 +41,15 @@ safety:
   max_policy_tracking_error_rad: 0.25
   # Stop if the actuator does not follow the already step-limited command.
   max_command_tracking_error_rad: 0.18
+  # If the raw policy gets ahead of the actually published trajectory, stop
+  # advancing it and request a fresh chunk without stale RTC guidance.
+  rtc_reset_policy_lag_rad: 0.12
+  # A closed gripper plus sustained tracking lag is treated as constrained
+  # contact with the drawer. Hold and replan instead of increasing position error.
+  contact_tracking_error_rad: 0.12
+  execution_sync_trigger_cycles: 3
+  # A recovery chunk must begin close to the measured state before hold clears.
+  resync_target_error_rad: 0.15
   # Per-joint limits derived from 1.1x the drawer dataset P95 and capped by the
   # commissioned bridge's 0.032 rad/publish final guard at 30 Hz.
   max_rollout_joint_velocity_rad_s: [0.77, 0.50, 0.77, 0.91, 0.95, 0.70, 0.67]

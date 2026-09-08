@@ -5,7 +5,11 @@ import pytest
 from real_vla_stack.common.errors import ContractError
 import torch
 
-from real_vla_stack.host.inference.policy_runner import RTCSessionState, rtc_leftover_for_observation
+from real_vla_stack.host.inference.policy_runner import (
+    PolicyRunner,
+    RTCSessionState,
+    rtc_leftover_for_observation,
+)
 
 
 def test_rtc_session_promotes_only_acknowledged_raw_chunk() -> None:
@@ -23,6 +27,15 @@ def test_rtc_session_rejects_unknown_acknowledgement() -> None:
     state = RTCSessionState()
     with pytest.raises(ContractError, match="unknown"):
         state.acknowledge(9)
+
+
+def test_runner_can_reset_only_rtc_history() -> None:
+    runner = object.__new__(PolicyRunner)
+    runner.rtc_state = RTCSessionState()
+    runner.rtc_state.generated[4] = (100, "chunk")
+    runner.reset_rtc_history()
+    assert runner.rtc_state.accepted_raw_chunk is None
+    assert runner.rtc_state.generated == {}
 
 
 def test_rtc_leftover_is_real_length_without_zero_padding() -> None:

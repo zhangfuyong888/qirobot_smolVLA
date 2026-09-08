@@ -8,7 +8,7 @@ import numpy as np
 from .errors import ContractError
 
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,8 @@ class ObservationRequest:
     image_timestamps_ns: tuple[int, int]
     rtc_inference_delay_steps: int = 0
     previous_accepted_request_id: int = -1
+    rtc_reset_history: bool = False
+    execution_lag_rad: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class ActionResponse:
     rtc_prev_raw_remaining_steps: int = 0
     rtc_elapsed_policy_position: float = 0.0
     rtc_leftover_start_index: int = 0
+    rtc_history_reset: bool = False
 
 
 def encode_metadata(payload: dict[str, Any]) -> bytes:
@@ -65,6 +68,8 @@ def pack_observation(request: ObservationRequest, head_jpeg: bytes, wrist_jpeg: 
     state = np.asarray(request.state, dtype="<f4")
     if state.shape != (8,) or not np.isfinite(state).all():
         raise ContractError("wire state must be finite float32[8]")
+    if not np.isfinite(request.execution_lag_rad) or request.execution_lag_rad < 0:
+        raise ContractError("wire execution lag must be finite and non-negative")
     metadata = {
         "protocol_version": PROTOCOL_VERSION,
         "type": "observation",
@@ -79,6 +84,8 @@ def pack_observation(request: ObservationRequest, head_jpeg: bytes, wrist_jpeg: 
         "image_transport": "jpeg",
         "rtc_inference_delay_steps": int(request.rtc_inference_delay_steps),
         "previous_accepted_request_id": int(request.previous_accepted_request_id),
+        "rtc_reset_history": bool(request.rtc_reset_history),
+        "execution_lag_rad": float(request.execution_lag_rad),
     }
     return [encode_metadata(metadata), state.tobytes(), bytes(head_jpeg), bytes(wrist_jpeg)]
 
@@ -95,6 +102,9 @@ def unpack_observation(parts: list[bytes]) -> tuple[ObservationRequest, bytes, b
     timestamps = tuple(int(v) for v in meta["image_timestamps_ns"])
     if len(timestamps) != 2:
         raise ContractError("exactly two image timestamps are required")
+    execution_lag_rad = float(meta.get("execution_lag_rad", 0.0))
+    if not np.isfinite(execution_lag_rad) or execution_lag_rad < 0:
+        raise ContractError("invalid wire execution lag")
     return (
         ObservationRequest(
             str(meta["contract_sha256"]),
@@ -106,6 +116,8 @@ def unpack_observation(parts: list[bytes]) -> tuple[ObservationRequest, bytes, b
             timestamps,
             int(meta.get("rtc_inference_delay_steps", 0)),
             int(meta.get("previous_accepted_request_id", -1)),
+            bool(meta.get("rtc_reset_history", False)),
+            execution_lag_rad,
         ),
         parts[2],
         parts[3],
@@ -136,6 +148,7 @@ def pack_action_response(response: ActionResponse) -> list[bytes]:
         "rtc_prev_raw_remaining_steps": int(response.rtc_prev_raw_remaining_steps),
         "rtc_elapsed_policy_position": float(response.rtc_elapsed_policy_position),
         "rtc_leftover_start_index": int(response.rtc_leftover_start_index),
+        "rtc_history_reset": bool(response.rtc_history_reset),
     }
     return [encode_metadata(meta), chunk.tobytes()]
 
@@ -169,4 +182,5 @@ def unpack_action_response(parts: list[bytes]) -> ActionResponse:
         int(meta.get("rtc_prev_raw_remaining_steps", 0)),
         float(meta.get("rtc_elapsed_policy_position", 0.0)),
         int(meta.get("rtc_leftover_start_index", 0)),
+        bool(meta.get("rtc_history_reset", False)),
     )

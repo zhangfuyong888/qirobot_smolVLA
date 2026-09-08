@@ -62,6 +62,9 @@ maximum guidance weight 10.
   are never fed back as RTC guidance.
 - The robot acknowledges the last chunk it actually accepted. A rejected chunk
   is never promoted to the server's RTC prefix state.
+- If limiter lag or closed-gripper contact lag persists, the robot holds the
+  last safe target and asks the server to clear stale RTC history. Motion only
+  resumes after a fresh measured-state chunk passes the stricter resync gate.
 - Prefix position is derived from monotonic observation timestamps. Delay is
   estimated from the rolling P95 of the last 30 end-to-end observation ages and
   converted with `ceil(age * dataset_fps)`, matching LeRobot's latency handling.
@@ -176,7 +179,7 @@ network, inference and action-contract checks, before Home or policy commands.
    `observations/*.jpg`. There must be no `abort` or `policy_error`, camera order
    and color must be correct, and candidate joint/gripper values must be plausible.
    The host and robot must use the same checkout because RTC diagnostics use
-   protocol version 3.
+   protocol version 4.
 
 4. Clear the workspace, keep a person on the hardware emergency stop, set
    `rollout.mode: live`, and start with a five-second trial:

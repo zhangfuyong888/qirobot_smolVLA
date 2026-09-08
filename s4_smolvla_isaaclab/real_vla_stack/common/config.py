@@ -98,8 +98,6 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
         raise ContractError("replan_interval_steps must be positive and shorter than execute_horizon")
     if float(network["request_timeout_ms"]) <= 0 or float(network["connect_timeout_ms"]) <= 0:
         raise ContractError("policy network timeouts must be positive")
-    if float(network["request_timeout_ms"]) > float(freshness["max_response_age_ms"]):
-        raise ContractError("request_timeout_ms cannot exceed max_response_age_ms")
     if int(freshness["max_consecutive_timeouts"]) < 0:
         raise ContractError("max_consecutive_timeouts cannot be negative")
     if int(freshness["max_consecutive_policy_rejections"]) < 0:
@@ -121,9 +119,32 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
         "max_policy_target_jump_rad",
         "max_policy_tracking_error_rad",
         "max_command_tracking_error_rad",
+        "rtc_reset_policy_lag_rad",
+        "contact_tracking_error_rad",
+        "resync_target_error_rad",
     ):
         if float(safety[key]) <= 0:
             raise ContractError(f"robot safety.{key} must be positive")
+    if int(safety["execution_sync_trigger_cycles"]) <= 0:
+        raise ContractError("robot safety.execution_sync_trigger_cycles must be positive")
+    if float(safety["rtc_reset_policy_lag_rad"]) >= float(
+        safety["max_policy_tracking_error_rad"]
+    ):
+        raise ContractError(
+            "rtc_reset_policy_lag_rad must be below max_policy_tracking_error_rad"
+        )
+    if float(safety["contact_tracking_error_rad"]) >= float(
+        safety["max_command_tracking_error_rad"]
+    ):
+        raise ContractError(
+            "contact_tracking_error_rad must be below max_command_tracking_error_rad"
+        )
+    if float(safety["resync_target_error_rad"]) >= float(
+        safety["max_policy_tracking_error_rad"]
+    ):
+        raise ContractError(
+            "resync_target_error_rad must be below max_policy_tracking_error_rad"
+        )
     for key in (
         "max_rollout_joint_velocity_rad_s",
         "max_rollout_joint_acceleration_rad_s2",

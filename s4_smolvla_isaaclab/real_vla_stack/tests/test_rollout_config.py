@@ -13,10 +13,14 @@ def test_active_rollout_config_has_consistent_timing_and_safety() -> None:
     assert cfg.robot["rollout"]["execute_horizon"] == 35
     assert cfg.robot["rollout"]["replan_interval_steps"] == 10
     assert cfg.robot["freshness"]["max_response_age_ms"] == 500
+    assert cfg.robot["network"]["request_timeout_ms"] == 1000
     assert cfg.robot["freshness"]["max_motion_chunk_age_ms"] == 1800
     assert cfg.robot["freshness"]["max_chunk_age_ms"] == 2400
     assert cfg.robot["freshness"]["max_consecutive_policy_rejections"] == 2
     assert cfg.robot["safety"]["max_command_tracking_error_rad"] == 0.18
+    assert cfg.robot["safety"]["rtc_reset_policy_lag_rad"] == 0.12
+    assert cfg.robot["safety"]["contact_tracking_error_rad"] == 0.12
+    assert cfg.robot["safety"]["resync_target_error_rad"] == 0.15
     assert cfg.robot["safety"]["max_rollout_joint_velocity_rad_s"] == [
         0.77, 0.50, 0.77, 0.91, 0.95, 0.70, 0.67
     ]

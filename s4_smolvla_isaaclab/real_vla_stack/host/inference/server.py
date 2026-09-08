@@ -61,6 +61,13 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                 if request.task != runner.contract.task:
                     raise ValueError("request task does not match the deployed contract")
                 sessions.accept(runner, request)
+                print(
+                    "[REAL-VLA-SERVER] request_start "
+                    f"session={request.session_id} request_id={request.request_id} "
+                    f"rtc_reset={request.rtc_reset_history} "
+                    f"execution_lag_rad={request.execution_lag_rad:.3f}",
+                    flush=True,
+                )
                 images = {
                     runner.contract.camera_keys[0]: _decode_jpeg_rgb(head_jpeg),
                     runner.contract.camera_keys[1]: _decode_jpeg_rgb(wrist_jpeg),
@@ -73,6 +80,7 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                     inference_delay_steps=request.rtc_inference_delay_steps,
                     request_id=request.request_id,
                     previous_accepted_request_id=request.previous_accepted_request_id,
+                    reset_rtc_history=request.rtc_reset_history,
                 )
                 inference_ms = (time.monotonic_ns() - started) / 1.0e6
                 diagnostics = runner.last_diagnostics
@@ -95,10 +103,23 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                             int(diagnostics.get("rtc_prev_raw_remaining_steps", 0)),
                             float(diagnostics.get("rtc_elapsed_policy_position", 0.0)),
                             int(diagnostics.get("rtc_leftover_start_index", 0)),
+                            bool(diagnostics.get("rtc_history_reset", False)),
                         )
                     )
                 )
+                print(
+                    "[REAL-VLA-SERVER] request_complete "
+                    f"session={request.session_id} request_id={request.request_id} "
+                    f"total_ms={inference_ms:.1f} "
+                    f"rtc_reset={bool(diagnostics.get('rtc_history_reset', False))}",
+                    flush=True,
+                )
             except Exception as exc:
+                print(
+                    "[REAL-VLA-SERVER] request_error "
+                    f"error={type(exc).__name__}: {exc}",
+                    flush=True,
+                )
                 socket.send_multipart(
                     [
                         encode_metadata(
