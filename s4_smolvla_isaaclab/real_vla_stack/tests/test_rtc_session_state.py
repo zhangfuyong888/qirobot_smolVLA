@@ -3,7 +3,9 @@ from __future__ import annotations
 import pytest
 
 from real_vla_stack.common.errors import ContractError
-from real_vla_stack.host.inference.policy_runner import RTCSessionState
+import torch
+
+from real_vla_stack.host.inference.policy_runner import RTCSessionState, rtc_leftover_for_observation
 
 
 def test_rtc_session_promotes_only_acknowledged_raw_chunk() -> None:
@@ -21,3 +23,33 @@ def test_rtc_session_rejects_unknown_acknowledgement() -> None:
     state = RTCSessionState()
     with pytest.raises(ContractError, match="unknown"):
         state.acknowledge(9)
+
+
+def test_rtc_leftover_is_real_length_without_zero_padding() -> None:
+    chunk = torch.arange(6 * 4, dtype=torch.float32).reshape(6, 4)
+    prefix, position, start, remaining = rtc_leftover_for_observation(
+        chunk,
+        elapsed_ns=225_000_000,
+        policy_fps=20,
+        execution_horizon=10,
+    )
+    assert position == pytest.approx(4.5)
+    assert start == 5
+    assert remaining == 1
+    assert prefix is not None
+    assert prefix.shape == (1, 4)
+    assert torch.equal(prefix, chunk[5:])
+
+
+def test_rtc_leftover_uses_exact_next_unexecuted_index() -> None:
+    chunk = torch.zeros((50, 32))
+    prefix, position, start, remaining = rtc_leftover_for_observation(
+        chunk,
+        elapsed_ns=500_000_000,
+        policy_fps=20,
+        execution_horizon=10,
+    )
+    assert position == 10.0
+    assert start == 10
+    assert remaining == 40
+    assert prefix is not None and prefix.shape == (10, 32)

@@ -50,10 +50,9 @@ long runs save every 50k steps.
 
 ## RTC rollout
 
-RTC support follows the pinned LeRobot implementation and is disabled by default
-until a pretrained fine-tune passes the offline behavior probe. Enable it with
-`server.rtc.enabled: true`; the initial profile uses a 10-step execution horizon
-and maximum guidance weight 10.
+RTC support follows the pinned LeRobot implementation. The deployment profile
+enables it with `server.rtc.enabled: true`, a 10-step execution horizon, and
+maximum guidance weight 10.
 
 - `prev_chunk_left_over` is the unprocessed, normalized model-space output from
   `predict_action_chunk`, shaped `[T, 8]`; LeRobot pads it internally to the
@@ -64,8 +63,8 @@ and maximum guidance weight 10.
 - The robot acknowledges the last chunk it actually accepted. A rejected chunk
   is never promoted to the server's RTC prefix state.
 - Prefix position is derived from monotonic observation timestamps. Delay is
-  measured as total observation age on the robot and converted with
-  `ceil(age * dataset_fps)`, matching LeRobot's latency handling.
+  estimated from the rolling P95 of the last 30 end-to-end observation ages and
+  converted with `ceil(age * dataset_fps)`, matching LeRobot's latency handling.
 - LeRobot fully guides the delay prefix, tapers guidance through the execution
   horizon, and leaves the remainder of the new chunk unguided. The robot executes
   the postprocessed chunk on its original observation-time axis.
@@ -167,7 +166,7 @@ network, inference and action-contract checks, before Home or policy commands.
    bash real_vla_stack/run.sh serve --checkpoint /absolute/path/to/checkpoint
    ```
 
-3. Keep `rollout.mode: shadow`, then run on the robot:
+3. Run without `--live` for an RTC shadow pass (no motion is published):
 
    ```bash
    bash real_vla_stack/run.sh rollout --max-runtime-s 30
@@ -176,6 +175,8 @@ network, inference and action-contract checks, before Home or policy commands.
    Inspect `~/real_rollouts/rollout_*/events.jsonl` and the saved
    `observations/*.jpg`. There must be no `abort` or `policy_error`, camera order
    and color must be correct, and candidate joint/gripper values must be plausible.
+   The host and robot must use the same checkout because RTC diagnostics use
+   protocol version 3.
 
 4. Clear the workspace, keep a person on the hardware emergency stop, set
    `rollout.mode: live`, and start with a five-second trial:

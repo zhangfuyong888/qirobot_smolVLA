@@ -42,6 +42,31 @@ class RTCSessionState:
         self.generated.clear()
 
 
+def rtc_leftover_for_observation(
+    raw_chunk,
+    *,
+    elapsed_ns: int,
+    policy_fps: int,
+    execution_horizon: int,
+):
+    """Return the real, unpadded RTC prefix starting at the next action step."""
+    if elapsed_ns < 0:
+        raise ContractError("RTC observation timestamp moved backwards")
+    if policy_fps <= 0 or execution_horizon <= 0:
+        raise ContractError("RTC policy fps and execution horizon must be positive")
+    # Robot execution samples the old plan on a continuous observation-time
+    # timeline. RTC needs the first discrete action that has not already begun,
+    # hence ceil(position), implemented exactly with integer arithmetic.
+    numerator = int(elapsed_ns) * int(policy_fps)
+    start_index = (numerator + 1_000_000_000 - 1) // 1_000_000_000
+    position = numerator / 1_000_000_000.0
+    remaining = max(int(raw_chunk.shape[0]) - int(start_index), 0)
+    if remaining == 0:
+        return None, position, int(start_index), 0
+    prefix = raw_chunk[start_index : start_index + int(execution_horizon)]
+    return prefix, position, int(start_index), remaining
+
+
 def resolve_checkpoint(path: Path) -> Path:
     checkpoint = Path(path).expanduser().resolve()
     if (checkpoint / "pretrained_model").is_dir():
@@ -94,7 +119,7 @@ class PolicyRunner:
             config.vlm_model_name = str(fallback.resolve())
         with contextlib.redirect_stdout(None):
             self.policy = SmolVLAPolicy.from_pretrained(
-                str(self.checkpoint), config=config, local_files_only=True
+                str(self.checkpoint), config=config, local_files_only=True, strict=True
             ).to(self.device)
         self.policy.eval()
         self.policy.reset()
@@ -119,7 +144,7 @@ class PolicyRunner:
         self.rtc_enabled = bool(rtc_enabled)
         self.rtc_execution_horizon = int(rtc_execution_horizon)
         self.rtc_state = RTCSessionState()
-        self.last_diagnostics: dict[str, int | bool] = {}
+        self.last_diagnostics: dict[str, int | float | bool] = {}
 
     def reset(self) -> None:
         self.policy.reset()
@@ -156,26 +181,27 @@ class PolicyRunner:
             observation[key] = value
         prev_actions = None
         prev_leftover_steps = 0
+        prev_raw_remaining_steps = 0
+        elapsed_policy_position = 0.0
+        leftover_start_index = 0
         if self.rtc_enabled:
             self.rtc_state.acknowledge(previous_accepted_request_id)
         if self.rtc_enabled and self.rtc_state.accepted_raw_chunk is not None:
             if observation_timestamp_ns is None or self.rtc_state.accepted_observation_ns is None:
                 raise ContractError("RTC inference requires monotonic observation timestamps")
             elapsed_ns = int(observation_timestamp_ns) - self.rtc_state.accepted_observation_ns
-            if elapsed_ns < 0:
-                raise ContractError("RTC observation timestamp moved backwards")
-            elapsed_steps = int(elapsed_ns * self.contract.dataset_fps / 1_000_000_000)
-            leftover = self.rtc_state.accepted_raw_chunk[elapsed_steps:]
-            prev_leftover_steps = int(leftover.shape[0])
-            horizon = self.rtc_execution_horizon
-            prev_actions = torch.zeros(
-                (horizon, leftover.shape[1]),
-                dtype=leftover.dtype,
-                device=leftover.device,
+            (
+                prev_actions,
+                elapsed_policy_position,
+                leftover_start_index,
+                prev_raw_remaining_steps,
+            ) = rtc_leftover_for_observation(
+                self.rtc_state.accepted_raw_chunk,
+                elapsed_ns=elapsed_ns,
+                policy_fps=self.contract.dataset_fps,
+                execution_horizon=self.rtc_execution_horizon,
             )
-            copied = min(horizon, leftover.shape[0])
-            if copied:
-                prev_actions[:copied] = leftover[:copied]
+            prev_leftover_steps = 0 if prev_actions is None else int(prev_actions.shape[0])
         delay = max(0, min(int(inference_delay_steps), self.rtc_execution_horizon))
         # RTC temporarily enables autograd inside its denoising guidance. An
         # outer inference_mode cannot be overridden, while no_grad can.
@@ -203,6 +229,9 @@ class PolicyRunner:
             "rtc_inference_delay_steps": delay,
             "rtc_execution_horizon": self.rtc_execution_horizon if self.rtc_enabled else 0,
             "rtc_prev_leftover_steps": prev_leftover_steps,
+            "rtc_prev_raw_remaining_steps": prev_raw_remaining_steps,
+            "rtc_elapsed_policy_position": elapsed_policy_position,
+            "rtc_leftover_start_index": leftover_start_index,
             "raw_chunk_length": int(raw_chunk.shape[1]),
             "rtc_source_request_id": self.rtc_state.accepted_request_id,
         }

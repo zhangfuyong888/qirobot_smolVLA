@@ -104,6 +104,11 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
         raise ContractError("max_consecutive_timeouts cannot be negative")
     if int(freshness["max_consecutive_policy_rejections"]) < 0:
         raise ContractError("max_consecutive_policy_rejections cannot be negative")
+    if int(freshness.get("rtc_latency_window_size", 30)) <= 0:
+        raise ContractError("rtc_latency_window_size must be positive")
+    rtc_latency_percentile = float(freshness.get("rtc_latency_percentile", 95.0))
+    if not 0.0 < rtc_latency_percentile <= 100.0:
+        raise ContractError("rtc_latency_percentile must be in (0, 100]")
     if float(freshness["max_chunk_age_ms"]) < 1000.0 * (horizon - 1) / contract.dataset_fps:
         raise ContractError("max_chunk_age_ms is shorter than the configured execution horizon")
     if float(freshness["max_motion_chunk_age_ms"]) < 1000.0 * (horizon - 1) / contract.dataset_fps:
@@ -141,4 +146,8 @@ def load_pipeline_config(path: Path = DEFAULT_PIPELINE_CONFIG) -> PipelineConfig
             raise ContractError("server.rtc.execution_horizon must be within the policy chunk")
         if float(rtc.get("max_guidance_weight", 0.0)) <= 0:
             raise ContractError("server.rtc.max_guidance_weight must be positive")
+    if str(rollout.get("mode", "shadow")) == "live":
+        checkpoint = host.get("deployment", {}).get("checkpoint")
+        if checkpoint is None or str(checkpoint).strip().lower() == "latest":
+            raise ContractError("live rollout requires an explicit deployment checkpoint")
     return PipelineConfig(source, task_path, host_path, robot_path, task, host, robot, contract)

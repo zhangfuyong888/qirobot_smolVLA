@@ -31,6 +31,8 @@ freshness:
   max_consecutive_timeouts: 2
   # One stochastic outlier is discarded. Three consecutive unsafe chunks abort.
   max_consecutive_policy_rejections: 2
+  rtc_latency_window_size: 30
+  rtc_latency_percentile: 95
 safety:
   reject_non_finite: true
   max_policy_target_jump_rad: 0.20

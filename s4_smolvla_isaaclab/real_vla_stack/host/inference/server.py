@@ -91,6 +91,10 @@ def serve_policy(runner, *, bind: str, port: int) -> None:
                             int(diagnostics.get("rtc_prev_leftover_steps", 0)),
                             int(diagnostics.get("raw_chunk_length", len(chunk))),
                             str(runner.checkpoint),
+                            int(diagnostics.get("rtc_source_request_id", -1)),
+                            int(diagnostics.get("rtc_prev_raw_remaining_steps", 0)),
+                            float(diagnostics.get("rtc_elapsed_policy_position", 0.0)),
+                            int(diagnostics.get("rtc_leftover_start_index", 0)),
                         )
                     )
                 )

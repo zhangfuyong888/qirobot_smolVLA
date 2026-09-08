@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import math
 import sys
 import time
@@ -35,6 +36,39 @@ from .logger import RolloutLogger
 from .observation import encode_jpeg, snapshot_observation
 from .policy_client import AsyncPolicyClient
 from .safety import validate_execution_target, validate_policy_chunk
+
+
+class RollingLatencyEstimator:
+    def __init__(self, *, window_size: int, percentile: float) -> None:
+        if int(window_size) <= 0:
+            raise ValueError("RTC latency window size must be positive")
+        if not 0.0 < float(percentile) <= 100.0:
+            raise ValueError("RTC latency percentile must be in (0, 100]")
+        self._samples: deque[float] = deque(maxlen=int(window_size))
+        self.percentile = float(percentile)
+
+    def add(self, observation_age_ms: float) -> None:
+        value = float(observation_age_ms)
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError("RTC observation age must be finite and non-negative")
+        self._samples.append(value)
+
+    @property
+    def estimate_ms(self) -> float:
+        if not self._samples:
+            return 0.0
+        return float(np.percentile(np.asarray(self._samples), self.percentile))
+
+    def delay_steps(self, policy_hz: float, *, maximum: int) -> int:
+        value = math.ceil(self.estimate_ms * float(policy_hz) / 1000.0)
+        return max(0, min(int(value), int(maximum)))
+
+
+def _configured_checkpoint(cfg) -> str:
+    value = cfg.host.get("deployment", {}).get("checkpoint")
+    if value is None or str(value).strip().lower() == "latest":
+        raise RuntimeError("rollout requires an explicit deployment checkpoint")
+    return str(Path(str(value)).expanduser().resolve())
 
 
 def _ensure_robot_health(bridge: HardwareRobotBridge, hardware, *, live: bool) -> None:
@@ -84,25 +118,23 @@ def _ensure_command_tracking(
     max_error_rad: float,
     *,
     live: bool,
-) -> None:
+) -> np.ndarray | None:
     if not live:
-        return
+        return None
     published = adapter.last_published()
     if published is None or not published.motion_allowed:
-        return
-    error = float(
-        np.max(
-            np.abs(
-                np.asarray(published.arm_target_q, dtype=np.float64)
-                - np.asarray(measured_q, dtype=np.float64)
-            )
-        )
+        return None
+    error_per_joint = np.abs(
+        np.asarray(published.arm_target_q, dtype=np.float64)
+        - np.asarray(measured_q, dtype=np.float64)
     )
+    error = float(np.max(error_per_joint))
     limit = float(max_error_rad)
     if error > limit:
         raise RobotTrackingError(
             f"command tracking error {error:.3f}rad exceeds {limit:.3f}rad"
         )
+    return error_per_joint
 
 
 def _run_home(adapter: S4Adapter, bridge: HardwareRobotBridge, hardware, logger: RolloutLogger) -> None:
@@ -151,6 +183,7 @@ def _run_live_policy_preflight(
     client: AsyncPolicyClient,
     session_id: str,
     logger: RolloutLogger,
+    expected_checkpoint: str,
 ) -> None:
     measured_q = adapter.read_arm_q7(adapter.read_bimanual())
     images, image_ts, observation_ns = snapshot_observation(
@@ -189,6 +222,14 @@ def _run_live_policy_preflight(
         observation_age_ms = (
             result.received_at_ns - result.observation.robot_timestamp_ns
         ) / 1.0e6
+        camera_age_at_observation_ms = [
+            (result.observation.robot_timestamp_ns - timestamp_ns) / 1.0e6
+            for timestamp_ns in result.observation.image_timestamps_ns
+        ]
+        camera_capture_to_response_ms = [
+            (result.received_at_ns - timestamp_ns) / 1.0e6
+            for timestamp_ns in result.observation.image_timestamps_ns
+        ]
         if observation_age_ms < 0 or observation_age_ms > float(
             cfg.robot["freshness"]["max_response_age_ms"]
         ):
@@ -199,6 +240,15 @@ def _run_live_policy_preflight(
             raise PolicyStaleError(
                 f"live policy preflight fps={response.policy_fps}, "
                 f"expected={cfg.contract.dataset_fps}"
+            )
+        expected_rtc = bool(cfg.host["server"]["rtc"]["enabled"])
+        if response.rtc_enabled != expected_rtc:
+            raise PolicyStaleError(
+                f"policy server RTC enabled={response.rtc_enabled}, expected={expected_rtc}"
+            )
+        if str(Path(response.checkpoint).expanduser().resolve()) != expected_checkpoint:
+            raise PolicyStaleError(
+                f"policy server checkpoint={response.checkpoint!r}, expected={expected_checkpoint!r}"
             )
         validate_policy_chunk(
             response.action_chunk,
@@ -222,9 +272,13 @@ def _run_live_policy_preflight(
             rtt_ms=result.rtt_ms,
             inference_ms=response.inference_ms,
             observation_age_ms=observation_age_ms,
+            camera_age_at_observation_ms=camera_age_at_observation_ms,
+            camera_capture_to_response_ms=camera_capture_to_response_ms,
             initial_tracking_deferred=bool(
                 cfg.robot["rollout"]["start_from_home"]
             ),
+            checkpoint=response.checkpoint,
+            rtc_enabled=response.rtc_enabled,
         )
         return
     raise PolicyStaleError("policy server did not pass live preflight before timeout")
@@ -242,6 +296,7 @@ def main() -> int:
     parser.add_argument("--max-runtime-s", type=float)
     args = parser.parse_args()
     cfg = load_pipeline_config(args.config)
+    expected_checkpoint = _configured_checkpoint(cfg)
     configured_live = str(cfg.robot["rollout"]["mode"]) == "live"
     if args.live != configured_live:
         if args.live:
@@ -304,15 +359,22 @@ def main() -> int:
     policy_rejections = 0
     total_policy_rejections = 0
     rtc_delay_estimate_steps = 0
+    rtc_latency = RollingLatencyEstimator(
+        window_size=int(cfg.robot["freshness"].get("rtc_latency_window_size", 30)),
+        percentile=float(cfg.robot["freshness"].get("rtc_latency_percentile", 95)),
+    )
     previous_accepted_request_id = -1
     rtt_samples: list[float] = []
     observation_age_samples: list[float] = []
     inference_samples: list[float] = []
     command_count = 0
     rollout_limited_count = 0
+    rollout_limited_per_joint = np.zeros(7, dtype=np.int64)
     hardware_limited_count = 0
     gripper_transition_count = 0
     gripper_raw_max = float("-inf")
+    tracking_error_samples: list[np.ndarray] = []
+    last_command_request_id = -1
     deployed_checkpoint = ""
     stale_hold_request_id: int | None = None
     live_motion_enabled = False
@@ -345,6 +407,7 @@ def main() -> int:
                 client=client,
                 session_id=session_id,
                 logger=logger,
+                expected_checkpoint=expected_checkpoint,
             )
             if args.preflight_only:
                 logger.event("complete", reason="live_preflight_only_no_motion")
@@ -378,7 +441,7 @@ def main() -> int:
             _ensure_robot_health(bridge, hardware, live=live)
             measured_bimanual = adapter.read_bimanual()
             measured_q = adapter.read_arm_q7(measured_bimanual)
-            _ensure_command_tracking(
+            tracking_error = _ensure_command_tracking(
                 adapter,
                 measured_q,
                 float(cfg.robot["safety"]["max_command_tracking_error_rad"]),
@@ -401,13 +464,29 @@ def main() -> int:
                     observation_age_ms = (
                         result.received_at_ns - result.observation.robot_timestamp_ns
                     ) / 1.0e6
-                    rtc_delay_estimate_steps = max(
-                        rtc_delay_estimate_steps,
-                        math.ceil(observation_age_ms * cfg.contract.dataset_fps / 1000.0),
-                    )
+                    camera_age_at_observation_ms = [
+                        (
+                            result.observation.robot_timestamp_ns
+                            - timestamp_ns
+                        )
+                        / 1.0e6
+                        for timestamp_ns in result.observation.image_timestamps_ns
+                    ]
+                    camera_capture_to_response_ms = [
+                        (result.received_at_ns - timestamp_ns) / 1.0e6
+                        for timestamp_ns in result.observation.image_timestamps_ns
+                    ]
                     if observation_age_ms < 0 or observation_age_ms > float(
                         cfg.robot["freshness"]["max_response_age_ms"]
                     ):
+                        logger.event(
+                            "stale_rejected",
+                            request_id=response.request_id,
+                            observation_age_ms=observation_age_ms,
+                            max_response_age_ms=float(
+                                cfg.robot["freshness"]["max_response_age_ms"]
+                            ),
+                        )
                         raise PolicyStaleError(
                             f"policy response observation age {observation_age_ms:.1f}ms exceeds "
                             f"{float(cfg.robot['freshness']['max_response_age_ms']):.1f}ms"
@@ -421,7 +500,18 @@ def main() -> int:
                         raise PolicyStaleError(
                             f"policy server RTC enabled={response.rtc_enabled}, expected={expected_rtc}"
                         )
+                    if str(Path(response.checkpoint).expanduser().resolve()) != expected_checkpoint:
+                        raise PolicyStaleError(
+                            f"policy server checkpoint={response.checkpoint!r}, "
+                            f"expected={expected_checkpoint!r}"
+                        )
+                    rtc_latency.add(observation_age_ms)
+                    rtc_delay_estimate_steps = rtc_latency.delay_steps(
+                        cfg.contract.dataset_fps,
+                        maximum=int(cfg.host["server"]["rtc"]["execution_horizon"]),
+                    )
                     timeouts = 0
+                    policy_gripper_preclip = np.asarray(response.action_chunk[:, 7]).copy()
                     try:
                         safe_chunk = validate_policy_chunk(
                             response.action_chunk,
@@ -499,10 +589,18 @@ def main() -> int:
                                 new_request_id=response.request_id,
                                 delay_steps=response.rtc_inference_delay_steps,
                                 old_remaining_steps=response.rtc_prev_leftover_steps,
+                                old_raw_remaining_steps=response.rtc_prev_raw_remaining_steps,
+                                source_request_id=response.rtc_source_request_id,
+                                elapsed_policy_position=response.rtc_elapsed_policy_position,
+                                leftover_start_index=response.rtc_leftover_start_index,
                                 first_target_jump_rad=float(
                                     np.max(np.abs(execution_target[:7] - transition_from_q7))
                                 ),
+                                first_target_jump_per_joint=np.abs(
+                                    execution_target[:7] - transition_from_q7
+                                ).tolist(),
                                 rtc_guided=response.rtc_prev_leftover_steps > 0,
+                                ack_simulated=not live,
                             )
                         policy_rejections = 0
                         stale_hold_request_id = None
@@ -511,13 +609,23 @@ def main() -> int:
                             "rtt_ms": result.rtt_ms,
                             "inference_ms": response.inference_ms,
                             "observation_age_ms": observation_age_ms,
+                            "camera_age_at_observation_ms": camera_age_at_observation_ms,
+                            "camera_capture_to_response_ms": camera_capture_to_response_ms,
                             "rtc_enabled": response.rtc_enabled,
                             "rtc_inference_delay_steps": response.rtc_inference_delay_steps,
                             "rtc_execution_horizon": response.rtc_execution_horizon,
                             "rtc_prev_leftover_steps": response.rtc_prev_leftover_steps,
+                            "rtc_prev_raw_remaining_steps": response.rtc_prev_raw_remaining_steps,
+                            "rtc_source_request_id": response.rtc_source_request_id,
+                            "rtc_elapsed_policy_position": response.rtc_elapsed_policy_position,
+                            "rtc_leftover_start_index": response.rtc_leftover_start_index,
+                            "rtc_latency_window_p95_ms": rtc_latency.estimate_ms,
+                            "rtc_next_delay_steps": rtc_delay_estimate_steps,
                             "raw_chunk_length": response.raw_chunk_length,
                             "physical_chunk_length": int(response.action_chunk.shape[0]),
                             "checkpoint": response.checkpoint,
+                            "policy_gripper_preclip_min": float(np.min(policy_gripper_preclip)),
+                            "policy_gripper_preclip_max": float(np.max(policy_gripper_preclip)),
                         }
                         if not live:
                             event["execute_chunk"] = buffer.chunk.tolist()
@@ -603,31 +711,60 @@ def main() -> int:
                     action = buffer.sample(sample_ns)
                 filtered_q = command_filter.step(action[:7])
                 rollout_limited = not np.allclose(filtered_q, action[:7], atol=1.0e-9)
+                limited_joints = command_filter.limited_joints
                 gripper_before = float(gripper.state)
                 policy_gripper_raw = float(action[7])
                 gripper_target = gripper.update(policy_gripper_raw)
                 gripper_after = float(gripper.state)
                 command = adapter.overlay_active_arm(measured_bimanual, filtered_q)
+                published_before_command = adapter.last_published()
+                continuity_reference = (
+                    measured_q
+                    if published_before_command is None
+                    or not published_before_command.motion_allowed
+                    else np.asarray(published_before_command.arm_target_q, dtype=np.float64)
+                )
                 published = adapter.publish(command, gripper_target=gripper_target, quest_trigger=0.0, allow_motion=True)
+                is_chunk_boundary = buffer.request_id != last_command_request_id
+                policy_jump = np.abs(np.asarray(action[:7]) - continuity_reference)
+                filtered_jump = np.abs(np.asarray(filtered_q) - continuity_reference)
+                published_jump = np.abs(
+                    np.asarray(published.arm_target_q, dtype=np.float64) - continuity_reference
+                )
                 command_count += 1
                 rollout_limited_count += int(rollout_limited)
+                rollout_limited_per_joint += limited_joints.astype(np.int64)
                 hardware_limited_count += int(published.limited)
                 gripper_transition_count += int(gripper_before != gripper_after)
                 gripper_raw_max = max(gripper_raw_max, policy_gripper_raw)
+                if tracking_error is not None:
+                    tracking_error_samples.append(tracking_error.copy())
                 logger.event(
                     "command",
                     request_id=buffer.request_id,
                     target=published.as_8d().tolist(),
                     policy_target=action.tolist(),
                     rollout_limited=rollout_limited,
-                    rollout_limited_joints=command_filter.limited_joints.tolist(),
+                    measured_q=np.asarray(measured_q).tolist(),
+                    command_tracking_error_per_joint=(
+                        None if tracking_error is None else tracking_error.tolist()
+                    ),
+                    command_tracking_error_max=(
+                        None if tracking_error is None else float(np.max(tracking_error))
+                    ),
+                    rollout_limited_joints=limited_joints.tolist(),
                     hardware_limited=published.limited,
+                    chunk_boundary=is_chunk_boundary,
+                    boundary_policy_jump_per_joint=policy_jump.tolist(),
+                    boundary_filtered_jump_per_joint=filtered_jump.tolist(),
+                    boundary_published_jump_per_joint=published_jump.tolist(),
                     policy_gripper_raw=policy_gripper_raw,
                     gripper_state_before=gripper_before,
                     gripper_state_after=gripper_after,
                     gripper_transition=gripper_before != gripper_after,
                     published_gripper_target=float(gripper_target),
                 )
+                last_command_request_id = buffer.request_id
             next_control = time.monotonic() + 1.0 / float(
                 cfg.robot["rollout"]["control_hz"]
             )
@@ -642,7 +779,25 @@ def main() -> int:
             mean_inference_ms=float(np.mean(inference_samples)) if inference_samples else None,
             mean_observation_age_ms=float(np.mean(observation_age_samples)) if observation_age_samples else None,
             rollout_limited_ratio=rollout_limited_count / command_count if command_count else None,
+            rollout_limited_ratio_per_joint=(
+                (rollout_limited_per_joint / command_count).tolist() if command_count else None
+            ),
             hardware_limited_ratio=hardware_limited_count / command_count if command_count else None,
+            mean_tracking_error_per_joint=(
+                np.mean(np.stack(tracking_error_samples), axis=0).tolist()
+                if tracking_error_samples
+                else None
+            ),
+            p95_tracking_error_per_joint=(
+                np.percentile(np.stack(tracking_error_samples), 95, axis=0).tolist()
+                if tracking_error_samples
+                else None
+            ),
+            p95_tracking_error_max=(
+                float(np.percentile(np.max(np.stack(tracking_error_samples), axis=1), 95))
+                if tracking_error_samples
+                else None
+            ),
             gripper_raw_max=gripper_raw_max if np.isfinite(gripper_raw_max) else None,
             gripper_transitions=gripper_transition_count,
             replans=len(rtt_samples),
@@ -650,7 +805,44 @@ def main() -> int:
         )
         return 0
     except BaseException as exc:
-        logger.event("abort", reason=str(exc))
+        logger.event(
+            "abort",
+            reason=str(exc),
+            checkpoint=deployed_checkpoint,
+            command_count=command_count,
+            mean_observation_age_ms=(
+                float(np.mean(observation_age_samples))
+                if observation_age_samples
+                else None
+            ),
+            rtc_latency_window_p95_ms=rtc_latency.estimate_ms,
+            rollout_limited_ratio=(
+                rollout_limited_count / command_count if command_count else None
+            ),
+            rollout_limited_ratio_per_joint=(
+                (rollout_limited_per_joint / command_count).tolist()
+                if command_count
+                else None
+            ),
+            hardware_limited_ratio=(
+                hardware_limited_count / command_count if command_count else None
+            ),
+            p95_tracking_error_max=(
+                float(
+                    np.percentile(
+                        np.max(np.stack(tracking_error_samples), axis=1), 95
+                    )
+                )
+                if tracking_error_samples
+                else None
+            ),
+            gripper_raw_max=(
+                gripper_raw_max if np.isfinite(gripper_raw_max) else None
+            ),
+            gripper_transitions=gripper_transition_count,
+            replans=len(rtt_samples),
+            rejected_chunks=total_policy_rejections,
+        )
         if live:
             unsafe_to_move = (not live_motion_enabled) or isinstance(
                 exc,

@@ -8,7 +8,7 @@ import numpy as np
 from .errors import ContractError
 
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,10 @@ class ActionResponse:
     rtc_prev_leftover_steps: int = 0
     raw_chunk_length: int = 0
     checkpoint: str = ""
+    rtc_source_request_id: int = -1
+    rtc_prev_raw_remaining_steps: int = 0
+    rtc_elapsed_policy_position: float = 0.0
+    rtc_leftover_start_index: int = 0
 
 
 def encode_metadata(payload: dict[str, Any]) -> bytes:
@@ -128,6 +132,10 @@ def pack_action_response(response: ActionResponse) -> list[bytes]:
         "rtc_prev_leftover_steps": int(response.rtc_prev_leftover_steps),
         "raw_chunk_length": int(response.raw_chunk_length or chunk.shape[0]),
         "checkpoint": str(response.checkpoint),
+        "rtc_source_request_id": int(response.rtc_source_request_id),
+        "rtc_prev_raw_remaining_steps": int(response.rtc_prev_raw_remaining_steps),
+        "rtc_elapsed_policy_position": float(response.rtc_elapsed_policy_position),
+        "rtc_leftover_start_index": int(response.rtc_leftover_start_index),
     }
     return [encode_metadata(meta), chunk.tobytes()]
 
@@ -157,4 +165,8 @@ def unpack_action_response(parts: list[bytes]) -> ActionResponse:
         int(meta.get("rtc_prev_leftover_steps", 0)),
         int(meta.get("raw_chunk_length", shape[0])),
         str(meta.get("checkpoint", "")),
+        int(meta.get("rtc_source_request_id", -1)),
+        int(meta.get("rtc_prev_raw_remaining_steps", 0)),
+        float(meta.get("rtc_elapsed_policy_position", 0.0)),
+        int(meta.get("rtc_leftover_start_index", 0)),
     )

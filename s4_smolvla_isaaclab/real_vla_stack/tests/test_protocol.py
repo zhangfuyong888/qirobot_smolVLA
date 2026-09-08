@@ -36,6 +36,10 @@ def test_multipart_protocol_round_trip() -> None:
         16,
         50,
         "/models/checkpoint",
+        6,
+        16,
+        9.5,
+        10,
     )
     actual = unpack_action_response(pack_action_response(response))
     assert actual.action_chunk.shape == (50, 8)
@@ -43,6 +47,10 @@ def test_multipart_protocol_round_trip() -> None:
     assert actual.rtc_enabled
     assert actual.rtc_prev_leftover_steps == 16
     assert actual.checkpoint == "/models/checkpoint"
+    assert actual.rtc_source_request_id == 6
+    assert actual.rtc_prev_raw_remaining_steps == 16
+    assert actual.rtc_elapsed_policy_position == 9.5
+    assert actual.rtc_leftover_start_index == 10
 
 
 def test_server_error_frame_is_explicit() -> None:

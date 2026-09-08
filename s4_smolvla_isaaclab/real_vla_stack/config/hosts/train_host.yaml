@@ -42,9 +42,8 @@ server:
   image_transport: jpeg
   jpeg_quality: 90
   rtc:
-    # Enable only after the pretrained fine-tune passes offline probes.
-    enabled: false
+    enabled: true
     execution_horizon: 10
     max_guidance_weight: 10.0
 deployment:
-  checkpoint: null
+  checkpoint: /home/zfy/real_outputs/right_drawer_open_close_v1_smolvla_base_ft_full/checkpoints/300000/pretrained_model
