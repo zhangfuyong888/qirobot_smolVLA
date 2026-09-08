@@ -67,7 +67,6 @@ def test_pretrained_training_preserves_snapshot_architecture() -> None:
     cfg = load_pipeline_config()
     command, output = training_command(cfg, profile="smoke")
     assert any(value.startswith("--policy.path=") for value in command)
-    assert "--policy.strict_pretrained_loading=true" in command
     assert "--policy.input_features=null" in command
     forbidden = (
         "--policy.type=",

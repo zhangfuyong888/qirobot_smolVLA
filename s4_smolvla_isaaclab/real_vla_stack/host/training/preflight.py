@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import struct
+from gc import collect
 from pathlib import Path
 from typing import Any
 
@@ -132,3 +133,59 @@ def preflight_pretrained_policy(
         "frozen_parameter_estimate": frozen,
         "core_weights_verified": list(CORE_WEIGHT_PREFIXES),
     }
+
+
+def strict_load_pretrained_policy(path: Path, *, model_root: Path) -> dict[str, Any]:
+    """Load the complete base policy strictly without patching LeRobot.
+
+    This is deliberately kept in the S4 training integration rather than in the
+    pinned ``lerobot`` submodule.  It proves that the snapshot's complete state
+    dict, including the action expert and the action/state projections, loads
+    into the upstream SmolVLA architecture with no missing or unexpected keys.
+
+    The check runs on CPU before training begins.  Dataset feature adaptation is
+    validated separately by :func:`preflight_pretrained_policy`: the real 8D
+    state/action dimensions must fit SmolVLA's pretrained padded dimensions.
+    """
+    root = Path(path).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"pretrained SmolVLA policy directory not found: {root}")
+
+    # These imports intentionally stay host/training-only.  ``common`` and the
+    # robot rollout process remain free of Torch and LeRobot imports.
+    from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+
+    config = PreTrainedConfig.from_pretrained(root, local_files_only=True)
+    configured_vlm = Path(config.vlm_model_name).expanduser()
+    if not configured_vlm.is_dir():
+        fallback = (
+            Path(model_root).expanduser().resolve()
+            / "HuggingFaceTB"
+            / "SmolVLM2-500M-Video-Instruct"
+        )
+        if not fallback.is_dir():
+            raise FileNotFoundError(
+                f"pretrained VLM path unavailable: {configured_vlm}; fallback missing: {fallback}"
+            )
+        config.vlm_model_name = str(fallback)
+    config.device = "cpu"
+    policy = SmolVLAPolicy.from_pretrained(
+        str(root), config=config, local_files_only=True, strict=True
+    )
+    state_names = tuple(policy.state_dict())
+    missing_core = [
+        prefix for prefix in CORE_WEIGHT_PREFIXES if not any(name.startswith(prefix) for name in state_names)
+    ]
+    if missing_core:
+        raise ValueError(f"strict policy load is missing core SmolVLA modules: {missing_core}")
+    report = {
+        "strict_weight_load": "passed",
+        "strict_weight_load_device": "cpu",
+        "strict_weight_load_vlm": str(config.vlm_model_name),
+        "loaded_tensor_count": len(state_names),
+        "core_modules_loaded": list(CORE_WEIGHT_PREFIXES),
+    }
+    del policy
+    collect()
+    return report

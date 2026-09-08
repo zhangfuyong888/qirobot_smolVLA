@@ -12,7 +12,7 @@ import yaml
 
 from ...common.config import PipelineConfig
 from ..dataset.lerobot_validator import validate_lerobot_dataset
-from .preflight import preflight_pretrained_policy
+from .preflight import preflight_pretrained_policy, strict_load_pretrained_policy
 
 
 def training_command(config: PipelineConfig, *, profile: str | None = None) -> tuple[list[str], Path]:
@@ -55,11 +55,10 @@ def training_command(config: PipelineConfig, *, profile: str | None = None) -> t
     ]
     if pretrained is not None:
         command.insert(1, f"--policy.path={pretrained}")
-        command.insert(2, "--policy.strict_pretrained_loading=true")
         # smolvla_base ships generic 6D/three-camera feature metadata. Clearing
-        # only this dataset contract lets make_policy infer the drawer 8D + two
-        # camera features without changing any latent architecture dimensions.
-        command.insert(3, "--policy.input_features=null")
+        # only this dataset contract lets upstream LeRobot infer the drawer 8D +
+        # two-camera features without changing any latent architecture dimensions.
+        command.insert(2, "--policy.input_features=null")
     else:
         model_root = config.host_path_value("model_root")
         vlm = model_root / str(model["vlm_model_name"])
@@ -102,6 +101,18 @@ def launch_training(config: PipelineConfig, *, profile: str | None = None, dry_r
         raise FileExistsError(f"fresh training output already exists: {output}")
     if dry_run:
         return command
+    if pretrained:
+        # Keep strict checkpoint loading in real_vla_stack rather than adding a
+        # project-specific option to the pinned LeRobot submodule.
+        strict_report = strict_load_pretrained_policy(
+            Path(os.path.expandvars(os.path.expanduser(str(pretrained)))).resolve(),
+            model_root=config.host_path_value("model_root"),
+        )
+        print(
+            "[REAL-VLA-TRAIN] strict pretrained weight load "
+            + json.dumps(strict_report, sort_keys=True),
+            flush=True,
+        )
     output.parent.mkdir(parents=True, exist_ok=True)
     project_root = Path(__file__).resolve().parents[3]
     subprocess.run(

@@ -48,7 +48,18 @@ layout. LeRobot rebuilds normalization from the drawer dataset. The `smoke`,
 `overfit`, `baseline`, and `full` profiles are 300, 5k, 200k, and 400k steps;
 long runs save every 50k steps.
 
+The project-specific pretrained preflight lives in
+`host/training/preflight.py`, not in the pinned `lerobot` submodule. Before an
+actual training run it validates the snapshot metadata and performs a CPU-only
+`SmolVLAPolicy.from_pretrained(..., strict=True)` load through LeRobot's public
+API. This keeps the submodule clean while failing closed on missing or
+unexpected model tensors.
+
 ## RTC rollout
+
+完整的真机 rollout 架构、时间轴、RTC/安全参数和日志判读见
+[docs/real_robot_rollout.md](docs/real_robot_rollout.md)。该文档是部署与调参的
+主参考；本节保留 RTC 的关键约束。
 
 RTC support follows the pinned LeRobot implementation. The deployment profile
 enables it with `server.rtc.enabled: true`, a 10-step execution horizon, and
@@ -123,10 +134,11 @@ network, inference and action-contract checks, before Home or policy commands.
   bursts. A rollout-specific velocity/acceleration filter sits ahead of the
   hardware bridge's final per-message joint-step limiter.
 - Policy requests use `replan_interval_steps`, independently of the 20 Hz action
-  timeline. The commissioned `20/10` horizon/replan pair retains twenty policy
-  steps and requests a replacement after ten. A replacement chunk is
-  delay-aligned, checked against current state, and blended from the last
-  published target over `chunk_blend_duration_ms`.
+  timeline. The current `execute_horizon=35` / `replan_interval_steps=10` profile
+  retains 35 policy steps and requests a replacement after ten. A replacement
+  chunk is delay-aligned and checked against current state; robot-side blend is
+  applied only when `chunk_blend_duration_ms` is non-zero (the RTC profile sets it
+  to zero).
 - A single unsafe stochastic chunk is logged and discarded. The last fresh plan
   remains active; consecutive rejection beyond the configured limit, or expiry
   of that plan, still aborts and relinquishes command output.
