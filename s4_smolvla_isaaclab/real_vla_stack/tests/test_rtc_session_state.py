@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from real_vla_stack.common.errors import ContractError
@@ -8,6 +10,7 @@ import torch
 from real_vla_stack.host.inference.policy_runner import (
     PolicyRunner,
     RTCSessionState,
+    load_checkpoint_policy_config,
     rtc_leftover_for_observation,
 )
 
@@ -36,6 +39,36 @@ def test_runner_can_reset_only_rtc_history() -> None:
     runner.reset_rtc_history()
     assert runner.rtc_state.accepted_raw_chunk is None
     assert runner.rtc_state.generated == {}
+
+
+def test_legacy_training_only_config_field_is_sanitized_without_mutating_checkpoint(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    original = {"type": "smolvla", "chunk_size": 50, "strict_pretrained_loading": True}
+    (checkpoint / "config.json").write_text(json.dumps(original), encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    def loader(path):
+        seen["path"] = path
+        seen["payload"] = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        return "loaded-config"
+
+    with pytest.warns(RuntimeWarning, match="strict_pretrained_loading"):
+        assert load_checkpoint_policy_config(checkpoint, loader) == "loaded-config"
+    assert seen["path"] != checkpoint
+    assert seen["payload"] == {"type": "smolvla", "chunk_size": 50}
+    assert json.loads((checkpoint / "config.json").read_text(encoding="utf-8")) == original
+
+
+def test_legacy_config_field_must_remain_boolean(tmp_path) -> None:
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "config.json").write_text(
+        json.dumps({"type": "smolvla", "strict_pretrained_loading": "true"}), encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        load_checkpoint_policy_config(checkpoint, lambda path: None)
 
 
 def test_rtc_leftover_is_real_length_without_zero_padding() -> None:

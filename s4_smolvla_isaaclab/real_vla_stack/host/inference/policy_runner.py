@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
+import tempfile
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -76,6 +80,37 @@ def resolve_checkpoint(path: Path) -> Path:
     return checkpoint
 
 
+def load_checkpoint_policy_config(checkpoint: Path, loader: Callable[[Path], object]) -> object:
+    """Load a policy config without modifying a deployment checkpoint.
+
+    ``strict_pretrained_loading`` was briefly written into some S4 training
+    artifacts.  It is a training-launcher option, not a LeRobot
+    ``SmolVLAConfig`` field.  Current LeRobot correctly rejects unknown config
+    fields, so remove only this documented legacy field in a temporary copy.
+    Weight loading remains strict in :class:`PolicyRunner` below.
+    """
+    config_path = checkpoint / "config.json"
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    if "strict_pretrained_loading" not in payload:
+        return loader(checkpoint)
+
+    legacy_value = payload.pop("strict_pretrained_loading")
+    if not isinstance(legacy_value, bool):
+        raise ValueError("checkpoint strict_pretrained_loading must be a boolean when present")
+    warnings.warn(
+        "ignoring legacy checkpoint config field 'strict_pretrained_loading'; "
+        "deployment still uses strict model-weight loading",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    with tempfile.TemporaryDirectory(prefix="s4_policy_config_") as temporary_dir:
+        temporary_checkpoint = Path(temporary_dir)
+        (temporary_checkpoint / "config.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+        return loader(temporary_checkpoint)
+
+
 class PolicyRunner:
     def __init__(
         self,
@@ -102,7 +137,10 @@ class PolicyRunner:
                 "refusing an unsafe silent CPU fallback"
             )
         self.device = requested_device
-        config = PreTrainedConfig.from_pretrained(self.checkpoint, local_files_only=True)
+        config = load_checkpoint_policy_config(
+            self.checkpoint,
+            lambda path: PreTrainedConfig.from_pretrained(path, local_files_only=True),
+        )
         config.rtc_config = RTCConfig(
             enabled=bool(rtc_enabled),
             execution_horizon=int(rtc_execution_horizon),
